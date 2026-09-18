@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# 假的 route（macOS 的 `route -n get default`），只回介面名稱。
+S="$MOCK_STATE"
+echo "route $*" >> "$S/route_log"
+cat <<OUT
+   route to: default
+destination: default
+  interface: ${MOCK_ROUTE_IF:-en0}
+OUT

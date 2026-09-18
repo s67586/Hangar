@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#
+# 假的 iproute2。掃描層用它做兩件事：找出預設路由的介面 + 讀那張介面的 IP/遮罩，
+# 另外沒有 arp 時改用 `ip neigh` 讀 ARP 表。
+#
+#   $MOCK_STATE/ip_no_route   → 沒有預設路由（逼掃描層走 macOS 的 route+ifconfig）
+#   $MOCK_STATE/ip_addr       → 覆寫 `ip -o addr show` 的輸出（測非 /24 的網段）
+#   $MOCK_STATE/ip_neigh      → `ip neigh show` 的輸出
+S="$MOCK_STATE"
+echo "ip $*" >> "$S/ip_log"
+case "$*" in
+  *"route show default"*)
+    [ -f "$S/ip_no_route" ] && exit 0
+    echo "default via 192.168.1.1 dev en0 proto dhcp src 192.168.1.42 metric 100" ;;
+  *"addr show"*)
+    if [ -f "$S/ip_addr" ]; then cat "$S/ip_addr"
+    else echo "2: en0    inet 192.168.1.42/24 brd 192.168.1.255 scope global dynamic en0"; fi ;;
+  *neigh*)
+    [ -f "$S/ip_neigh" ] && cat "$S/ip_neigh" ;;
+esac
+exit 0
