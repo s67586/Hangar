@@ -50,7 +50,11 @@ fi
 dwidth() {
   local b c
   b="$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')"
-  c="$(printf '%s' "$1" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')"
+  # 字元數不靠 locale 算：UTF-8 的續接位元組固定落在 0x80–0xBF，刪掉它們剩下的
+  # 就是字元數。原本這裡指定 LC_ALL=en_US.UTF-8 給 wc -m，但那個 locale 不是每台
+  # 機器都有（多數 Linux 只有 C.utf8），沒有的時候 wc -m 會退回數 bytes，
+  # 整張表就歪掉 —— hub 將來是跑在 Linux 上的，這條路一定會走到。
+  c="$(printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' ')"
   printf '%s' "$(( (b + c) / 2 ))"
 }
 
