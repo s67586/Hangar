@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# install.sh — 把 hangar symlink 到 PATH 上
+# hangar_install.sh — 把 hangar symlink 到 PATH 上
 #
-#   ./install.sh                 # 裝到 /usr/local/bin（需要時會用 sudo）
-#   PREFIX=~/.local ./install.sh # 裝到 ~/.local/bin
-#   ./install.sh --uninstall
+#   ./hangar_install.sh                 # 裝到 /usr/local/bin（需要時會用 sudo）
+#   PREFIX=~/.local ./hangar_install.sh # 裝到 ~/.local/bin
+#   ./hangar_install.sh --uninstall
 #
 set -euo pipefail
 
@@ -25,7 +25,13 @@ die()  { printf '%s xx %s %s\n' "$R" "$N" "$*" >&2; exit 1; }
 
 # 需要 sudo 才能寫入目標目錄時，自動加上
 run_priv() {
-  if [ -w "$BIN_DIR" ] || { [ ! -d "$BIN_DIR" ] && [ -w "$(dirname "$BIN_DIR")" ]; }; then
+  # 往上找到第一個真的存在的祖先目錄再判斷寫入權限。BIN_DIR 連同它的上層都可能
+  # 還不存在（全新機器上的 PREFIX=~/.local 就是），這種時候不該直接假設要 sudo。
+  local d="$BIN_DIR"
+  while [ ! -d "$d" ]; do
+    case "$d" in */*) d="$(dirname "$d")" ;; *) d="." ; break ;; esac
+  done
+  if [ -w "$d" ]; then
     "$@"
   else
     warn "$BIN_DIR 需要管理者權限，使用 sudo"

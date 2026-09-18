@@ -53,20 +53,20 @@ brew install tailscale
 ### 2. 安裝 Hangar
 
 ```bash
-./install.sh
+./hangar_install.sh
 ```
 
 會把 `hangar` symlink 到 `/usr/local/bin`（需要時自動 sudo）。
 想裝到別的地方：
 
 ```bash
-PREFIX=~/.local ./install.sh
+PREFIX=~/.local ./hangar_install.sh
 ```
 
 移除：
 
 ```bash
-./install.sh --uninstall
+./hangar_install.sh --uninstall
 ```
 
 ---
@@ -302,7 +302,7 @@ hangar all          # 兩支一起開，視窗標題各是 work / test
 # 1. 裝相依套件 + hangar
 brew install --cask android-platform-tools
 brew install scrcpy jq
-git clone <這個 repo> && cd hangar && ./install.sh
+git clone <這個 repo> && cd hangar && ./hangar_install.sh
 
 # 2. 建立設定（不需要 USB）
 hangar setup --existing pixel-4
@@ -620,7 +620,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 |---|---|
 | 手機端 agent | 要裝（一次性 adb 授權，不走 Device Owner） |
 | hub 部署形態 | 一台常駐機器，接在測試機的同一個區網 |
-| 加固 app 實際擋什麼 | 還不知道，要先實測 → [docs/hardening-probe.md](docs/hardening-probe.md) |
+| 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 
 ### 里程碑
 
@@ -662,19 +662,17 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 
 ```
 hangar/
-├── hangar               # 主 script（bash，無外部相依）
+├── hangar                # 主 script（bash，無外部相依）
 ├── README.md
-├── install.sh           # symlink 到 /usr/local/bin
-├── docs/
-│   └── hardening-probe.md   # 加固 app 反調試偵測的實測 protocol（待執行）
+├── hangar_install.sh     # symlink 到 /usr/local/bin
 └── tests/
-    ├── run.sh           # 跑全部測試
-    ├── test_core.sh     # 核心流程與錯誤分支
-    ├── test_multi.sh    # 多台手機
-    ├── test_adb_race.sh # adb server 競態、欄位對齊
+    ├── run.sh            # 跑全部測試
+    ├── test_core.sh      # 核心流程與錯誤分支
+    ├── test_multi.sh     # 多台手機
+    ├── test_adb_race.sh  # adb server 競態、欄位對齊
     ├── test_multihost.sh # 第二台電腦（--existing）
-    ├── test_json.sh     # --json 輸出、錯誤 code、transport 抽象層、電量
-    └── mockbin/         # 假的 adb / tailscale / scrcpy / nc
+    ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
+    └── mockbin/          # 假的 adb / tailscale / scrcpy / nc
 ```
 
 `hangar` 這支 script 內部分層（由下往上）：
