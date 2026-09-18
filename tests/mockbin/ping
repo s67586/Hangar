@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#
+# 假的 ping。掃描層拿它把 ARP 表填起來，測試只需要知道「有沒有掃、掃了幾台」，
+# 所以只記帳不做事。$MOCK_STATE/ping_log 一行一次。
+S="$MOCK_STATE"
+echo "ping $*" >> "$S/ping_log"
+exit 0

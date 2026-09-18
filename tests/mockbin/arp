@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#
+# 假的 arp。掃描層用 `arp -an` 讀 ARP 表，內容由 $MOCK_STATE/arp_table 決定
+# （直接照 arp -an 的輸出格式寫）。沒有那個檔就當成 ARP 表是空的。
+S="$MOCK_STATE"
+echo "arp $*" >> "$S/arp_log"
+[ -f "$S/arp_table" ] && cat "$S/arp_table"
+exit 0

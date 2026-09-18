@@ -13,6 +13,7 @@ hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
 hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
+hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
 ```
 
 ---
@@ -49,6 +50,13 @@ brew install tailscale
 
 `tailscale` 只有 `TRANSPORT=tailscale` 的手機需要。純用 `TRANSPORT=lan`
 （同區網直連）的話不必裝，改成需要 `nc`——macOS 內建，通常不用管。
+
+`hangar scan`（區網掃描）用的是 `ping` 與 `arp`，兩個都是系統內建。想讓它顯示
+裝置廠商就要有一份 OUI 資料庫，裝 `nmap` 或 `arp-scan` 任一個就有：
+
+```bash
+brew install nmap        # 選配，只影響 scan 的「廠商」那一欄
+```
 
 ### 2. 安裝 Hangar
 
@@ -155,7 +163,50 @@ hangar reset            # 連線卡死時重建 adb 連線
 hangar forget work      # 刪掉該手機的設定
 hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
+hangar scan             # 掃描區網，列出看得到的裝置
 ```
+
+### 區網掃描
+
+`list` 只看得到**已經設定過**的手機。`hangar scan` 反過來：不管有沒有設定、
+有沒有開偵錯，只回答「這個區網上現在有哪些東西」。
+
+```bash
+hangar scan                        # 掃預設路由所在的那個 /24
+hangar scan --subnet 192.168.1     # 指定網段（也吃 192.168.1.0/24 或網段內任一 IP）
+hangar scan --no-ping              # 不做 ping sweep，只讀現有的 ARP 表（快很多）
+hangar scan --no-probe             # 不去測每台的 5555
+hangar scan --json
+```
+
+```
+  IP                MAC                 adb      已設定       廠商
+  ────────────────────────────────────────────────────────────
+  192.168.1.1       3c:37:86:aa:bb:cc   closed   -            Netgear
+  192.168.1.77      a4:03:e7:01:02:03   open     work         宏達電子
+  192.168.1.90      de:ad:be:ef:00:01   closed   -            隨機 MAC
+
+  共 3 台，其中 1 台的 5555 是開著的（可以 adb 進去）
+```
+
+它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 `arp -an`
+（沒有 `arp` 就用 `ip neigh`），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播
+與多播位址（`ff:ff:…`、mDNS 的 `01:00:5e:…`）會濾掉 —— 那些背後沒有一台機器。
+`已設定` 那欄會把 IP 對得上的 profile 名稱標出來，方便對照哪幾台已經入伍了。
+
+需要知道的限制：
+
+- **拿不到機型，也拿不到電量。** 沒開偵錯的手機 adb 完全碰不到，網路層只給得出
+  IP 與 MAC。這一欄要補齊得等手機端的 agent app（見[專案方向](#專案方向)）。
+- **隨機 MAC 查不到廠商，也不能當識別碼。** Android 10+ / iOS 14+ 對每個 SSID
+  用一組隨機 MAC，`廠商` 會直接寫「隨機 MAC」而不是亂猜一個牌子。
+- **廠商要靠系統上現成的 OUI 資料庫。** 裝了 `nmap` 或 `arp-scan` 就有；沒有的話
+  這一欄一律是 `?`。hangar 不內建自己的表 —— 完整的表好幾萬筆，只抄一小份會把
+  不認得的廠商全部誤判成不知名。要指定自己的表：`HANGAR_OUI_FILE=/path/to/oui`。
+- **只掃 /24。** 更大的網段逐台 ping 不現實，偵測到 `/16` 這種會直接要你用
+  `--subnet` 指定。網段比 `/24` 小（`/28` 之類）則是掃包住它的那個 `/24`。
+- **`scan` 不需要 adb 也不需要 scrcpy。** 它只用到 `ping`、`arp`／`ip`、`nc`，
+  在一台只裝了網路工具的常駐機器上也跑得動 —— 之後 hub 就是那種機器。
 
 ### 電量
 
@@ -233,6 +284,40 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 - **`device_serial` 是穩定識別碼。** IP 會變、連線方式會換，硬體序號不會。
   這是日後要認出「同一支手機」時唯一可靠的欄位。
+
+`scan --json` 是另一份文件（描述的是網段，不是 profile），所以 schema 號碼自己算：
+
+```json
+{
+  "schema": 1,
+  "subnet": "192.168.1.0/24",
+  "hosts": [
+    {
+      "ip": "192.168.1.77",
+      "mac": "a4:03:e7:01:02:03",
+      "vendor": "宏達電子",
+      "mac_randomized": false,
+      "adb_port": "open",
+      "profile": "work"
+    }
+  ],
+  "errors": []
+}
+```
+
+`adb_port` 是 `open` / `closed` / `unknown`（`--no-probe` 或這台機器沒有 `nc`）。
+`profile` 對不上任何已設定的手機時是 `null`。`subnet` 是實際掃過的範圍。
+scan 自己的 error code：
+
+| code | 意思 |
+|---|---|
+| `scan_unavailable` | 這台電腦上缺工具（讀不到 ARP 表） |
+| `subnet_unknown` | 測不出預設路由的網段，要用 `--subnet` 指定 |
+| `subnet_too_big` | 偵測到的網段比 `/24` 大，掃不動 |
+| `subnet_invalid` | `--subnet` 給的值看不懂 |
+
+「缺工具」跟「區網上沒東西」分成兩件事報，跟 `transport_unavailable` 是同一個
+道理：前者要修的是這台電腦，後者才該去看裝置。
 
 ---
 
@@ -620,6 +705,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 |---|---|
 | 手機端 agent | 要裝（一次性 adb 授權，不走 Device Owner） |
 | hub 部署形態 | 一台常駐機器，接在測試機的同一個區網 |
+| hub 後端 | Kotlin + Ktor —— agent app 也是 Kotlin，協定的資料結構兩邊共用一份 kotlinx.serialization model，不必各寫一套 |
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 
 ### 里程碑
@@ -627,7 +713,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | | 內容 | 狀態 |
 |---|---|---|
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
-| M2 | hub 骨架：常駐服務 + 區網掃描 + 唯讀裝置牆網頁 | |
+| M2 | hub 骨架：常駐服務 + 區網掃描 + 唯讀裝置牆網頁 | **進行中**：區網掃描（`hangar scan`）已經做進 CLI，Ktor 服務與網頁還沒開始 |
 | M3 | agent app：授權、電量回報、mDNS 廣播、重開機後自動重開 5555 | |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
 | M5 | 網頁投影串流；iOS 唯讀 | |
@@ -650,11 +736,15 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
    backend（目前除了 `tailscale` 還有一個很薄的 `lan`），不是整份 script 重寫。
 2. **裝置狀態已經可以被程式讀。** `--json` 是之後 hub 讀 hangar 的介面，
    schema 有變動就把 `schema` 號碼往上加。
+3. **「區網上有什麼」也已經可以被程式讀。** `hangar scan --json` 就是裝置牆的
+   資料來源。掃描邏輯放在 `scan_*` 這一層（不是 transport backend，它不回答
+   「怎麼連到某一支手機」），`lan` backend 的候選清單和 `scan` 指令共用它，
+   所以之後 hub 要自己實作一份掃描，或是直接呼叫 CLI，兩條路都還開著。
 
 ### 還沒決定
 
-後端用什麼寫、web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限——
-這些都還開放。
+web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、hub 要不要直接
+實作掃描（還是就呼叫 `hangar scan --json`）——這些都還開放。
 
 ---
 
@@ -672,7 +762,8 @@ hangar/
     ├── test_adb_race.sh  # adb server 競態、欄位對齊
     ├── test_multihost.sh # 第二台電腦（--existing）
     ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
-    └── mockbin/          # 假的 adb / tailscale / scrcpy / nc
+    ├── test_scan.sh      # 區網掃描、網段偵測、MAC 正規化、OUI 查詢
+    └── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ping / ip …
 ```
 
 `hangar` 這支 script 內部分層（由下往上）：
@@ -680,13 +771,15 @@ hangar/
 | 層 | 內容 |
 |---|---|
 | 輸出 | `info` / `ok` / `warn` / `err` / `kv` / 中文欄寬對齊 |
+| scan | `scan_*` —— 「這個網段上有哪些裝置」（ping sweep、ARP 表、OUI、5555 探測） |
 | transport | `transport_*` —— 「怎麼連到這支手機」全部收在這後面，底下有 `ts_*` 和 `lan_*` 兩個 backend |
 | profile | `.conf` 的讀寫、預設值、舊格式遷移 |
 | adb | 連線重試、狀態判讀、裝置資訊、電量 |
 | probe | `probe_transport` / `probe_adb` —— 人類輸出與 `--json` 共用同一份取得邏輯 |
 | 指令 | `cmd_setup` / `cmd_mirror` / `cmd_status` / `cmd_list` / … |
 
-`cmd_*` 層不直接呼叫 `ts_*`，一律走 `transport_*`。所有跟連線方式有關的**措辭**
+`cmd_*` 層不直接呼叫 `ts_*`，一律走 `transport_*`（`setup` 的節點選單也是）。
+`scan_*` 不是 transport backend，它是 `lan` backend 與 `cmd_scan` 共用的下層。所有跟連線方式有關的**措辭**
 也集中在 `transport_msg` 這一個查表函式裡，加 backend 時不用去各處翻字串。
 
 設定檔在 `~/.config/hangar/`（`XDG_CONFIG_HOME` 有設就跟著走）。
@@ -697,8 +790,9 @@ hangar/
 ./tests/run.sh
 ```
 
-用 mock 的 `adb` / `tailscale` / `scrcpy` 跑，**不會碰到真的手機**，
-設定檔也是寫在 `$TMPDIR/hangar-test` 底下，不會動到 `~/.config/hangar`。
+用 mock 的 `adb` / `tailscale` / `scrcpy` / `arp` / `ping` 跑，**不會碰到真的手機，
+也不會真的對區網送封包**，設定檔寫在 `$TMPDIR/hangar-test` 底下，
+不會動到 `~/.config/hangar`。
 
 涵蓋範圍：
 
@@ -709,6 +803,7 @@ hangar/
 | `test_adb_race.sh` | adb server 重啟競態的自動重試、本機 adb 問題與手機重開機的區分、setup 的 `start-server`、中文欄位對齊 |
 | `test_multihost.sh` | `setup --existing`（第二台電腦）、unauthorized 的說明、連不上時的提示方向、`--name` 別名 |
 | `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
+| `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。
