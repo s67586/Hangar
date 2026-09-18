@@ -233,5 +233,33 @@ check "而且訊息要指向 tailscale" "tailscale" "$out"
 
 unset HANGAR_TAILSCALE
 
+echo "=== J13. 缺 nc 要說缺 nc，不能說成「手機沒連上區網」 ==="
+# nc 沒裝跟手機真的不在線是兩回事：前者要修的是這台電腦，後者要去看手機。
+# 用一個只有非執行權限的假 nc 讓 command -v 找不到它。
+two_phones
+printf 'PHONE_HOST=""\nPHONE_IP="192.168.1.50"\nTRANSPORT="lan"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/lanphone.conf"
+printf '%s\tdevice\n' "192.168.1.50:5555" > "$MOCK_STATE/adb_devices"
+# 只把 mockbin 的 nc 拿掉不夠——系統的 /usr/bin/nc 還在 PATH 上。所以另外組一份
+# 「除了 nc 以外什麼都有」的 PATH，且只用這一份。
+NONC="$MOCK_STATE/nonc"; rm -rf "$NONC"; mkdir -p "$NONC"
+for d in "$SP/mockbin" /usr/bin /bin /usr/sbin /sbin; do
+  [ -d "$d" ] || continue
+  for f in "$d"/*; do
+    b="$(basename "$f")"
+    [ "$b" = "nc" ] && continue
+    [ -e "$NONC/$b" ] || ln -s "$f" "$NONC/$b" 2>/dev/null
+  done
+done
+command -v nc >/dev/null 2>&1 && [ ! -e "$NONC/nc" ] \
+  && { echo "  PASS  測試前提：這份 PATH 裡確實沒有 nc"; PASS=$((PASS+1)); }
+out="$(PATH="$NONC" "$PM" status --json -p lanphone 2>/dev/null)"
+assert "缺 nc 報 transport_unavailable" \
+  "transport_unavailable" "$(q '.devices[0].errors[0].code' "$out")"
+check "訊息要點名 nc" "nc" "$(q '.devices[0].errors[0].message' "$out")"
+assert "不可誤報成 peer_offline" "" \
+  "$(q '.devices[0].errors[] | select(.code == "peer_offline") | .code' "$out")"
+
+
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

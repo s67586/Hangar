@@ -241,7 +241,9 @@ lan_list_candidates() { return 0; }      # 區網掃描尚未實作
 lan_reachability() { # <節點名> <IP>
   local ip="$2"
   [ -n "$ip" ] || { printf 'notfound'; return 0; }
-  if command -v nc >/dev/null 2>&1 && run_timeout 5 nc -z -w 2 "$ip" "$ADB_PORT" >/dev/null 2>&1; then
+  # nc 在不在由 transport_deps_check 負責。這裡不再自己檢查——把「工具沒裝」
+  # 折進 offline 會讓使用者去查手機，但問題其實在這台電腦上。
+  if run_timeout 5 nc -z -w 2 "$ip" "$ADB_PORT" >/dev/null 2>&1; then
     printf 'online'
   else
     printf 'offline'
