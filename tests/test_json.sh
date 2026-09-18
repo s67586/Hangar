@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+#
+# --json 輸出與 transport 抽象層。用 mock 的 adb / tailscale，不碰真的手機。
+#
+SP="$(cd "$(dirname "$0")" && pwd)"
+PM="$1"
+export MOCK_STATE="${TMPDIR:-/tmp}/hangar-test/state" PATH="$SP/mockbin:$PATH" XDG_CONFIG_HOME="${TMPDIR:-/tmp}/hangar-test/cfg" NO_COLOR=1
+P1=100.101.102.103; P2=100.101.102.110
+PASS=0; FAIL=0
+
+two_phones() {
+  rm -rf "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar"; mkdir -p "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar/profiles"
+  echo Running>"$MOCK_STATE/ts_backend"; echo true>"$MOCK_STATE/ts_online"; echo true>"$MOCK_STATE/ts_online2"
+  echo direct>"$MOCK_STATE/ts_ping_mode"; echo ok>"$MOCK_STATE/adb_connect_result"
+  # 刻意寫成「舊格式」的兩行 profile：沒有 TRANSPORT / DEVICE_SERIAL
+  printf 'PHONE_HOST="pixel"\nPHONE_IP="%s"\n'   "$P1" > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+  printf 'PHONE_HOST="zenfone"\nPHONE_IP="%s"\n' "$P2" > "$XDG_CONFIG_HOME/hangar/profiles/test.conf"
+  printf '%s\tdevice\n%s\tdevice\n' "$P1:5555" "$P2:5555" > "$MOCK_STATE/adb_devices"
+  echo work > "$XDG_CONFIG_HOME/hangar/default"
+}
+
+check()   { if printf '%s' "$3" | grep -q -- "$2"; then printf '  PASS  %s\n' "$1"; PASS=$((PASS+1)); else printf '  FAIL  %s\n        期望: %s\n        實際: %s\n' "$1" "$2" "$(printf '%s' "$3"|tr '\n' '|')"; FAIL=$((FAIL+1)); fi; }
+assert()  { if [ "$2" = "$3" ]; then printf '  PASS  %s\n' "$1"; PASS=$((PASS+1)); else printf '  FAIL  %s（期望「%s」實際「%s」）\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi; }
+
+# q <jq-filter> <json> — 取值方便一點
+q() { printf '%s' "$2" | jq -r "$1" 2>/dev/null; }
+
+echo "=== J1. stdout 只有 JSON，人類訊息不能污染 ==="
+two_phones
+out="$("$PM" list --json 2>/dev/null)"
+printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
+  && { echo "  PASS  list --json 是合法 JSON"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  list --json 不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
+out="$("$PM" status --json 2>/dev/null)"
+printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
+  && { echo "  PASS  status --json 是合法 JSON"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  status --json 不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
+
+# 沒有任何 profile 時也要吐出合法的空結果，不是警告文字
+rm -rf "$XDG_CONFIG_HOME/hangar"; mkdir -p "$XDG_CONFIG_HOME/hangar/profiles"
+out="$("$PM" list --json 2>/dev/null)"
+assert "沒有手機時 devices 是空陣列" "0" "$(q '.devices | length' "$out")"
+
+echo "=== J2. schema 與必要欄位 ==="
+two_phones
+out="$("$PM" list --json 2>/dev/null)"
+assert "有 schema 版本"      "1"      "$(q '.schema' "$out")"
+assert "列出兩支"            "2"      "$(q '.devices | length' "$out")"
+assert "profile 名稱"        "work"   "$(q '.devices[] | select(.profile=="work") | .profile' "$out")"
+assert "adb serial"          "$P1:5555" "$(q '.devices[] | select(.profile=="work") | .adb_serial' "$out")"
+assert "host"                "pixel"  "$(q '.devices[] | select(.profile=="work") | .host' "$out")"
+assert "ip"                  "$P1"    "$(q '.devices[] | select(.profile=="work") | .ip' "$out")"
+assert "預設那支標記 default" "true"  "$(q '.devices[] | select(.profile=="work") | .default' "$out")"
+assert "非預設那支是 false"   "false" "$(q '.devices[] | select(.profile=="test") | .default' "$out")"
+assert "errors 是陣列"       "array"  "$(q '.devices[0].errors | type' "$out")"
+assert "scrcpy_pids 是陣列"  "array"  "$(q '.devices[0].scrcpy_pids | type' "$out")"
+
+echo "=== J3. 舊 profile 沒有 TRANSPORT → 回退成 tailscale ==="
+assert "transport 預設值" "tailscale" "$(q '.devices[0].transport' "$out")"
+
+echo "=== J4. 慢欄位要 --probe 才取，否則 list 會慢到不能用 ==="
+two_phones
+rm -f "$MOCK_STATE/ts_log"
+out="$("$PM" list --json 2>/dev/null)"
+assert "沒 --probe 時 path 是 null"    "null" "$(q '.devices[0].path' "$out")"
+assert "沒 --probe 時 model 是 null"   "null" "$(q '.devices[0].model' "$out")"
+assert "沒 --probe 時 battery 是 null" "null" "$(q '.devices[0].battery' "$out")"
+assert "沒 --probe 時不去 ping"        "0"    "$(grep -c . "$MOCK_STATE/ts_log" 2>/dev/null || echo 0)"
+# adb 狀態是便宜的（一次 adb devices），所以就算沒 --probe 也要有
+assert "沒 --probe 仍有 adb_state"     "device" "$(q '.devices[0].adb_state' "$out")"
+
+rm -f "$MOCK_STATE/ts_log"
+out="$("$PM" list --json --probe 2>/dev/null)"
+assert "--probe 取得 path"      "direct" "$(q '.devices[0].path.kind' "$out")"
+assert "--probe 取得 latency"   "12"     "$(q '.devices[0].path.latency_ms' "$out")"
+assert "--probe 取得機型"       "Pixel 7 Pro" "$(q '.devices[] | select(.profile=="work") | .model' "$out")"
+assert "--probe 取得 Android"   "14"     "$(q '.devices[0].android.release' "$out")"
+assert "--probe 的 sdk 是數字"  "number" "$(q '.devices[0].android.sdk | type' "$out")"
+[ "$(grep -c . "$MOCK_STATE/ts_log" 2>/dev/null || echo 0)" -gt 0 ] \
+  && { echo "  PASS  --probe 時才去 ping"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  --probe 沒有觸發 ping"; FAIL=$((FAIL+1)); }
+
+echo "=== J5. 電量 ==="
+two_phones
+out="$("$PM" status --json 2>/dev/null)"
+assert "level 是數字"      "number" "$(q '.devices[0].battery.level | type' "$out")"
+assert "level 值"          "78"     "$(q '.devices[0].battery.level' "$out")"
+assert "status 轉成字串"   "discharging" "$(q '.devices[0].battery.status' "$out")"
+assert "溫度有除以 10"     "27.5"   "$(q '.devices[0].battery.temperature_c' "$out")"
+
+echo 5 > "$MOCK_STATE/battery_level"
+out="$("$PM" status --json 2>/dev/null)"
+assert "低電量讀得到"      "5"      "$(q '.devices[0].battery.level' "$out")"
+out="$("$PM" list 2>&1)"
+check "人類版 list 標出低電量" "5% !" "$out"
+
+echo 2 > "$MOCK_STATE/battery_status"   # 2 = charging
+out="$("$PM" status --json 2>/dev/null)"
+assert "充電中狀態"        "charging" "$(q '.devices[0].battery.status' "$out")"
+# 已經在充電了就沒必要再叫人去充電
+out="$("$PM" list 2>&1)"
+if printf '%s' "$out" | grep -q '5% !'; then
+  printf '  FAIL  充電中不該再標「!」\n'; FAIL=$((FAIL+1))
+else
+  printf '  PASS  充電中不再催充電\n'; PASS=$((PASS+1))
+fi
+check "但電量本身還是顯示" "5%" "$out"
+
+echo "=== J6. 錯誤要有 code，不只有中文訊息 ==="
+two_phones
+: > "$MOCK_STATE/adb_devices"; echo fail > "$MOCK_STATE/adb_connect_result"
+out="$("$PM" status --json 2>/dev/null)"
+assert "手機重開機 → adb_port_closed" "adb_port_closed" "$(q '.devices[0].errors[0].code' "$out")"
+assert "連不上時 adb_state"           "disconnected"    "$(q '.devices[0].adb_state' "$out")"
+check  "code 旁邊仍附人類訊息"        "重開"            "$(q '.devices[0].errors[0].message' "$out")"
+
+two_phones
+printf '%s\tunauthorized\n' "$P1:5555" > "$MOCK_STATE/adb_devices"
+out="$("$PM" status --json 2>/dev/null)"
+assert "unauthorized code" "unauthorized" "$(q '.devices[0].errors[] | select(.code=="unauthorized") | .code' "$out")"
+
+two_phones
+printf '%s\toffline\n' "$P1:5555" > "$MOCK_STATE/adb_devices"
+out="$("$PM" status --json 2>/dev/null)"
+assert "offline code" "adb_offline" "$(q '.devices[0].errors[] | select(.code=="adb_offline") | .code' "$out")"
+
+echo "=== J7. 傳輸層掛掉時不可誤報成「手機重開機」 ==="
+two_phones
+echo Stopped > "$MOCK_STATE/ts_backend"
+: > "$MOCK_STATE/adb_devices"; echo fail > "$MOCK_STATE/adb_connect_result"
+out="$("$PM" list --json 2>/dev/null)"
+assert "先報 transport_down" "transport_down" "$(q '.devices[0].errors[0].code' "$out")"
+assert "reachability unknown" "unknown" "$(q '.devices[0].reachability' "$out")"
+# 這是重點：Tailscale 沒開的時候如果還報 adb_port_closed，
+# 讀 code 的人就會去叫使用者插 USB —— 方向完全錯了
+assert "不該誤報 adb_port_closed" "" \
+  "$(q '.devices[0].errors[] | select(.code=="adb_port_closed") | .code' "$out")"
+
+echo "=== J8. 手機不在 tailnet / 離線 ==="
+two_phones
+echo false > "$MOCK_STATE/ts_online"
+out="$("$PM" status --json 2>/dev/null)"
+assert "reachability offline" "offline"      "$(q '.devices[0].reachability' "$out")"
+assert "peer_offline code"    "peer_offline" "$(q '.devices[0].errors[] | select(.code=="peer_offline") | .code' "$out")"
+
+echo "=== J9. transport 可抽換：profile 指定 lan 就走 lan backend ==="
+two_phones
+# lan backend 不碰 tailscale，靠 nc 測 5555 通不通
+printf 'PHONE_HOST="pixel"\nPHONE_IP="%s"\nTRANSPORT="lan"\n' "$P1" \
+  > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+rm -f "$MOCK_STATE/ts_log" "$MOCK_STATE/nc_log"
+out="$("$PM" status --json -p work 2>/dev/null)"
+assert "transport 讀到 lan" "lan" "$(q '.devices[0].transport' "$out")"
+assert "lan 判定連得到"     "online" "$(q '.devices[0].reachability' "$out")"
+assert "lan 不去 tailscale ping" "0" "$(grep -c . "$MOCK_STATE/ts_log" 2>/dev/null || echo 0)"
+[ "$(grep -c . "$MOCK_STATE/nc_log" 2>/dev/null || echo 0)" -gt 0 ] \
+  && { echo "  PASS  lan 改用 5555 連通性測試"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  lan backend 沒被呼叫到"; FAIL=$((FAIL+1)); }
+# lan 連不通時要說「找不到 / 離線」，不能借用 tailnet 的措辭
+echo down > "$MOCK_STATE/nc_result"
+out="$("$PM" status --json -p work 2>/dev/null)"
+assert "lan 連不通 → offline" "offline" "$(q '.devices[0].reachability' "$out")"
+out="$("$PM" status -p work 2>&1)"
+check "lan 的人類訊息不提 tailnet 以外沒意義的字" "區網" "$out"
+rm -f "$MOCK_STATE/nc_result"
+# 表頭在混用 transport 時必須是中性的，不能寫死 Tailscale
+out="$("$PM" list 2>&1)"
+check "表頭用中性欄位名" "IP" "$out"
+if printf '%s' "$out" | grep -q 'Tailscale IP'; then
+  printf '  FAIL  混用 transport 時表頭還寫 Tailscale IP\n'; FAIL=$((FAIL+1))
+else
+  printf '  PASS  表頭沒寫死 Tailscale\n'; PASS=$((PASS+1))
+fi
+
+echo "=== J10. 壞掉的 profile 不該讓整張表消失 ==="
+two_phones
+printf 'PHONE_HOST="broken"\n' > "$XDG_CONFIG_HOME/hangar/profiles/broken.conf"
+out="$("$PM" list --json 2>/dev/null)"
+printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
+  && { echo "  PASS  仍輸出合法 JSON"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  一支壞掉就整個爛掉"; FAIL=$((FAIL+1)); }
+assert "好的那兩支還在" "2" "$(q '.devices | length' "$out")"
+out="$("$PM" list 2>&1)"
+check "人類版也還列得出來" "work" "$out"
+
+echo "=== J11. setup 會記下硬體序號與 transport ==="
+rm -rf "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar"; mkdir -p "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar/profiles"
+echo Running>"$MOCK_STATE/ts_backend"; echo true>"$MOCK_STATE/ts_online"
+echo direct>"$MOCK_STATE/ts_ping_mode"; echo ok>"$MOCK_STATE/adb_connect_result"
+printf 'ABC123\tdevice\n' > "$MOCK_STATE/adb_devices"
+out="$("$PM" setup pixel 2>&1)"
+conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/pixel.conf" 2>/dev/null)"
+check "profile 寫了 TRANSPORT"     'TRANSPORT="tailscale"'      "$conf"
+check "profile 寫了 DEVICE_SERIAL" 'DEVICE_SERIAL="PIX0000001"' "$conf"
+out="$("$PM" status --json -p pixel 2>/dev/null)"
+assert "JSON 帶出 device_serial" "PIX0000001" "$(q '.devices[0].device_serial' "$out")"
+
+echo "=== J12. 沒裝 tailscale 時，lan profile 仍然要能用 ==="
+# 這一段用 HANGAR_TAILSCALE 指到不存在的路徑來模擬「這台機器沒裝 tailscale」。
+# 不能只靠把 mockbin 從 PATH 拿掉——find_tailscale 有 /Applications 等絕對路徑 fallback。
+two_phones
+echo ok > "$MOCK_STATE/nc_result"
+printf 'PHONE_HOST=""\nPHONE_IP="192.168.1.50"\nTRANSPORT="lan"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/lanphone.conf"
+printf '%s\tdevice\n%s\tdevice\n%s\tdevice\n' \
+  "$P1:5555" "$P2:5555" "192.168.1.50:5555" > "$MOCK_STATE/adb_devices"
+export HANGAR_TAILSCALE=/nonexistent/tailscale
+
+out="$("$PM" status --json -p lanphone 2>/dev/null)"
+printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
+  && { echo "  PASS  lan profile 仍吐得出合法 JSON"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  lan profile 沒有 tailscale 就掛了：$out"; FAIL=$((FAIL+1)); }
+assert "lan profile 連得到"       "online" "$(q '.devices[0].reachability' "$out")"
+assert "lan profile 沒有錯誤"     "0"      "$(q '.devices[0].errors | length' "$out")"
+
+# tailscale profile 要說「工具沒裝」，不能說「沒連線」——後者會叫人去跑 tailscale up
+out="$("$PM" status --json -p work 2>/dev/null)"
+assert "tailscale profile 報 transport_unavailable" \
+  "transport_unavailable" "$(q '.devices[0].errors[0].code' "$out")"
+assert "不可誤報成 transport_down" "" \
+  "$(q '.devices[0].errors[] | select(.code == "transport_down") | .code' "$out")"
+
+# 一支缺工具不該讓整張表消失
+out="$("$PM" list --json 2>/dev/null)"
+assert "list 仍列出全部三支" "3" "$(q '.devices | length' "$out")"
+assert "其中 lan 那支照常可用" "online" \
+  "$(q '.devices[] | select(.profile == "lanphone") | .reachability' "$out")"
+
+# 真的要操作 tailscale 裝置時才擋，而且要講到 tailscale
+out="$("$PM" -p work 2>&1)"; rc=$?
+assert "mirror tailscale profile 會失敗" "1" "$rc"
+check "而且訊息要指向 tailscale" "tailscale" "$out"
+
+unset HANGAR_TAILSCALE
+
+echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

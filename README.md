@@ -45,6 +45,10 @@ brew install tailscale
 
 `tailscale` 也可以用 Mac App Store 版的 Tailscale.app，Hangar 會自動找到
 `/Applications/Tailscale.app/Contents/MacOS/Tailscale`。
+裝在其他地方的話，用 `HANGAR_TAILSCALE=/path/to/tailscale` 指定。
+
+`tailscale` 只有 `TRANSPORT=tailscale` 的手機需要。純用 `TRANSPORT=lan`
+（同區網直連）的話不必裝，改成需要 `nc`——macOS 內建，通常不用管。
 
 ### 2. 安裝 Hangar
 
@@ -143,15 +147,92 @@ hangar 會先 `tailscale ping -c 3` 判斷路徑，再決定參數：
 ### 其他指令
 
 ```bash
-hangar status           # Tailscale 路徑、adb 狀態、機型、Android 版本
+hangar status           # Tailscale 路徑、adb 狀態、機型、Android 版本、電量
 hangar status -p work
-hangar list             # 所有手機 + 即時狀態
+hangar list             # 所有手機 + 即時狀態 + 電量
 hangar use work         # 設定預設手機
 hangar reset            # 連線卡死時重建 adb 連線
 hangar forget work      # 刪掉該手機的設定
 hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
 ```
+
+### 電量
+
+`list` 和 `status` 都會顯示電量。低於 20%（而且不在充電）會標紅並加上 `!`：
+
+```
+     名稱             IP                連線         adb           電量       節點
+  ────────────────────────────────────────────────────────────────────────────────────
+     test             100.101.102.110   online       device        78%        zenfone
+  *  work             100.101.102.103   online       device        12% !      pixel
+```
+
+電量只在 adb 已經連著的手機上取得（`dumpsys battery`，一次很短的往返）。
+沒連線的顯示 `-` —— `list` 不會為了拿電量而硬去建立連線，那會讓它變得很慢。
+
+### 機器可讀的輸出（--json）
+
+`list` 和 `status` 都支援 `--json`，給程式讀用的：
+
+```bash
+hangar status --json
+hangar list --json              # 只出便宜的欄位（快）
+hangar list --json --probe      # 連線路徑、機型、電量一起取（慢）
+```
+
+```json
+{
+  "schema": 1,
+  "devices": [
+    {
+      "profile": "work",
+      "default": true,
+      "transport": "tailscale",
+      "host": "pixel-7",
+      "ip": "100.101.102.103",
+      "adb_serial": "100.101.102.103:5555",
+      "device_serial": "1A2B3C4D",
+      "reachability": "online",
+      "adb_state": "device",
+      "path": { "kind": "direct", "latency_ms": 12 },
+      "model": "Pixel 7",
+      "android": { "release": "14", "sdk": 34 },
+      "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5 },
+      "scrcpy_pids": [12345],
+      "errors": []
+    }
+  ]
+}
+```
+
+幾個重點：
+
+- **`errors` 帶 code，不只帶訊息。** 「手機重開機了」這種判斷不能只活在印給人看的
+  中文句子裡，不然程式沒辦法據以決策。目前的 code：
+
+  | code | 意思 |
+  |---|---|
+  | `transport_down` | 傳輸層本身沒通（例如 Tailscale 沒開） |
+  | `peer_not_found` | 連線方式裡找不到這台裝置 |
+  | `peer_offline` | 找得到但離線 |
+  | `adb_port_closed` | **連得到機器但 5555 不通 → 通常是手機重開過** |
+  | `adb_unreachable` | 上層就不通了，adb 自然連不上（不是重開機） |
+  | `unauthorized` | 這台電腦還沒被手機授權 |
+  | `adb_offline` | adb 卡在 offline |
+
+  `adb_port_closed` 只在「連得到機器但埠不通」時才出現。傳輸層整個沒通的時候
+  不會一起報它 —— 否則讀 code 的人會去叫使用者插 USB，方向完全錯了。
+
+- **慢欄位預設略過。** `path` 要跑一次 `tailscale ping`，`model` / `battery` 各要一次
+  adb 往返。十支手機全取會跑很久，所以 `list --json` 預設把它們留成 `null`，
+  要完整資料才加 `--probe`。`status --json` 只有一支，一律完整探測。
+
+- **`--json` 時 stdout 只有 JSON。** 所有給人看的訊息都轉到 stderr，
+  所以 `hangar list --json 2>/dev/null | jq .` 一定解析得過。
+
+- **`device_serial` 是穩定識別碼。** IP 會變、連線方式會換，硬體序號不會。
+  這是日後要認出「同一支手機」時唯一可靠的欄位。
 
 ---
 
@@ -167,12 +248,17 @@ hangar all --screen-on  # 同上，但不關手機螢幕
     └── test.conf
 ```
 
-每個 `.conf` 只有兩行：
+每個 `.conf` 長這樣：
 
 ```sh
 PHONE_HOST="pixel-7"        # Tailscale 節點名
 PHONE_IP="100.x.y.z"        # Tailscale IP
+TRANSPORT="tailscale"       # 連線方式（tailscale / lan）
+DEVICE_SERIAL="1A2B3C4D"    # 硬體序號，跨 IP / 跨連線方式都不變
 ```
+
+後兩行是可選的。舊版只有兩行的 profile 照樣能用，讀不到時
+`TRANSPORT` 當作 `tailscale`、`DEVICE_SERIAL` 當作空的，不需要做任何轉換。
 
 ### 典型流程
 
@@ -182,8 +268,8 @@ hangar setup --name work
 hangar setup --name test
 
 hangar list
-#   * work    100.101.102.103   online   device       pixel-7
-#     test    100.101.102.110   online   未連線        zenfone
+#   * work    100.101.102.103   online   device       78%   pixel-7
+#     test    100.101.102.110   online   未連線        -     zenfone
 
 hangar use work     # 設為預設
 hangar              # 直接投 work
@@ -496,30 +582,74 @@ adb kill-server && hangar
 專案原本叫 `pmirror`（phone mirror），名字把自己限縮成「投影工具」了。改名為
 **Hangar**（機庫＝一整隊裝置停放、維護、調度的地方）就是因為要往下面這個方向走。
 
-### 現在
+### 目標的樣子
 
-- 一支 bash script，跑在你自己的電腦上
-- **唯一**的連線方式是 Tailscale + `adb over TCP`
-- 唯一的功能是 scrcpy 投影
-- 「裝置」＝ `~/.config/hangar/profiles/` 底下的一個 `.conf` 檔
+- 管理**所有**測試手機，不管它有沒有開啟偵錯模式
+- 只要在同一個區網底下，就要在網頁上看得到
+- 網頁上可以**切換偵錯功能**：RD 需要開著才能 build app 進去，
+  QA 需要關著才能測加固／混淆過的正式版
+- 顯示電量，低電量時提醒充電
+- 不限 Android / iOS，目前以 Android 為主
 
-### 要往哪走
+### 關鍵結論：手機端 agent app 是中心，不是加分項
 
-| 面向 | 現在 | 目標 |
+沒開偵錯模式的手機，adb 完全碰不到。這時候只能靠網路層（ARP / mDNS）知道
+「有這麼一台裝置」，拿得到 IP、MAC、廠商，拿不到機型、拿不到電量，
+**也開不起偵錯** —— 開 `adb_enabled` 需要 `WRITE_SECURE_SETTINGS` 權限，
+而要取得這個權限得先有 adb，雞生蛋蛋生雞。
+
+破口是：這個權限可以用 adb 一次性授予給一個常駐的 app，**而且重開機後仍然有效**。
+
+```bash
+adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
+```
+
+每支測試機「入伍」時插一次 USB 裝上 agent，之後它就能常駐回報電量、
+在區網廣播自己、並**雙向**切換偵錯開關。四個需求一次解決：
+
+| | 沒有 agent | 有 agent |
 |---|---|---|
-| 介面 | 終端機指令 | **網頁 console**——一個地方看到所有裝置、直接操作 |
-| 連線 | 寫死 Tailscale | 可抽換：同區網直連、自架 WireGuard、reverse tunnel、中繼伺服器…… |
-| 定位 | 投影工具 | **裝置管理**：狀態、批次操作、投影只是其中一項能力 |
-| 裝置狀態 | 印給人看的表格 | 結構化、可被程式讀取 |
+| 沒開偵錯時看得到什麼 | 只有 IP / MAC / 廠商 | 完整裝置資訊 |
+| 電量 | 拿不到 | 常駐回報 |
+| 網頁切偵錯 | 只能關，開不回來 | 雙向 |
+| 重開機後 5555 消失 | 要人去插 USB | agent 自己重開 |
+
+### 已經確定的事
+
+| 項目 | 決定 |
+|---|---|
+| 手機端 agent | 要裝（一次性 adb 授權，不走 Device Owner） |
+| hub 部署形態 | 一台常駐機器，接在測試機的同一個區網 |
+| 加固 app 實際擋什麼 | 還不知道，要先實測 → [docs/hardening-probe.md](docs/hardening-probe.md) |
+
+### 里程碑
+
+| | 內容 | 狀態 |
+|---|---|---|
+| M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
+| M2 | hub 骨架：常駐服務 + 區網掃描 + 唯讀裝置牆網頁 | |
+| M3 | agent app：授權、電量回報、mDNS 廣播、重開機後自動重開 5555 | |
+| M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
+| M5 | 網頁投影串流；iOS 唯讀 | |
+
+### 兩個要記住的現實限制
+
+- **MAC randomization**：Android 10+ / iOS 14+ 對每個 SSID 使用隨機但穩定的 MAC。
+  同一個 SSID 下可以拿它當識別碼，但使用者「忘記網路再重連」就會換一個。
+  所以裝置識別不能只靠 MAC，要能跟 `DEVICE_SERIAL` 合併。
+- **iOS 做不到對等**：Developer Mode（iOS 16+）必須人在裝置上開啟並重開機，
+  無法遠端切換；電量與裝置資訊要靠 `libimobiledevice`，而且得先在 hub 上 USB 配對過。
+  iOS 這條線現實的目標是「看得到、知道電量」，不是「管得動」。
 
 ### 這對現在的程式碼意味著什麼
 
-在 web 版出現以前，`hangar` 這支 script 還是主要的東西，但新功能盡量守著兩件事：
+在 web 版出現以前，`hangar` 這支 script 還是主要的東西。M1 已經把地基打好：
 
-1. **不要把 Tailscale 的假設散出去。** 取 IP、判斷 direct/relay 這些邏輯集中在一處，
-   之後多一種連線方式時是「加一個 backend」，不是整份 script 重寫。
-2. **裝置狀態要能被程式讀，不只給人看。** 現在 `hangar list` / `status` 只輸出對齊好的
-   表格；之後 web 後端會需要同一份資料的結構化版本（例如 `--json`）。
+1. **Tailscale 的假設收在一層後面了。** 所有「怎麼連到這支手機」的知識都在
+   `transport_*` 介面後面，`cmd_*` 層不直接呼叫 `ts_*`。多一種連線方式是加一個
+   backend（目前除了 `tailscale` 還有一個很薄的 `lan`），不是整份 script 重寫。
+2. **裝置狀態已經可以被程式讀。** `--json` 是之後 hub 讀 hangar 的介面，
+   schema 有變動就把 `schema` 號碼往上加。
 
 ### 還沒決定
 
@@ -535,14 +665,31 @@ hangar/
 ├── hangar               # 主 script（bash，無外部相依）
 ├── README.md
 ├── install.sh           # symlink 到 /usr/local/bin
+├── docs/
+│   └── hardening-probe.md   # 加固 app 反調試偵測的實測 protocol（待執行）
 └── tests/
     ├── run.sh           # 跑全部測試
     ├── test_core.sh     # 核心流程與錯誤分支
     ├── test_multi.sh    # 多台手機
     ├── test_adb_race.sh # adb server 競態、欄位對齊
     ├── test_multihost.sh # 第二台電腦（--existing）
-    └── mockbin/         # 假的 adb / tailscale / scrcpy
+    ├── test_json.sh     # --json 輸出、錯誤 code、transport 抽象層、電量
+    └── mockbin/         # 假的 adb / tailscale / scrcpy / nc
 ```
+
+`hangar` 這支 script 內部分層（由下往上）：
+
+| 層 | 內容 |
+|---|---|
+| 輸出 | `info` / `ok` / `warn` / `err` / `kv` / 中文欄寬對齊 |
+| transport | `transport_*` —— 「怎麼連到這支手機」全部收在這後面，底下有 `ts_*` 和 `lan_*` 兩個 backend |
+| profile | `.conf` 的讀寫、預設值、舊格式遷移 |
+| adb | 連線重試、狀態判讀、裝置資訊、電量 |
+| probe | `probe_transport` / `probe_adb` —— 人類輸出與 `--json` 共用同一份取得邏輯 |
+| 指令 | `cmd_setup` / `cmd_mirror` / `cmd_status` / `cmd_list` / … |
+
+`cmd_*` 層不直接呼叫 `ts_*`，一律走 `transport_*`。所有跟連線方式有關的**措辭**
+也集中在 `transport_msg` 這一個查表函式裡，加 backend 時不用去各處翻字串。
 
 設定檔在 `~/.config/hangar/`（`XDG_CONFIG_HOME` 有設就跟著走）。
 
@@ -563,6 +710,7 @@ hangar/
 | `test_multi.sh` | `list` / `use` / `forget`、`-p` 指定與前綴比對、名稱打錯、多台沒設預設、一台離線不影響另一台、`reset` 只作用在指定那台、`all` 同時開多台與部分失敗、視窗標題、setup 覆蓋提醒 |
 | `test_adb_race.sh` | adb server 重啟競態的自動重試、本機 adb 問題與手機重開機的區分、setup 的 `start-server`、中文欄位對齊 |
 | `test_multihost.sh` | `setup --existing`（第二台電腦）、unauthorized 的說明、連不上時的提示方向、`--name` 別名 |
+| `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。

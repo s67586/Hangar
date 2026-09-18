@@ -53,13 +53,36 @@ case "$1" in
       tcpip) echo "restarting in TCP mode port: $2"; echo "tcpip $2" >> "$S/connect_log" ;;
       shell)
         case "$ser" in
-          *110:5555) m="Zenfone 10" ;;
-          *) m="Pixel 7 Pro" ;;
+          *110:5555) m="Zenfone 10"; sn="ZEN0000002" ;;
+          *) m="Pixel 7 Pro"; sn="PIX0000001" ;;
         esac
-        case "$3" in
-          ro.product.model) echo "$m" ;;
-          ro.build.version.release) echo "14" ;;
-          ro.build.version.sdk) echo "34" ;;
+        case "$2" in
+          dumpsys)
+            [ "$3" = "battery" ] || exit 0
+            # 電量可由 state 檔控制：battery_level / battery_status（預設 78%、放電中）
+            lvl="$(cat "$S/battery_level" 2>/dev/null || echo 78)"
+            stt="$(cat "$S/battery_status" 2>/dev/null || echo 3)"
+            cat <<BATT
+Current Battery Service state:
+  AC powered: false
+  USB powered: true
+  status: $stt
+  health: 2
+  present: true
+  level: $lvl
+  scale: 100
+  voltage: 4201
+  temperature: 275
+  technology: Li-ion
+BATT
+            ;;
+          getprop)
+            case "$3" in
+              ro.product.model) echo "$m" ;;
+              ro.build.version.release) echo "14" ;;
+              ro.build.version.sdk) echo "34" ;;
+              ro.serialno) echo "$sn" ;;
+            esac ;;
         esac ;;
     esac
     ;;

@@ -97,6 +97,12 @@ run_timeout() {
 }
 
 find_tailscale() {
+  # 裝在非標準路徑時可以用 HANGAR_TAILSCALE 指定。指定了就只認它——
+  # 測試也靠這個模擬「這台機器沒裝 tailscale」（下面那幾條是絕對路徑，繞得過 PATH）。
+  if [ -n "${HANGAR_TAILSCALE:-}" ]; then
+    [ -x "${HANGAR_TAILSCALE}" ] && { printf '%s' "$HANGAR_TAILSCALE"; return 0; }
+    return 1
+  fi
   if command -v tailscale >/dev/null 2>&1; then printf 'tailscale'; return 0; fi
   local p
   for p in /Applications/Tailscale.app/Contents/MacOS/Tailscale \
@@ -118,11 +124,9 @@ require_deps() {
   if ! command -v jq >/dev/null 2>&1; then
     err "找不到 jq"; hint "brew install jq"; missing=1
   fi
-  if ! TS="$(find_tailscale)"; then
-    err "找不到 tailscale CLI"
-    hint "brew install tailscale        # 或安裝 Tailscale.app（Mac App Store）"
-    missing=1
-  fi
+  # tailscale 不是每個 profile 都要用（TRANSPORT=lan 就不需要），所以這裡只是
+  # 「找得到就記下來」。真正需要它的時候由 transport_require_deps 把關。
+  TS="$(find_tailscale)" || TS=""
   [ "$missing" -eq 0 ] || exit 1
 }
 
@@ -262,22 +266,58 @@ lan_reachability() { # <節點名> <IP>
 
 transport_name() { printf '%s' "${TRANSPORT:-tailscale}"; }
 
-# 給人看的欄位標籤（cmd_status 用）
-transport_label() {
+# transport_msg <key> [參數…]
+#
+# 所有跟連線方式有關的措辭集中在這裡。加一個 backend 時只要在這裡多一個 case，
+# 不必去各個 cmd_* 裡翻字串——這正是「不要把 Tailscale 的假設散出去」的意思。
+transport_msg() {
+  local key="$1"; shift
   case "$(transport_name)" in
-    tailscale) printf 'Tailscale' ;;
-    lan)       printf '區網' ;;
-    *)         printf '傳輸層' ;;
+    tailscale)
+      case "$key" in
+        label)          printf 'Tailscale' ;;
+        down_hint)      printf '未連線 → tailscale up' ;;
+        notfound_label) printf '不在 tailnet 內' ;;
+        notfound_err)   printf 'tailnet 裡找不到節點（%s）' "${1:-}" ;;
+        notfound_hint)  printf '手機可能換了名稱或被移出 tailnet，重跑：hangar setup --name %s' "${1:-}" ;;
+        offline_note)   printf '（手機端 Tailscale 沒開？）' ;;
+        offline_err)    printf '手機不在 tailnet 上（節點顯示離線）' ;;
+        offline_hint)   printf '請在該手機上打開 Tailscale App 並確認已連線' ;;
+        path_unknown)   printf '無法判定連線路徑（tailscale ping 無回應），保守使用低頻寬參數' ;;
+        list_col)       printf 'tailnet' ;;
+        list_absent)    printf '不在 tailnet' ;;
+      esac ;;
+    lan)
+      case "$key" in
+        label)          printf '區網' ;;
+        down_hint)      printf '區網未就緒' ;;
+        notfound_label) printf '找不到這台裝置' ;;
+        notfound_err)   printf '區網上找不到這台裝置（%s）' "${1:-}" ;;
+        notfound_hint)  printf '手機可能換了 IP，重跑：hangar setup --name %s' "${1:-}" ;;
+        offline_note)   printf '（手機沒連上區網？）' ;;
+        offline_err)    printf '手機不在區網上（沒有回應）' ;;
+        offline_hint)   printf '請確認手機開機並連上同一個區網' ;;
+        path_unknown)   printf '無法判定連線路徑，保守使用低頻寬參數' ;;
+        list_col)       printf '區網' ;;
+        list_absent)    printf '找不到' ;;
+      esac ;;
+    *) printf '（未知的連線方式）' ;;
   esac
 }
+
+# 給人看的欄位標籤（cmd_status 用）
+transport_label() { transport_msg label; }
 
 # 準備這個 backend 需要的狀態。不做強制檢查 —— 傳輸層掛掉時上層仍然要能
 # 把「掛掉了」這件事顯示出來，而不是整個指令直接死掉。
 transport_prepare() {
   case "$(transport_name)" in
-    tailscale) ts_load ;;
+    # 缺 tailscale CLI 時不能進 ts_load——它會 exit，整張 list 就沒了。
+    # 這種情況留給 probe_transport 記成 transport_unavailable。
+    tailscale) transport_deps_check >/dev/null && ts_load ;;
     *)         : ;;
   esac
+  return 0
 }
 
 transport_require_up() {
@@ -294,6 +334,35 @@ transport_is_up() {
     lan)       lan_is_up ;;
     *)         return 1 ;;
   esac
+}
+
+# 這個 transport 需要的外部工具齊了沒。齊全回傳 0；否則把原因印到 stdout 後回傳 1。
+# 「缺工具」跟「連不上」是兩件事，不要混成同一個錯誤——前者叫使用者去裝東西，
+# 後者叫他去看手機。
+transport_deps_check() {
+  case "$(transport_name)" in
+    tailscale)
+      [ -n "$TS" ] && return 0
+      printf '找不到 tailscale CLI（TRANSPORT=tailscale）'
+      return 1 ;;
+    lan)
+      command -v nc >/dev/null 2>&1 && return 0
+      printf '找不到 nc（TRANSPORT=lan 需要它測 %s 埠通不通）' "$ADB_PORT"
+      return 1 ;;
+  esac
+  return 0
+}
+
+# 真的要操作這台裝置的指令用這個：缺工具就直接停，並給出裝法。
+transport_require_deps() {
+  local why
+  why="$(transport_deps_check)" && return 0
+  err "$why"
+  case "$(transport_name)" in
+    tailscale) hint "brew install tailscale        # 或安裝 Tailscale.app（Mac App Store）" ;;
+    lan)       hint "nc 一般是系統內建，真的缺少的話：brew install netcat" ;;
+  esac
+  exit 1
 }
 
 transport_state() {
@@ -333,30 +402,6 @@ transport_list_candidates() {
     tailscale) ts_list_peers ;;
     lan)       lan_list_candidates ;;
     *)         return 0 ;;
-  esac
-}
-
-# 傳輸層掛掉時該叫使用者做什麼
-transport_down_hint() {
-  case "$(transport_name)" in
-    tailscale) printf '未連線 → tailscale up' ;;
-    *)         printf '傳輸層未就緒' ;;
-  esac
-}
-
-# 在 tailnet / 區網上找不到這台裝置時的提示
-transport_notfound_hint() { # <profile>
-  case "$(transport_name)" in
-    tailscale) printf '手機可能換了名稱或被移出 tailnet，重跑：hangar setup --name %s' "$1" ;;
-    *)         printf '找不到這台裝置，重跑：hangar setup --name %s' "$1" ;;
-  esac
-}
-
-# 裝置離線時的提示
-transport_offline_hint() {
-  case "$(transport_name)" in
-    tailscale) printf '請在該手機上打開 Tailscale App 並確認已連線' ;;
-    *)         printf '請確認手機開機並連上同一個區網' ;;
   esac
 }
 
@@ -501,20 +546,28 @@ resolve_profile() {
   exit 1
 }
 
-load_profile() { # <name>
+# load_profile_soft <name> — 讀不到或缺 PHONE_IP 時 return 1，不會結束整個程式。
+# list 這種要一次列很多支的指令用這個：一支設定壞掉不該讓整張表都不見。
+load_profile_soft() {
   PHONE_HOST=""; PHONE_IP=""; TRANSPORT=""; DEVICE_SERIAL=""
   # shellcheck disable=SC1090
-  . "$(profile_path "$1")" 2>/dev/null || die "無法讀取 $(profile_path "$1")"
-  [ -n "${PHONE_IP:-}" ] || die "$(profile_path "$1") 缺少 PHONE_IP，請重跑 hangar setup"
+  . "$(profile_path "$1")" 2>/dev/null || return 1
   # TRANSPORT / DEVICE_SERIAL 是後來才加的欄位。舊 profile 沒有這兩行，
   # 補預設值即可，不需要 migration（跟 migrate_legacy 是不同層級的事）。
   TRANSPORT="${TRANSPORT:-tailscale}"
   DEVICE_SERIAL="${DEVICE_SERIAL:-}"
   PROFILE="$1"
   SERIAL="${PHONE_IP}:${ADB_PORT}"
+  [ -n "$PHONE_IP" ]
 }
 
-save_profile() { # 使用目前的 $PROFILE / $PHONE_HOST / $PHONE_IP / $TRANSPORT / $DEVICE_SERIAL
+load_profile() { # <name>
+  [ -f "$(profile_path "$1")" ] || die "無法讀取 $(profile_path "$1")"
+  load_profile_soft "$1" || die "$(profile_path "$1") 缺少 PHONE_IP，請重跑 hangar setup"
+}
+
+save_profile() { # [--quiet] — 使用目前的 $PROFILE / $PHONE_HOST / $PHONE_IP / $TRANSPORT / $DEVICE_SERIAL
+  local quiet=0; [ "${1:-}" = "--quiet" ] && quiet=1
   mkdir -p "$PROFILE_DIR"
   cat > "$(profile_path "$PROFILE")" <<EOF
 # hangar profile「${PROFILE}」— 由 \`hangar setup\` 產生於 $(date '+%Y-%m-%d %H:%M:%S')
@@ -526,7 +579,7 @@ TRANSPORT="${TRANSPORT:-tailscale}"
 DEVICE_SERIAL="${DEVICE_SERIAL:-}"
 EOF
   chmod 600 "$(profile_path "$PROFILE")"
-  ok "設定已寫入 $(profile_path "$PROFILE")"
+  [ "$quiet" -eq 1 ] || ok "設定已寫入 $(profile_path "$PROFILE")"
 }
 
 # ------------------------------------------------------------------ adb -----
@@ -588,12 +641,31 @@ adb_battery() { # <serial> — 結果放進 BATTERY_LEVEL / BATTERY_STATUS / BAT
   [ -n "$BATTERY_LEVEL" ]
 }
 
+# 低於這個百分比就標紅提醒充電
+BATTERY_LOW=20
+
 # 給人看的電量字串，例如「78%  放電中  27.5°C」
 battery_human() {
   [ -n "$BATTERY_LEVEL" ] || { printf '（取不到）'; return 0; }
   printf '%s%%  %s' "$BATTERY_LEVEL" "$(battery_status_zh "$BATTERY_STATUS")"
   [ -n "$BATTERY_TEMP" ] && printf '  %s°C' "$BATTERY_TEMP"
   return 0
+}
+
+battery_is_low() {
+  [ -n "$BATTERY_LEVEL" ] || return 1
+  [ "$BATTERY_LEVEL" -lt "$BATTERY_LOW" ] || return 1
+  # 正在充電就不用提醒了
+  [ "$BATTERY_STATUS" != "charging" ] && [ "$BATTERY_STATUS" != "full" ]
+}
+
+# 同上，但電量偏低時整串標紅
+battery_colored() {
+  if battery_is_low; then
+    printf '%s%s%s  ← 該充電了' "$C_RED" "$(battery_human)" "$C_0"
+  else
+    battery_human
+  fi
 }
 
 usb_serials() { # 所有非 host:port 形式且狀態為 device 的 serial
@@ -781,14 +853,14 @@ add_window_title() { # <extra args...>
 QUALITY=""
 decide_profile_quality() { # <force>
   local force="$1" path kind ms
-  path="$(ts_path "$PHONE_IP")"
+  path="$(transport_path "$PHONE_IP")"
   kind="${path%% *}"; ms="${path##* }"
   case "$kind" in
-    direct)  ok "[$PROFILE] Tailscale：direct（${ms}ms）"; QUALITY="hq" ;;
-    relay)   warn "[$PROFILE] Tailscale：經由 DERP relay（${ms}ms）——延遲較高，自動降到低頻寬參數"
+    direct)  ok "[$PROFILE] $(transport_label)：direct（${ms}ms）"; QUALITY="hq" ;;
+    relay)   warn "[$PROFILE] $(transport_label)：經由 DERP relay（${ms}ms）——延遲較高，自動降到低頻寬參數"
              hint "想改善的話：確認兩端 UDP 打洞未被防火牆擋住"
              QUALITY="lq" ;;
-    *)       warn "[$PROFILE] 無法判定連線路徑（tailscale ping 無回應），保守使用低頻寬參數"
+    *)       warn "[$PROFILE] $(transport_msg path_unknown)"
              QUALITY="lq" ;;
   esac
   if [ -n "$force" ]; then
@@ -797,23 +869,19 @@ decide_profile_quality() { # <force>
   fi
 }
 
-# 確認手機在 tailnet 上（失敗則 return 1）
+# 確認手機連得到（失敗則 return 1）
 check_peer_online() {
-  local peer online
-  peer="$(ts_peer "${PHONE_HOST:-$PHONE_IP}")"
-  [ -n "$peer" ] || peer="$(ts_peer "$PHONE_IP")"
-  if [ -z "$peer" ]; then
-    err "[$PROFILE] tailnet 裡找不到節點（${PHONE_HOST:-$PHONE_IP}）"
-    hint "手機可能換了名稱或被移出 tailnet，重跑：hangar setup --name $PROFILE"
-    return 1
-  fi
-  online="$(printf '%s' "$peer" | jq -r 'if .Online then "yes" else "no" end')"
-  if [ "$online" != "yes" ]; then
-    err "[$PROFILE] 手機不在 tailnet 上（節點顯示離線）"
-    hint "請在該手機上打開 Tailscale App 並確認已連線"
-    return 1
-  fi
-  return 0
+  case "$(transport_reachability "${PHONE_HOST:-}" "$PHONE_IP")" in
+    online) return 0 ;;
+    notfound)
+      err "[$PROFILE] $(transport_msg notfound_err "${PHONE_HOST:-$PHONE_IP}")"
+      hint "$(transport_msg notfound_hint "$PROFILE")"
+      return 1 ;;
+    *)
+      err "[$PROFILE] $(transport_msg offline_err)"
+      hint "$(transport_msg offline_hint)"
+      return 1 ;;
+  esac
 }
 
 # --------------------------------------------------------------- setup ------
@@ -873,6 +941,9 @@ cmd_setup() {
   done
 
   require_deps
+  # setup 目前只支援 tailscale（下面寫死 TRANSPORT="tailscale"），
+  # 所以這裡維持原本「沒有 tailscale 就不用談」的行為。
+  transport_require_deps
   migrate_legacy
 
   # 重開機後的復原路徑：profile 已經存在就沿用它記錄的節點，不必再選一次
@@ -1044,6 +1115,9 @@ cmd_setup() {
   done < <(list_profiles)
 
   SERIAL="${PHONE_IP}:${ADB_PORT}"
+  # setup 目前只走 Tailscale 這條路（節點選單、取 IP 都是 tailnet 的概念）。
+  # 之後多一種 setup 流程時，這裡跟著改成該 backend 的名字。
+  TRANSPORT="tailscale"
   save_profile
   info "這支手機的名稱是「${C_B}$PROFILE${C_0}」（之後用 hangar -p $PROFILE 指定）"
 
@@ -1087,6 +1161,14 @@ cmd_setup() {
     die "連上了但狀態不是 device（目前：${st:-unknown}）"
   fi
 
+  # 硬體序號要等到真的連上才拿得到。它跨 IP、跨連線方式都不會變，
+  # 是這支手機日後唯一可靠的識別碼，所以補寫回 profile。
+  DEVICE_SERIAL="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+  if [ -n "$DEVICE_SERIAL" ]; then
+    save_profile --quiet
+    ok "裝置序號：$DEVICE_SERIAL"
+  fi
+
   echo
   ok "setup 完成。之後執行 ${C_B}hangar -p $PROFILE${C_0} 就能投影（手機在 4G/5G 也可以）。"
   if [ -n "$existing" ]; then
@@ -1125,7 +1207,8 @@ cmd_mirror() {
   require_deps
   resolve_profile "$want"
   load_profile "$PROFILE"
-  ts_require_up
+  transport_require_deps
+  transport_require_up
 
   check_peer_online || exit 1
 
@@ -1161,7 +1244,9 @@ cmd_all() {
 
   require_deps
   migrate_legacy
-  ts_require_up
+  # 這裡還沒讀任何 profile，檢查的是預設 transport。它的工具沒裝時不要在這裡
+  # 就把整個 all 打死——可能每支手機都是 lan。改由各 profile 自己回報。
+  transport_deps_check >/dev/null && transport_require_up
 
   local total; total="$(count_profiles)"
   [ "$total" -gt 0 ] || { err "還沒有設定任何手機"; hint "hangar setup"; exit 1; }
@@ -1173,6 +1258,8 @@ cmd_all() {
     info "── $name ──"
     (
       load_profile "$name" || exit 1
+      transport_require_deps
+      transport_prepare
       check_peer_online || exit 1
       decide_profile_quality "$force"
       ensure_connected || exit 1
@@ -1200,11 +1287,178 @@ cmd_all() {
 
 # --------------------------------------------------------------- status -----
 
+# ---- 裝置探測 --------------------------------------------------------------
+#
+# 人類輸出（status / list）和 --json 共用同一份取得邏輯。呼叫前要先 load_profile。
+# 結果放進這些全域變數：
+#
+#   PROBE_REACH      online / offline / notfound / unknown
+#   PROBE_ADB        device / offline / unauthorized / ""（連不上）
+#   PROBE_PATH_KIND  direct / relay / unknown / ""（沒探測）
+#   PROBE_PATH_MS    latency 毫秒，"?" 代表 ping 有回應但沒解析到數字
+#   DEV_* / BATTERY_*        adb 接得上且 deep=1 時才有
+#   PROBE_ERRORS     一行一筆的「code|給人看的訊息」
+#
+# 「手機重開機了」這種判斷以 code 的形式留下來，不要只活在印給人看的字串裡——
+# 之後 hub 要讀的是 code，不是中文句子。
+
+PROBE_REACH=""; PROBE_ADB=""; PROBE_PATH_KIND=""; PROBE_PATH_MS=""; PROBE_ERRORS=""
+
+probe_add_error() { PROBE_ERRORS="${PROBE_ERRORS}${1}|${2}"$'\n'; }
+
+probe_reset() {
+  PROBE_REACH=""; PROBE_ADB=""; PROBE_PATH_KIND=""; PROBE_PATH_MS=""; PROBE_ERRORS=""
+  DEV_MODEL=""; DEV_RELEASE=""; DEV_SDK=""; DEV_SERIALNO=""
+  BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
+}
+
+# 探測分成 transport 與 adb 兩段，因為 status 要在這兩段中間印東西，
+# 順序不能亂。只想要結果不在意順序的，直接用 probe_device。
+#
+#   deep=1         連線路徑、機型、Android 版本、電量都取（每項都要一次往返，慢）
+#   try_connect=1  adb 沒連線時先試著連一次（status 會，list 不會）
+
+probe_device() { # <deep 0/1> <try_connect 0/1>
+  probe_transport "${1:-0}"
+  probe_adb "${1:-0}" "${2:-0}"
+}
+
+probe_transport() { # <deep 0/1>
+  local deep="${1:-0}"
+  probe_reset
+
+  local why
+  if ! why="$(transport_deps_check)"; then
+    # 工具沒裝 ≠ 沒連線。報成 transport_down 會叫使用者去 tailscale up，方向錯了。
+    PROBE_REACH="unknown"
+    probe_add_error "transport_unavailable" "$why"
+  elif ! transport_is_up; then
+    PROBE_REACH="unknown"
+    probe_add_error "transport_down" "$(transport_msg down_hint)"
+  else
+    PROBE_REACH="$(transport_reachability "${PHONE_HOST:-}" "$PHONE_IP")"
+    case "$PROBE_REACH" in
+      notfound) probe_add_error "peer_not_found" "$(transport_msg notfound_hint "$PROFILE")" ;;
+      offline)  probe_add_error "peer_offline"   "$(transport_msg offline_hint)" ;;
+    esac
+    if [ "$deep" -eq 1 ] && [ "$PROBE_REACH" = "online" ]; then
+      local path
+      path="$(transport_path "$PHONE_IP")"
+      PROBE_PATH_KIND="${path%% *}"
+      PROBE_PATH_MS="${path##* }"
+      [ "$PROBE_PATH_KIND" = "unknown" ] && PROBE_PATH_MS=""
+    fi
+  fi
+  return 0
+}
+
+probe_adb() { # <deep 0/1> <try_connect 0/1>
+  local deep="${1:-0}" try="${2:-0}"
+
+  PROBE_ADB="$(adb_state "$SERIAL")"
+  if [ -z "$PROBE_ADB" ] && [ "$try" -eq 1 ]; then
+    [ "$JSON_MODE" -eq 1 ] || kv "adb" "未連線，嘗試連線中…"
+    if adb_connect "$SERIAL"; then
+      wait_for_device "$SERIAL" 8 >/dev/null 2>&1
+      PROBE_ADB="$(adb_state "$SERIAL")"
+    fi
+  fi
+
+  case "$PROBE_ADB" in
+    device)       : ;;
+    unauthorized) probe_add_error "unauthorized" "請在手機上按「一律允許」" ;;
+    offline)      probe_add_error "adb_offline"  "試試 hangar reset -p $PROFILE" ;;
+    "")
+      # 「連得到這台機器，但 5555 不通」才是重開機的徵狀。傳輸層本身就不通的時候
+      # 別一起報 adb_port_closed —— 那會讓讀 code 的人去叫使用者插 USB，方向全錯。
+      if [ "$PROBE_REACH" = "online" ]; then
+        probe_add_error "adb_port_closed" \
+          "${ADB_PORT} 沒在聽 → 手機可能重開過，請重跑 hangar setup --name $PROFILE"
+      else
+        probe_add_error "adb_unreachable" \
+          "連不到這台裝置，adb 自然也連不上 —— 先處理上面那個問題"
+      fi ;;
+  esac
+
+  if [ "$deep" -eq 1 ] && [ "$PROBE_ADB" = "device" ]; then
+    adb_device_info "$SERIAL"
+    adb_battery "$SERIAL" || true
+  fi
+  return 0
+}
+
+scrcpy_pids_for() { pgrep -f "scrcpy .*${1}" 2>/dev/null | tr '\n' ' '; }
+
+# ---- JSON 輸出 -------------------------------------------------------------
+#
+# 這是之後 web 後端讀 hangar 的介面，schema 有變動就要把 schema 號碼往上加。
+
+JSON_SCHEMA=1
+
+# device_json <is_default 0/1> — 依目前的 probe 結果組出一個 device 物件
+device_json() {
+  local errs pids
+  errs="$(printf '%s' "$PROBE_ERRORS" | jq -R -s -c \
+    '[split("\n")[] | select(length > 0) | split("|")
+      | { code: .[0], message: (.[1:] | join("|")) }]')"
+  pids="$(scrcpy_pids_for "$SERIAL" | jq -R -s -c \
+    '[splits("[ \n]+") | select(length > 0) | tonumber]')"
+
+  jq -n \
+    --arg     profile   "$PROFILE" \
+    --argjson isdef     "$1" \
+    --arg     transport "$(transport_name)" \
+    --arg     host      "${PHONE_HOST:-}" \
+    --arg     ip        "${PHONE_IP:-}" \
+    --arg     adbserial "${SERIAL:-}" \
+    --arg     devserial "${DEVICE_SERIAL:-$DEV_SERIALNO}" \
+    --arg     reach     "$PROBE_REACH" \
+    --arg     adbstate  "$PROBE_ADB" \
+    --arg     pathkind  "$PROBE_PATH_KIND" \
+    --arg     pathms    "$PROBE_PATH_MS" \
+    --arg     model     "$DEV_MODEL" \
+    --arg     release   "$DEV_RELEASE" \
+    --arg     sdk       "$DEV_SDK" \
+    --arg     blevel    "$BATTERY_LEVEL" \
+    --arg     bstatus   "$BATTERY_STATUS" \
+    --arg     btemp     "$BATTERY_TEMP" \
+    --argjson errors    "$errs" \
+    --argjson pids      "$pids" '
+    def s: if . == "" then null else . end;
+    def n: if . == "" or . == "?" then null else tonumber end;
+    {
+      profile:       $profile,
+      default:       ($isdef == 1),
+      transport:     $transport,
+      host:          ($host | s),
+      ip:            ($ip | s),
+      adb_serial:    ($adbserial | s),
+      device_serial: ($devserial | s),
+      reachability:  ($reach | s),
+      adb_state:     (if $adbstate == "" then "disconnected" else $adbstate end),
+      path:          (if $pathkind == "" then null
+                      else { kind: $pathkind, latency_ms: ($pathms | n) } end),
+      model:         ($model | s),
+      android:       (if $release == "" and $sdk == "" then null
+                      else { release: ($release | s), sdk: ($sdk | n) } end),
+      battery:       (if $blevel == "" then null
+                      else { level:         ($blevel | n),
+                             status:        ($bstatus | s),
+                             temperature_c: ($btemp | n) } end),
+      scrcpy_pids:   $pids,
+      errors:        $errors
+    }'
+}
+
+# --------------------------------------------------------------- status -----
+
 cmd_status() {
   local want=""
+  JSON_MODE=0
   while [ $# -gt 0 ]; do
     case "$1" in
       -p|--phone) want="${2:-}"; [ -n "$want" ] || die "-p 後面要接手機名稱"; shift 2 ;;
+      --json)     JSON_MODE=1; shift ;;
       *) die "status 不認得參數：$1" ;;
     esac
   done
@@ -1212,69 +1466,56 @@ cmd_status() {
   require_deps
   resolve_profile "$want"
   load_profile "$PROFILE"
-  ts_load
+  transport_prepare
 
-  local state
-  state="$(printf '%s' "$TS_JSON" | jq -r '.BackendState // "Unknown"')"
+  if [ "$JSON_MODE" -eq 1 ]; then
+    probe_device 1 1
+    local def isdef=0
+    def="$(get_default_profile 2>/dev/null)"
+    [ "$PROFILE" = "$def" ] && isdef=1
+    jq -n --argjson schema "$JSON_SCHEMA" --argjson d "$(device_json "$isdef")" \
+      '{ schema: $schema, devices: [$d] }'
+    return 0
+  fi
 
   printf '%shangar%s v%s\n\n' "$C_B" "$C_0" "$VERSION"
   kv "手機"     "$PROFILE"
   kv "設定檔"   "$(profile_path "$PROFILE")"
   kv "節點名稱" "${PHONE_HOST:-（未命名）}"
-  kv "Tailscale IP" "$PHONE_IP"
+  kv "$(transport_label) IP" "$PHONE_IP"
   echo
 
-  kv "Tailscale" "$state"
-  if [ "$state" != "Running" ]; then
-    kv "" "${C_YEL}未連線 → tailscale up${C_0}"
+  kv "$(transport_label)" "$(transport_state)"
+  probe_transport 1
+
+  if [ "$PROBE_REACH" = "unknown" ]; then
+    kv "" "${C_YEL}$(transport_msg down_hint)${C_0}"
     echo
   else
-    local peer online
-    peer="$(ts_peer "${PHONE_HOST:-$PHONE_IP}")"
-    [ -n "$peer" ] || peer="$(ts_peer "$PHONE_IP")"
-    if [ -z "$peer" ]; then
-      kv "節點" "${C_RED}不在 tailnet 內${C_0}"
-      echo
-    else
-      online="$(printf '%s' "$peer" | jq -r 'if .Online then "online" else "offline" end')"
-      if [ "$online" = "online" ]; then
+    case "$PROBE_REACH" in
+      notfound)
+        kv "節點" "${C_RED}$(transport_msg notfound_label)${C_0}" ;;
+      online)
         kv "節點" "${C_GRN}online${C_0}"
-        local path kind ms
-        path="$(ts_path "$PHONE_IP")"
-        kind="${path%% *}"; ms="${path##* }"
-        case "$kind" in
-          direct) kv "連線路徑" "${C_GRN}direct${C_0}  latency ${ms}ms  → 高畫質" ;;
-          relay)  kv "連線路徑" "${C_YEL}DERP relay${C_0}  latency ${ms}ms  → 低頻寬" ;;
+        case "$PROBE_PATH_KIND" in
+          direct) kv "連線路徑" "${C_GRN}direct${C_0}  latency ${PROBE_PATH_MS}ms  → 高畫質" ;;
+          relay)  kv "連線路徑" "${C_YEL}DERP relay${C_0}  latency ${PROBE_PATH_MS}ms  → 低頻寬" ;;
           *)      kv "連線路徑" "${C_YEL}unknown（ping 無回應）${C_0}" ;;
-        esac
-      else
-        kv "節點" "${C_RED}offline${C_0}（手機端 Tailscale 沒開？）"
-      fi
-      echo
-    fi
+        esac ;;
+      *)
+        kv "節點" "${C_RED}offline${C_0}$(transport_msg offline_note)" ;;
+    esac
+    echo
   fi
 
-  local st
-  st="$(adb_state "$SERIAL")"
-  if [ -z "$st" ]; then
-    kv "adb" "未連線，嘗試連線中…"
-    if adb_connect "$SERIAL"; then
-      wait_for_device "$SERIAL" 8 >/dev/null 2>&1
-      st="$(adb_state "$SERIAL")"
-    else
-      st=""
-    fi
-  fi
+  probe_adb 1 1
 
-  case "$st" in
+  case "$PROBE_ADB" in
     device)
       kv "adb" "${C_GRN}device${C_0}  ($SERIAL)"
-      local model rel sdk
-      model="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
-      rel="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.build.version.release 2>/dev/null | tr -d '\r\n')"
-      sdk="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r\n')"
-      kv "機型" "${model:-?}"
-      kv "Android" "${rel:-?}${sdk:+ (API $sdk)}"
+      kv "機型" "${DEV_MODEL:-?}"
+      kv "Android" "${DEV_RELEASE:-?}${DEV_SDK:+ (API $DEV_SDK)}"
+      kv "電量" "$(battery_colored)"
       ;;
     unauthorized)
       kv "adb" "${C_RED}unauthorized${C_0}  ($SERIAL)"
@@ -1289,12 +1530,12 @@ cmd_status() {
       kv "" "${ADB_PORT} 沒在聽 → 手機可能重開過，請重跑 hangar setup --name $PROFILE"
       ;;
     *)
-      kv "adb" "$st  ($SERIAL)"
+      kv "adb" "$PROBE_ADB  ($SERIAL)"
       ;;
   esac
 
   local pids
-  pids="$(pgrep -f "scrcpy .*${SERIAL}" 2>/dev/null | tr '\n' ' ')"
+  pids="$(scrcpy_pids_for "$SERIAL")"
   echo
   kv "scrcpy" "${pids:-（未執行）}"
 
@@ -1309,44 +1550,76 @@ cmd_status() {
 # ----------------------------------------------------------- list / use -----
 
 cmd_list() {
+  local deep=0
+  JSON_MODE=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json)  JSON_MODE=1; shift ;;
+      --probe) deep=1; shift ;;
+      *) die "list 不認得參數：$1" ;;
+    esac
+  done
+
+  # --probe 只影響 --json 的欄位多寡；人類版的表格欄位是固定的
+  [ "$deep" -eq 1 ] && [ "$JSON_MODE" -eq 0 ] && \
+    warn "--probe 只對 --json 有作用，這裡忽略"
+
   require_deps
   migrate_legacy
   local total; total="$(count_profiles)"
   if [ "$total" -eq 0 ]; then
+    if [ "$JSON_MODE" -eq 1 ]; then
+      jq -n --argjson schema "$JSON_SCHEMA" '{ schema: $schema, devices: [] }'
+      return 0
+    fi
     warn "還沒有設定任何手機"
     hint "hangar setup"
     return 0
   fi
 
-  ts_load
   local def; def="$(get_default_profile 2>/dev/null)"
 
-  printf '\n  %s %s %s %s %s %s\n' \
-    "$(pad "" 2)" "$(pad "名稱" 16)" "$(pad "Tailscale IP" 17)" \
-    "$(pad "tailnet" 12)" "$(pad "adb" 13)" "節點"
-  printf '  %s\n' "$(printf '─%.0s' $(seq 1 72))"
+  if [ "$JSON_MODE" -eq 1 ]; then
+    local objs="" n isdef
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      load_profile_soft "$n" || { warn "略過壞掉的 profile：$n"; continue; }
+      transport_prepare
+      # list 不主動建立 adb 連線（try_connect=0）；慢欄位要 --probe 才取
+      probe_device "$deep" 0
+      isdef=0; [ "$n" = "$def" ] && isdef=1
+      objs="${objs}$(device_json "$isdef")"$'\n'
+    done < <(list_profiles)
+    printf '%s' "$objs" | jq -s --argjson schema "$JSON_SCHEMA" \
+      '{ schema: $schema, devices: . }'
+    return 0
+  fi
+
+  # 表頭是中性的：每一列的 transport 可能不同（有的走 tailscale、有的走區網），
+  # 在這裡寫死「Tailscale IP」對非 tailscale 的那幾列就是錯的。
+  # 逐列的值仍然用各 backend 自己的措辭（例如「不在 tailnet」）。
+  printf '\n  %s %s %s %s %s %s %s\n' \
+    "$(pad "" 2)" "$(pad "名稱" 16)" "$(pad "IP" 17)" \
+    "$(pad "連線" 12)" "$(pad "adb" 13)" "$(pad "電量" 10)" "節點"
+  printf '  %s\n' "$(printf '─%.0s' $(seq 1 84))"
 
   local n
   while IFS= read -r n; do
     [ -n "$n" ] || continue
-    local PHONE_HOST="" PHONE_IP=""
-    # shellcheck disable=SC1090
-    . "$(profile_path "$n")" 2>/dev/null
+    load_profile_soft "$n" || continue
+    transport_prepare
     local mark=" "; [ "$n" = "$def" ] && mark="*"
 
-    local peer net_txt net_col
-    peer="$(ts_peer "${PHONE_HOST:-$PHONE_IP}")"
-    [ -n "$peer" ] || peer="$(ts_peer "$PHONE_IP")"
-    if [ -z "$peer" ]; then
-      net_txt="不在 tailnet"; net_col="$C_RED"
-    elif [ "$(printf '%s' "$peer" | jq -r '.Online')" = "true" ]; then
-      net_txt="online";       net_col="$C_GRN"
-    else
-      net_txt="offline";      net_col="$C_YEL"
-    fi
+    local net_txt net_col
+    case "$(transport_reachability "${PHONE_HOST:-}" "$PHONE_IP")" in
+      online)   net_txt="online";                       net_col="$C_GRN" ;;
+      offline)  net_txt="offline";                      net_col="$C_YEL" ;;
+      notfound) net_txt="$(transport_msg list_absent)"; net_col="$C_RED" ;;
+      *)        net_txt="unknown";                      net_col="$C_DIM" ;;
+    esac
 
     local st adb_txt adb_col
-    st="$(adb_state "${PHONE_IP}:${ADB_PORT}")"
+    st="$(adb_state "$SERIAL")"
     case "$st" in
       device)       adb_txt="device";       adb_col="$C_GRN" ;;
       offline)      adb_txt="offline";      adb_col="$C_YEL" ;;
@@ -1355,15 +1628,27 @@ cmd_list() {
       *)            adb_txt="$st";          adb_col="" ;;
     esac
 
+    # 電量只在 adb 已經連著時取 —— 這時 dumpsys 是一次很短的往返。
+    # 沒連線的手機不為了電量硬去連（那會讓 list 變得很慢）。
+    # 用 ASCII 的 "-"：em dash 的東亞寬度是 ambiguous，dwidth 算 2 但終端機常渲染成 1，欄位會歪
+    local bat_txt="-" bat_col="$C_DIM"
+    BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
+    if [ "$st" = "device" ] && adb_battery "$SERIAL"; then
+      bat_txt="${BATTERY_LEVEL}%"
+      if battery_is_low; then bat_col="$C_RED"; bat_txt="${bat_txt} !"
+      else                    bat_col=""; fi
+    fi
+
     # 顏色碼放在補齊過的內容外面，才不會被算進欄寬
-    printf '  %s %s %s %s%s%s %s%s%s %s\n' \
+    printf '  %s %s %s %s%s%s %s%s%s %s%s%s %s\n' \
       "$(pad "$mark" 2)" "$(pad "$n" 16)" "$(pad "$PHONE_IP" 17)" \
       "$net_col" "$(pad "$net_txt" 12)" "$C_0" \
       "$adb_col" "$(pad "$adb_txt" 13)" "$C_0" \
+      "$bat_col" "$(pad "$bat_txt" 10)" "$C_0" \
       "${PHONE_HOST:-}"
   done < <(list_profiles)
 
-  printf '\n  %s* = 預設（hangar use <名稱> 可更換）%s\n\n' "$C_DIM" "$C_0"
+  printf '\n  %s* = 預設（hangar use <名稱> 可更換）　!= 電量偏低%s\n\n' "$C_DIM" "$C_0"
 }
 
 cmd_use() {
@@ -1452,10 +1737,12 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
                                    初始化一支手機（需同區網或插 USB）
   hangar setup --existing [節點名] [--name 別名]
                                    手機已由別台電腦設定好，只在這台建立設定
-  hangar list                     列出已設定的手機與即時狀態
+  hangar list                     列出已設定的手機與即時狀態（含電量）
+  hangar list --json [--probe]    同上，輸出 JSON（--probe 連路徑/機型/電量一起取）
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
+  hangar status --json            同上，輸出 JSON
   hangar reset  [-p 手機]         連線卡死時重建 adb 連線
   hangar help
 
@@ -1505,7 +1792,7 @@ main() {
     setup)           shift; cmd_setup "$@" ;;
     status|st)       shift; cmd_status "$@" ;;
     reset)           shift; cmd_reset "$@" ;;
-    list|ls)         shift; cmd_list ;;
+    list|ls)         shift; cmd_list "$@" ;;
     use)             shift; cmd_use "${1:-}" ;;
     forget|rm)       shift; cmd_forget "${1:-}" ;;
     all)             shift; cmd_all "$@" ;;

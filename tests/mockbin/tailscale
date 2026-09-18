@@ -16,6 +16,8 @@ fi
 if [ "$1" = "ping" ]; then
   m="$(cat "$S/ts_ping_mode" 2>/dev/null || echo direct)"
   tgt="${!#}"
+  # 記錄下來，讓測試能驗證「list 沒帶 --probe 時不該去 ping」
+  echo "ping $tgt" >> "$S/ts_log"
   case "$m" in
     direct) echo "pong from x ($tgt) via 1.2.3.4:41641 in 12ms" ;;
     derp)   echo "pong from x ($tgt) via DERP(tok) in 87ms" ;;

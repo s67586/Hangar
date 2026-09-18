@@ -11,7 +11,7 @@ PM="${1:-$DIR/../hangar}"
 PM="$(cd "$(dirname "$PM")" && pwd)/$(basename "$PM")"
 
 total_pass=0; total_fail=0; failed_suites=""
-for suite in test_core.sh test_multi.sh test_adb_race.sh test_multihost.sh; do
+for suite in test_core.sh test_multi.sh test_adb_race.sh test_multihost.sh test_json.sh; do
   echo
   echo "############ $suite ############"
   out="$(bash "$DIR/$suite" "$PM" 2>&1)"
