@@ -1740,13 +1740,18 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
   hangar setup --existing [節點名] [--name 別名]
                                    手機已由別台電腦設定好，只在這台建立設定
   hangar list                     列出已設定的手機與即時狀態（含電量）
-  hangar list --json [--probe]    同上，輸出 JSON（--probe 連路徑/機型/電量一起取）
+  hangar list --json [--probe]    同上，輸出 JSON（--probe 連路徑/機型/電量一起取，比較慢）
+                                  --probe 只對 --json 有作用，人類版表格欄位是固定的
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
   hangar status --json            同上，輸出 JSON
   hangar reset  [-p 手機]         連線卡死時重建 adb 連線
-  hangar help
+  hangar help                     這份說明（-h / --help 也可以）
+  hangar --version                印出版本（-V 也可以）
+
+  指令別名：status=st　list=ls　forget=rm
+  -p 的名稱支援唯一前綴（-p wo 等同 -p work）。
 
 多台手機：
   每支手機一份 profile，放在 $PROFILE_DIR/<名稱>.conf。
@@ -1770,7 +1775,7 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
   ACL 記得把新電腦也加進 src。手機重開機後，要由接得到 USB／同區網的
   那台電腦重跑一次完整的 hangar setup，其他電腦就會自動恢復。
 
-選項：
+選項（投影用，hangar / hangar all 共用）：
   --hq          強制高畫質（1280 / 8M / 60fps）
   --lq          強制低頻寬（1024 / 3M / 30fps / h265）
   --screen-on   不要關掉手機自己的螢幕（預設會關）
@@ -1780,6 +1785,9 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
 預設會帶 --turn-screen-off：投影時手機自己的螢幕是黑的（省電、也不會被旁邊
 的人看到），畫面只出現在電腦上。手機並沒有鎖住，仍然可以從電腦端操作。
 scrcpy 關掉後螢幕會維持關著，按一下手機電源鍵就回來。
+
+結束投影：scrcpy 視窗關掉就好（前景執行時 Ctrl-C 也可以）。
+      hangar all 開的是背景視窗，要一次收掉：pkill -f 'scrcpy .*:${ADB_PORT}'
 
 限制：手機重開機後 adb 的 ${ADB_PORT} 埠會消失（非 root 無法持久化），
       必須把那支手機接回 USB 或回到同一區網重跑一次 \`hangar setup\`。

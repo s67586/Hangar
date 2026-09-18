@@ -49,6 +49,7 @@ brew install tailscale
 
 `tailscale` 只有 `TRANSPORT=tailscale` 的手機需要。純用 `TRANSPORT=lan`
 （同區網直連）的話不必裝，改成需要 `nc`——macOS 內建，通常不用管。
+用法見「[同區網直連](#同區網直連不經-tailscale)」。
 
 ### 2. 安裝 Hangar
 
@@ -83,6 +84,21 @@ PREFIX=~/.local ./hangar_install.sh
 ## 使用
 
 ### 初始化（每支手機做一次，需同區網或插 USB）
+
+#### 手機上要先開好的東西
+
+`setup` 只能對「已經下得了 adb 指令」的手機動作，所以下面這幾步要先在**手機上**
+做完（每支手機一次）：
+
+1. **開發人員選項**：設定 → 關於手機 → 連點「版本號碼」7 次
+2. **USB 偵錯**：設定 → 系統 → 開發人員選項 → USB 偵錯（打開）
+3. **無線偵錯**：同一頁往下打開 —— 只有走配對碼流程（手邊沒有 USB 線）時才需要
+4. **Tailscale App**：登入同一個 tailnet 並保持連線，`setup` 才找得到這個節點
+
+插 USB 的話，第一次接上這台電腦時手機會跳「允許 USB 偵錯」，勾**「一律允許透過
+這台電腦」**再按允許。沒按這個，`setup` 會停在 `unauthorized`。
+
+#### 跑 setup
 
 ```bash
 hangar setup
@@ -155,6 +171,36 @@ hangar reset            # 連線卡死時重建 adb 連線
 hangar forget work      # 刪掉該手機的設定
 hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
+```
+
+```bash
+hangar --version        # 或 -V
+hangar help             # 或 -h / --help
+```
+
+指令別名：`status` = `st`、`list` = `ls`、`forget` = `rm`。
+
+吃 `-p` 的只有投影、`status`、`reset` 這三個；`list` / `all` 本來就是看全部，
+`use` / `forget` 則是把手機名稱當第一個參數（`hangar use work`）。
+名稱支援唯一前綴：`-p wo` 等同 `-p work`。
+
+### 結束投影
+
+scrcpy 視窗關掉就結束了（`hangar` 是前景執行，終端機按 `Ctrl-C` 也可以）。
+`hangar all` 開的視窗是背景執行的，要一次收掉：
+
+```bash
+pkill -f 'scrcpy .*:5555'
+```
+
+投影中的操作 —— 複製貼上、傳檔案、全螢幕、模擬實體按鍵 —— 都是 scrcpy 自己的
+功能，Hangar 沒有另外包裝，快捷鍵見 scrcpy 的 `doc/shortcuts.md`
+（[Genymobile/scrcpy](https://github.com/Genymobile/scrcpy)）。
+需要額外參數就用 `--` 直接傳過去：
+
+```bash
+hangar -p work -- --window-x=100 --window-y=60   # 指定視窗位置
+hangar -p work -- --record=demo.mp4              # 錄影
 ```
 
 ### 電量
@@ -233,6 +279,21 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 - **`device_serial` 是穩定識別碼。** IP 會變、連線方式會換，硬體序號不會。
   這是日後要認出「同一支手機」時唯一可靠的欄位。
+
+- **退出碼不代表手機的狀態。** `list --json` / `status --json` 只要指令本身跑完
+  就回 `0`，即使手機離線、adb 連不上也一樣 —— 那些是 `errors` 裡的內容，
+  不是「指令失敗」。要判斷一支手機現在能不能用，請讀 JSON：
+
+  ```bash
+  hangar status --json -p work 2>/dev/null \
+    | jq -e '.devices[0].adb_state == "device"' >/dev/null && echo 可用
+  ```
+
+  會回非 0 的是「這件事做不到」：參數寫錯、profile 不存在、缺相依工具，
+  以及投影類指令（`hangar`、`hangar all`）真的沒開起來（`all` 只要有一支失敗就非 0）。
+
+- **`--probe` 只對 `--json` 有作用。** 人類版 `list` 的欄位是固定的，
+  加了會警告並忽略。
 
 ---
 
@@ -361,6 +422,49 @@ scp ~/.config/hangar/profiles/pixel-4.conf 另一台:~/.config/hangar/profiles/
 | 手機重開機後怎麼辦 | 只要**任一台**接得到 USB／同區網的電腦重跑 `hangar setup`，其他電腦就自動恢復（授權還在，不用再按一次） |
 | 第二台電腦能自己救嗎 | 不行。`adb tcpip` 需要一條既有的 USB 或同區網連線，遠端做不到 |
 | profile 名稱要一致嗎 | 不用。每台電腦各自取名，`--name` 想叫什麼都行 |
+
+---
+
+## 同區網直連（不經 Tailscale）
+
+手機跟電腦本來就在同一個區網、不需要跨網路時，可以不走 Tailscale ——
+profile 裡把 `TRANSPORT` 寫成 `lan` 就好。這種 profile 不需要 `tailscale` CLI，
+改用 `nc` 測 5555 埠通不通（macOS 內建）。
+
+**`hangar setup` 目前只會產生 `tailscale` 的 profile**（區網掃描還沒實作），
+所以 lan 的要自己寫一份：
+
+```bash
+# 1. 手機插 USB（或已經在同一區網、adb 連得到），把 adbd 切到 TCP 模式
+adb tcpip 5555
+
+# 2. 查手機的區網 IP：設定 → 關於手機 → 狀態資訊 → IP 位址
+
+# 3. 寫 profile
+mkdir -p ~/.config/hangar/profiles
+cat > ~/.config/hangar/profiles/deskphone.conf <<'EOF'
+PHONE_HOST=""
+PHONE_IP="192.168.1.50"
+TRANSPORT="lan"
+EOF
+chmod 600 ~/.config/hangar/profiles/deskphone.conf
+```
+
+之後 `hangar -p deskphone`、`status`、`list`、`reset`、`all` 全部照常用，
+訊息裡的措辭會自動換成「區網」而不是 tailnet。
+
+| | `tailscale` | `lan` |
+|---|---|---|
+| 需要的工具 | `tailscale` | `nc`（macOS 內建） |
+| 連線路徑 | `tailscale ping` 判斷 direct / relay | 一律當 direct，所以預設走高畫質 |
+| 節點名 | 有，`PHONE_HOST` 用得到 | 沒有，`PHONE_HOST` 留空即可 |
+| 位址會不會變 | Tailscale IP 基本上不變 | DHCP 換位址就要改 `PHONE_IP`，建議在路由器上綁固定 IP |
+| 手機重開機後 | 一樣要重跑 `setup`（5555 消失） | 一樣要重下一次 `adb tcpip 5555` |
+
+> **區網直連沒有 ACL 這層保護。** `adb tcpip 5555` 在區網上是全開的，
+> 同一個 Wi-Fi 下的任何人都連得到你手機的 adb，而 adb 等於完整的裝置控制權。
+> 只在自己信得過的網路用；公司、咖啡廳、公共 Wi-Fi 請一律走 Tailscale 並設
+> [ACL](#tailscale-acl強烈建議)。
 
 ---
 
