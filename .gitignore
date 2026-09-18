@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# 打包產物
+*.tar.gz
+
+# 測試暫存（tests/run.sh 預設寫到 $TMPDIR，這裡是保險）
+hangar-test/

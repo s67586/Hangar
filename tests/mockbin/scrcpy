@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+S="$MOCK_STATE"
+[ "$1" = "--version" ] && { echo "scrcpy 3.1"; exit 0; }
+echo "$*" >> "$S/scrcpy_argv"
+sleep "${MOCK_SCRCPY_SLEEP:-0}"

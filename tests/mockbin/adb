@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+S="$MOCK_STATE"
+DEV="$S/adb_devices"
+
+# 模擬 adb server 掛掉：daemon_down 檔內的數字代表「接下來幾次呼叫會噴 daemon 錯誤」
+daemon_check() {
+  local n; n="$(cat "$S/daemon_down" 2>/dev/null || echo 0)"
+  [ "${n:-0}" -gt 0 ] || return 0
+  echo $(( n - 1 )) > "$S/daemon_down"
+  echo "* daemon still not running"
+  echo "error: cannot connect to daemon at tcp:5037: Connection refused"
+  exit 1
+}
+
+case "$1" in
+  start-server)
+    echo "start-server" >> "$S/connect_log"
+    # daemon_permanent 存在時，start-server 也救不回來（模擬本機 adb 環境壞掉）
+    [ -f "$S/daemon_permanent" ] || echo 0 > "$S/daemon_down"
+    exit 0
+    ;;
+esac
+
+case "$1" in
+  devices)
+    echo "List of devices attached"
+    cat "$DEV" 2>/dev/null
+    ;;
+  connect)
+    echo "connect $2" >> "$S/connect_log"
+    daemon_check
+    case "$(cat "$S/adb_connect_result" 2>/dev/null)" in
+      fail)   echo "failed to connect to '$2': Connection refused"; exit 1 ;;
+      silent) exit 1 ;;   # 模擬被 timeout 砍掉：完全沒有輸出
+      unauthorized)
+        grep -qE "^$2[[:space:]]" "$DEV" 2>/dev/null || printf '%s\tunauthorized\n' "$2" >> "$DEV"
+        echo "connected to $2"; exit 0 ;;
+    esac
+    grep -qE "^$2[[:space:]]" "$DEV" 2>/dev/null || printf '%s\tdevice\n' "$2" >> "$DEV"
+    # 既有的 offline/unauthorized 項目轉成 device
+    awk -v s="$2" 'BEGIN{OFS="\t"} $1==s{$2="device"} {print $1,$2}' "$DEV" > "$DEV.tmp" 2>/dev/null && mv "$DEV.tmp" "$DEV"
+    echo "connected to $2"
+    ;;
+  disconnect)
+    echo "disconnect $2" >> "$S/connect_log"
+    grep -vE "^$2[[:space:]]" "$DEV" > "$DEV.tmp" 2>/dev/null; mv "$DEV.tmp" "$DEV" 2>/dev/null
+    echo "disconnected $2"
+    ;;
+  pair) echo "Successfully paired to $2 [guid=adb-mock]" ;;
+  -s)
+    ser="$2"; shift 2
+    case "$1" in
+      tcpip) echo "restarting in TCP mode port: $2"; echo "tcpip $2" >> "$S/connect_log" ;;
+      shell)
+        case "$ser" in
+          *110:5555) m="Zenfone 10" ;;
+          *) m="Pixel 7 Pro" ;;
+        esac
+        case "$3" in
+          ro.product.model) echo "$m" ;;
+          ro.build.version.release) echo "14" ;;
+          ro.build.version.sdk) echo "34" ;;
+        esac ;;
+    esac
+    ;;
+esac

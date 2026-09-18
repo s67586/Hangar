@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+S="$MOCK_STATE"
+if [ "$1" = "status" ]; then
+  be="$(cat "$S/ts_backend" 2>/dev/null || echo Running)"
+  on="$(cat "$S/ts_online" 2>/dev/null || echo true)"
+  on2="$(cat "$S/ts_online2" 2>/dev/null || echo true)"
+  cat <<JSON
+{"BackendState":"$be",
+ "Peer":{"nodekey:aaa":{"HostName":"pixel","DNSName":"pixel.tail1234.ts.net.","TailscaleIPs":["100.101.102.103"],"Online":$on,"OS":"android"},
+         "nodekey:ccc":{"HostName":"zenfone","DNSName":"zenfone.tail1234.ts.net.","TailscaleIPs":["100.101.102.110"],"Online":$on2,"OS":"android"},
+         $( [ -f "$S/cjk_peer" ] && printf '%s' '"nodekey:ddd":{"HostName":"Alan的MacBook Pro","DNSName":"alan-mbp.tail1234.ts.net.","TailscaleIPs":["100.64.0.20"],"Online":true,"OS":"macOS"},' )
+         "nodekey:bbb":{"HostName":"nas","DNSName":"nas.tail1234.ts.net.","TailscaleIPs":["100.64.0.9"],"Online":true,"OS":"linux"}}}
+JSON
+  exit 0
+fi
+if [ "$1" = "ping" ]; then
+  m="$(cat "$S/ts_ping_mode" 2>/dev/null || echo direct)"
+  tgt="${!#}"
+  case "$m" in
+    direct) echo "pong from x ($tgt) via 1.2.3.4:41641 in 12ms" ;;
+    derp)   echo "pong from x ($tgt) via DERP(tok) in 87ms" ;;
+    none)   echo "no matching peer"; exit 1 ;;
+  esac
+  exit 0
+fi

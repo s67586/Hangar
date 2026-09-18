@@ -1,0 +1,1519 @@
+#!/usr/bin/env bash
+#
+# hangar — 透過 Tailscale 遠端投影 Android 手機畫面（adb over TCP + scrcpy）
+#
+#   hangar [-p 手機] [--hq|--lq] [--screen-on] [-- <scrcpy 參數…>]  投影（預設指令）
+#   hangar all [--hq|--lq] [--screen-on]                同時投影所有已設定的手機
+#   hangar setup [tailscale節點名] [--name 別名]        初始化（需同區網或 USB）
+#   hangar list                                        列出已設定的手機
+#   hangar use <手機>                                  設定預設手機
+#   hangar forget <手機>                               刪除該手機的設定
+#   hangar status [-p 手機]                            顯示連線 / 裝置狀態
+#   hangar reset  [-p 手機]                            重建 adb 連線
+#   hangar help
+#
+set -uo pipefail
+
+VERSION="1.1.0"
+ADB_PORT=5555
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hangar"
+PROFILE_DIR="$CONFIG_DIR/profiles"
+DEFAULT_FILE="$CONFIG_DIR/default"
+LEGACY_FILE="$CONFIG_DIR/config"
+# 專案舊名 pmirror 時期的設定目錄
+LEGACY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/pmirror"
+
+PROFILE=""
+PHONE_HOST=""
+PHONE_IP=""
+SERIAL=""
+TS=""
+TS_JSON=""
+
+# profile 的可選欄位（舊 profile 沒有這兩行，load_profile 會補預設值）
+TRANSPORT=""
+DEVICE_SERIAL=""
+
+# --json 時 stdout 只能有 JSON，給人看的訊息一律改走 stderr
+JSON_MODE=0
+
+# ---------------------------------------------------------------- output ----
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
+  C_BLU=$'\033[34m'; C_DIM=$'\033[2m';  C_B=$'\033[1m'; C_0=$'\033[0m'
+else
+  C_RED=""; C_GRN=""; C_YEL=""; C_BLU=""; C_DIM=""; C_B=""; C_0=""
+fi
+
+# printf 的 %-Ns 是按 byte 補空白，中文一個字 3 bytes 但只佔 2 個顯示欄，
+# 直接用會整排歪掉。純 ASCII + CJK 的字串，顯示寬度剛好等於 (bytes + chars) / 2。
+dwidth() {
+  local b c
+  b="$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')"
+  c="$(printf '%s' "$1" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')"
+  printf '%s' "$(( (b + c) / 2 ))"
+}
+
+pad() { # <字串> <顯示寬度>
+  local n p
+  n="$(dwidth "$1")"
+  p=$(( $2 - n )); [ "$p" -lt 0 ] && p=0
+  printf '%s%*s' "$1" "$p" ""
+}
+
+kv() { # <標籤> <值…> — status 用的對齊欄位
+  local label="$1"; shift
+  printf '  %s %s\n' "$(pad "$label" 15)" "$*"
+}
+
+# info / ok 平常印在 stdout；--json 時 stdout 要保持乾淨，改印到 stderr。
+# warn / err / hint 本來就在 stderr，不受影響。
+info() {
+  if [ "$JSON_MODE" -eq 1 ]; then printf '%s==>%s %s\n' "$C_BLU" "$C_0" "$*" >&2
+  else                            printf '%s==>%s %s\n' "$C_BLU" "$C_0" "$*"; fi
+}
+ok() {
+  if [ "$JSON_MODE" -eq 1 ]; then printf '%s ok %s %s\n' "$C_GRN" "$C_0" "$*" >&2
+  else                            printf '%s ok %s %s\n' "$C_GRN" "$C_0" "$*"; fi
+}
+warn() { printf '%s !! %s %s\n' "$C_YEL" "$C_0" "$*" >&2; }
+err()  { printf '%s xx %s %s\n' "$C_RED" "$C_0" "$*" >&2; }
+hint() { printf '    %s%s%s\n' "$C_DIM" "$*" "$C_0" >&2; }
+die()  { err "$*"; exit 1; }
+
+# --------------------------------------------------------------- helpers ----
+
+# run_timeout <secs> <cmd...> — 可攜式 timeout（macOS 沒有 coreutils timeout）
+run_timeout() {
+  local secs="$1"; shift
+  "$@" &
+  local pid=$!
+  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local wd=$!
+  wait "$pid"; local rc=$?
+  kill -TERM "$wd" 2>/dev/null
+  wait "$wd" 2>/dev/null
+  return "$rc"
+}
+
+find_tailscale() {
+  if command -v tailscale >/dev/null 2>&1; then printf 'tailscale'; return 0; fi
+  local p
+  for p in /Applications/Tailscale.app/Contents/MacOS/Tailscale \
+           "$HOME/Applications/Tailscale.app/Contents/MacOS/Tailscale" \
+           /usr/local/bin/tailscale /opt/homebrew/bin/tailscale; do
+    [ -x "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+require_deps() {
+  local missing=0
+  if ! command -v adb >/dev/null 2>&1; then
+    err "找不到 adb"; hint "brew install --cask android-platform-tools"; missing=1
+  fi
+  if ! command -v scrcpy >/dev/null 2>&1; then
+    err "找不到 scrcpy"; hint "brew install scrcpy"; missing=1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    err "找不到 jq"; hint "brew install jq"; missing=1
+  fi
+  if ! TS="$(find_tailscale)"; then
+    err "找不到 tailscale CLI"
+    hint "brew install tailscale        # 或安裝 Tailscale.app（Mac App Store）"
+    missing=1
+  fi
+  [ "$missing" -eq 0 ] || exit 1
+}
+
+# ------------------------------------------------------------- tailscale ----
+
+ts_load() {
+  TS_JSON="$("$TS" status --json 2>/dev/null)"
+  local rc=$?
+  if [ $rc -ne 0 ] || [ -z "$TS_JSON" ]; then
+    err "無法取得 tailscale 狀態（tailscale status 失敗）"
+    hint "確認 Tailscale 正在執行，然後：tailscale up"
+    exit 1
+  fi
+}
+
+ts_require_up() {
+  ts_load
+  local state
+  state="$(printf '%s' "$TS_JSON" | jq -r '.BackendState // "Unknown"')"
+  case "$state" in
+    Running) return 0 ;;
+    Stopped)
+      err "Tailscale 目前是 Stopped（未連線）"
+      hint "tailscale up"; exit 1 ;;
+    NeedsLogin|NoState)
+      err "Tailscale 尚未登入（BackendState=${state}）"
+      hint "tailscale up"; exit 1 ;;
+    Starting)
+      warn "Tailscale 正在啟動中（Starting），連線可能還沒就緒"
+      return 0 ;;
+    *)
+      err "Tailscale 狀態異常：BackendState=$state"
+      hint "tailscale up"; exit 1 ;;
+  esac
+}
+
+# ts_peer <name-or-ip> — 印出該 peer 的 JSON（找不到則印出空字串）
+ts_peer() {
+  printf '%s' "$TS_JSON" | jq -c --arg n "$1" '
+    ($n | ascii_downcase) as $q
+    | (.Peer // {}) | to_entries | map(.value)
+    | map(select(
+        ((.HostName // "") | ascii_downcase) == $q
+        or ((.DNSName // "") | ascii_downcase | startswith($q + "."))
+        or ((.DNSName // "") | ascii_downcase | rtrimstr(".")) == $q
+        or ((.TailscaleIPs // []) | index($n) != null)
+      ))
+    | .[0] // empty'
+}
+
+ts_list_peers() {
+  printf '%s' "$TS_JSON" | jq -r '
+    (.Peer // {}) | to_entries | map(.value)
+    | sort_by(((.OS // "") != "android"), (.HostName // ""))
+    | to_entries[]
+    | "\(.key + 1)|\(.value.HostName // "?")|\((.value.TailscaleIPs // ["?"])[0])|\(.value.OS // "?")|\(if .value.Online then "online" else "offline" end)"'
+}
+
+# ts_path <target> — 回傳 "direct <ms>" / "relay <ms>" / "unknown"
+ts_path() {
+  local target="$1" out line ms
+  out="$(run_timeout 15 "$TS" ping -c 3 --timeout 4s "$target" 2>&1)"
+  line="$(printf '%s\n' "$out" | grep -E '^pong from' | tail -1)"
+  if [ -z "$line" ]; then
+    printf 'unknown'
+    return 0
+  fi
+  ms="$(printf '%s' "$line" | sed -nE 's/.* in ([0-9]+)ms.*/\1/p')"
+  [ -n "$ms" ] || ms="?"
+  if printf '%s' "$line" | grep -q 'via DERP'; then
+    printf 'relay %s' "$ms"
+  else
+    printf 'direct %s' "$ms"
+  fi
+}
+
+# ts_reachability <節點名> <IP> — online / offline / notfound
+ts_reachability() {
+  local peer
+  peer="$(ts_peer "${1:-$2}")"
+  [ -n "$peer" ] || peer="$(ts_peer "$2")"
+  [ -n "$peer" ] || { printf 'notfound'; return 0; }
+  if [ "$(printf '%s' "$peer" | jq -r '.Online')" = "true" ]; then
+    printf 'online'
+  else
+    printf 'offline'
+  fi
+}
+
+# ts_resolve_ip <節點名> — 節點名 → Tailscale IP（找不到回 1）
+ts_resolve_ip() {
+  local peer; peer="$(ts_peer "$1")"
+  [ -n "$peer" ] || return 1
+  printf '%s' "$peer" | jq -r '(.TailscaleIPs // ["?"])[0]'
+}
+
+ts_is_up() { [ "$(printf '%s' "$TS_JSON" | jq -r '.BackendState // "Unknown"')" = "Running" ]; }
+ts_state() { printf '%s' "$(printf '%s' "$TS_JSON" | jq -r '.BackendState // "Unknown"')"; }
+
+# ------- backend: lan（同區網直連） ------------------------------------------
+#
+# 目前只做到「這個 IP 的 5555 有沒有在聽」。區網掃描與裝置發現屬於 hub 的範圍，
+# 還沒實作 —— 這個 backend 存在的意義是證明上面那層介面切得乾淨。
+
+lan_require_up() { return 0; }           # 同區網不需要額外的傳輸層
+lan_is_up()      { return 0; }
+lan_state()      { printf '直連'; }
+lan_path()       { printf 'direct ?'; }  # 同區網一律視為直連
+lan_resolve_ip() { printf '%s' "$1"; }   # 沒有節點名的概念，IP 就是 IP
+lan_list_candidates() { return 0; }      # 區網掃描尚未實作
+
+lan_reachability() { # <節點名> <IP>
+  local ip="$2"
+  [ -n "$ip" ] || { printf 'notfound'; return 0; }
+  if command -v nc >/dev/null 2>&1 && run_timeout 5 nc -z -w 2 "$ip" "$ADB_PORT" >/dev/null 2>&1; then
+    printf 'online'
+  else
+    printf 'offline'
+  fi
+}
+
+# ------------------------------------------------------------- transport ----
+#
+# 「怎麼連到這支手機」的知識全部收在這一層後面。上層（cmd_*）只准呼叫
+# transport_*，不准直接碰 ts_* —— 之後要多一種連線方式時是加一個 backend，
+# 不是整份 script 重寫。
+#
+# 每個 backend 要實作這幾個函式（<b> = backend 名稱）：
+#
+#   <b>_require_up                傳輸層本身不可用就 exit
+#   <b>_is_up                     傳輸層可用嗎（0/1，不 exit）
+#   <b>_state                     給人看的狀態字串
+#   <b>_reachability <host> <ip>  → online / offline / notfound
+#   <b>_path <ip>                 → "direct <ms>" / "relay <ms>" / "unknown"
+#   <b>_resolve_ip <host>         節點名 → IP（找不到 return 1）
+#   <b>_list_candidates           setup 候選清單："<n>|<名稱>|<IP>|<OS>|<線上狀態>"
+
+transport_name() { printf '%s' "${TRANSPORT:-tailscale}"; }
+
+# 給人看的欄位標籤（cmd_status 用）
+transport_label() {
+  case "$(transport_name)" in
+    tailscale) printf 'Tailscale' ;;
+    lan)       printf '區網' ;;
+    *)         printf '傳輸層' ;;
+  esac
+}
+
+# 準備這個 backend 需要的狀態。不做強制檢查 —— 傳輸層掛掉時上層仍然要能
+# 把「掛掉了」這件事顯示出來，而不是整個指令直接死掉。
+transport_prepare() {
+  case "$(transport_name)" in
+    tailscale) ts_load ;;
+    *)         : ;;
+  esac
+}
+
+transport_require_up() {
+  case "$(transport_name)" in
+    tailscale) ts_require_up ;;
+    lan)       lan_require_up ;;
+    *)         die "不認得的 TRANSPORT：$(transport_name)" ;;
+  esac
+}
+
+transport_is_up() {
+  case "$(transport_name)" in
+    tailscale) ts_is_up ;;
+    lan)       lan_is_up ;;
+    *)         return 1 ;;
+  esac
+}
+
+transport_state() {
+  case "$(transport_name)" in
+    tailscale) ts_state ;;
+    lan)       lan_state ;;
+    *)         printf 'unknown' ;;
+  esac
+}
+
+transport_reachability() { # <節點名> <IP>
+  case "$(transport_name)" in
+    tailscale) ts_reachability "$@" ;;
+    lan)       lan_reachability "$@" ;;
+    *)         printf 'unknown' ;;
+  esac
+}
+
+transport_path() { # <IP>
+  case "$(transport_name)" in
+    tailscale) ts_path "$1" ;;
+    lan)       lan_path "$1" ;;
+    *)         printf 'unknown' ;;
+  esac
+}
+
+transport_resolve_ip() { # <節點名>
+  case "$(transport_name)" in
+    tailscale) ts_resolve_ip "$1" ;;
+    lan)       lan_resolve_ip "$1" ;;
+    *)         return 1 ;;
+  esac
+}
+
+transport_list_candidates() {
+  case "$(transport_name)" in
+    tailscale) ts_list_peers ;;
+    lan)       lan_list_candidates ;;
+    *)         return 0 ;;
+  esac
+}
+
+# 傳輸層掛掉時該叫使用者做什麼
+transport_down_hint() {
+  case "$(transport_name)" in
+    tailscale) printf '未連線 → tailscale up' ;;
+    *)         printf '傳輸層未就緒' ;;
+  esac
+}
+
+# 在 tailnet / 區網上找不到這台裝置時的提示
+transport_notfound_hint() { # <profile>
+  case "$(transport_name)" in
+    tailscale) printf '手機可能換了名稱或被移出 tailnet，重跑：hangar setup --name %s' "$1" ;;
+    *)         printf '找不到這台裝置，重跑：hangar setup --name %s' "$1" ;;
+  esac
+}
+
+# 裝置離線時的提示
+transport_offline_hint() {
+  case "$(transport_name)" in
+    tailscale) printf '請在該手機上打開 Tailscale App 並確認已連線' ;;
+    *)         printf '請確認手機開機並連上同一個區網' ;;
+  esac
+}
+
+# -------------------------------------------------------------- profiles ----
+
+sanitize_name() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//'
+}
+
+profile_path() { printf '%s/%s.conf' "$PROFILE_DIR" "$1"; }
+
+profile_field() { # <profile> <欄位名> — 不 source，避免污染呼叫端的變數
+  [ -f "$(profile_path "$1")" ] || return 1
+  grep -E "^$2=" "$(profile_path "$1")" | head -1 | cut -d'"' -f2
+}
+
+list_profiles() {
+  [ -d "$PROFILE_DIR" ] || return 0
+  local f n
+  for f in "$PROFILE_DIR"/*.conf; do
+    [ -e "$f" ] || continue
+    n="$(basename "$f" .conf)"
+    printf '%s\n' "$n"
+  done
+}
+
+count_profiles() { list_profiles | grep -c . ; }
+
+get_default_profile() {
+  [ -f "$DEFAULT_FILE" ] || return 1
+  local d; d="$(tr -d '[:space:]' < "$DEFAULT_FILE")"
+  [ -n "$d" ] && [ -f "$(profile_path "$d")" ] || return 1
+  printf '%s' "$d"
+}
+
+set_default_profile() {
+  mkdir -p "$CONFIG_DIR"
+  printf '%s\n' "$1" > "$DEFAULT_FILE"
+}
+
+# 專案從 pmirror 改名為 hangar，整個設定目錄搬過來（新目錄不存在時才搬）
+migrate_legacy_dir() {
+  [ -d "$LEGACY_CONFIG_DIR" ] || return 0
+  [ -d "$CONFIG_DIR" ] && return 0
+  mv "$LEGACY_CONFIG_DIR" "$CONFIG_DIR" 2>/dev/null || {
+    warn "設定目錄搬遷失敗，請手動執行：mv $LEGACY_CONFIG_DIR $CONFIG_DIR"
+    return 0
+  }
+  warn "專案已改名為 hangar，設定從 $LEGACY_CONFIG_DIR 搬到 $CONFIG_DIR"
+}
+
+# 舊版單機設定檔（~/.config/hangar/config）自動搬成 profile
+migrate_legacy() {
+  migrate_legacy_dir
+  [ -f "$LEGACY_FILE" ] || return 0
+  local PHONE_HOST="" PHONE_IP=""
+  # shellcheck disable=SC1090
+  . "$LEGACY_FILE" 2>/dev/null
+  [ -n "${PHONE_IP:-}" ] || { mv "$LEGACY_FILE" "$LEGACY_FILE.bak" 2>/dev/null; return 0; }
+  local name; name="$(sanitize_name "${PHONE_HOST:-phone}")"
+  [ -n "$name" ] || name="phone"
+  mkdir -p "$PROFILE_DIR"
+  if [ ! -f "$(profile_path "$name")" ]; then
+    cat > "$(profile_path "$name")" <<EOF
+# hangar profile（由舊版 config 自動轉換）
+PHONE_HOST="$PHONE_HOST"
+PHONE_IP="$PHONE_IP"
+EOF
+    chmod 600 "$(profile_path "$name")"
+  fi
+  [ -f "$DEFAULT_FILE" ] || set_default_profile "$name"
+  mv "$LEGACY_FILE" "$LEGACY_FILE.migrated" 2>/dev/null
+  warn "舊設定已轉為 profile「${name}」（$PROFILE_DIR/$name.conf）"
+}
+
+print_profile_table() {
+  local def n; def="$(get_default_profile 2>/dev/null)"
+  local i=0
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    i=$((i + 1))
+    local PHONE_HOST="" PHONE_IP=""
+    # shellcheck disable=SC1090
+    . "$(profile_path "$n")" 2>/dev/null
+    local mark=" "; [ "$n" = "$def" ] && mark="*"
+    printf '   %2d) %s %-16s %-16s %s\n' "$i" "$mark" "$n" "$PHONE_IP" "${PHONE_HOST:-}"
+  done < <(list_profiles)
+}
+
+# resolve_profile [name] — 決定要操作哪一支手機，結果放進 $PROFILE
+resolve_profile() {
+  migrate_legacy
+  local want="${1:-}" total
+  total="$(count_profiles)"
+
+  if [ "$total" -eq 0 ]; then
+    err "還沒有設定任何手機"
+    hint "先在同一區網（或插 USB）執行：hangar setup"
+    exit 1
+  fi
+
+  if [ -n "$want" ]; then
+    if [ -f "$(profile_path "$want")" ]; then PROFILE="$want"; return 0; fi
+    # 前綴唯一比對
+    local matches cnt
+    matches="$(list_profiles | grep -i "^$(printf '%s' "$want" | sed 's/[.[\*^$]/\\&/g')")"
+    cnt="$(printf '%s' "$matches" | grep -c .)"
+    if [ "$cnt" -eq 1 ]; then PROFILE="$matches"; return 0; fi
+    if [ "$cnt" -gt 1 ]; then
+      err "「${want}」對應到多支手機：$(printf '%s' "$matches" | tr '\n' ' ')"
+      exit 1
+    fi
+    err "找不到手機「${want}」，目前已設定的有："
+    print_profile_table >&2
+    exit 1
+  fi
+
+  if [ "$total" -eq 1 ]; then PROFILE="$(list_profiles)"; return 0; fi
+
+  local def; def="$(get_default_profile 2>/dev/null)"
+  if [ -n "$def" ]; then PROFILE="$def"; return 0; fi
+
+  # 多台、又沒有預設 → 有終端機就互動選，沒有就報錯
+  info "已設定多支手機："
+  print_profile_table
+  if [ -t 0 ]; then
+    local n
+    while :; do
+      printf '%s' "  選擇（1-${total}）＞ " >&2
+      read -r n || die "已取消"
+      n="$(printf '%s' "$n" | tr -d '[:space:]')"
+      if printf '%s' "$n" | grep -qE '^[0-9]+$' && [ "$n" -ge 1 ] && [ "$n" -le "$total" ]; then
+        PROFILE="$(list_profiles | sed -n "${n}p")"
+        hint "想固定的話：hangar use $PROFILE"
+        return 0
+      fi
+      err "請輸入 1 到 $total 之間的數字"
+    done
+  fi
+  err "有多支手機但沒有設定預設值"
+  hint "用 hangar -p <名稱> 指定，或 hangar use <名稱> 設為預設"
+  exit 1
+}
+
+load_profile() { # <name>
+  PHONE_HOST=""; PHONE_IP=""; TRANSPORT=""; DEVICE_SERIAL=""
+  # shellcheck disable=SC1090
+  . "$(profile_path "$1")" 2>/dev/null || die "無法讀取 $(profile_path "$1")"
+  [ -n "${PHONE_IP:-}" ] || die "$(profile_path "$1") 缺少 PHONE_IP，請重跑 hangar setup"
+  # TRANSPORT / DEVICE_SERIAL 是後來才加的欄位。舊 profile 沒有這兩行，
+  # 補預設值即可，不需要 migration（跟 migrate_legacy 是不同層級的事）。
+  TRANSPORT="${TRANSPORT:-tailscale}"
+  DEVICE_SERIAL="${DEVICE_SERIAL:-}"
+  PROFILE="$1"
+  SERIAL="${PHONE_IP}:${ADB_PORT}"
+}
+
+save_profile() { # 使用目前的 $PROFILE / $PHONE_HOST / $PHONE_IP / $TRANSPORT / $DEVICE_SERIAL
+  mkdir -p "$PROFILE_DIR"
+  cat > "$(profile_path "$PROFILE")" <<EOF
+# hangar profile「${PROFILE}」— 由 \`hangar setup\` 產生於 $(date '+%Y-%m-%d %H:%M:%S')
+PHONE_HOST="$PHONE_HOST"
+PHONE_IP="$PHONE_IP"
+# 連線方式（tailscale / lan）
+TRANSPORT="${TRANSPORT:-tailscale}"
+# 硬體序號 —— 跨 IP、跨連線方式都不會變，是這支手機的穩定識別碼
+DEVICE_SERIAL="${DEVICE_SERIAL:-}"
+EOF
+  chmod 600 "$(profile_path "$PROFILE")"
+  ok "設定已寫入 $(profile_path "$PROFILE")"
+}
+
+# ------------------------------------------------------------------ adb -----
+
+adb_state() { # <serial> → device / offline / unauthorized / ""（不存在）
+  adb devices 2>/dev/null | awk -v s="$1" 'NR>1 && $1==s {print $2; exit}'
+}
+
+# ---- 裝置資訊（機型 / Android / 序號 / 電量）--------------------------------
+#
+# 結果放進全域變數，人類輸出與 --json 共用同一份取得邏輯。
+
+DEV_MODEL=""; DEV_RELEASE=""; DEV_SDK=""; DEV_SERIALNO=""
+
+adb_device_info() { # <serial>
+  DEV_MODEL="";  DEV_RELEASE=""; DEV_SDK=""; DEV_SERIALNO=""
+  DEV_MODEL="$(run_timeout 10 adb -s "$1" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
+  DEV_RELEASE="$(run_timeout 10 adb -s "$1" shell getprop ro.build.version.release 2>/dev/null | tr -d '\r\n')"
+  DEV_SDK="$(run_timeout 10 adb -s "$1" shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r\n')"
+  DEV_SERIALNO="$(run_timeout 10 adb -s "$1" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+}
+
+BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
+
+# dumpsys battery 的 status 是數字碼（framework BatteryManager 的定義）
+battery_status_name() {
+  case "$1" in
+    2) printf 'charging' ;;
+    3) printf 'discharging' ;;
+    4) printf 'not_charging' ;;
+    5) printf 'full' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+battery_status_zh() {
+  case "$1" in
+    charging)     printf '充電中' ;;
+    discharging)  printf '放電中' ;;
+    not_charging) printf '未充電' ;;
+    full)         printf '已充滿' ;;
+    *)            printf '未知' ;;
+  esac
+}
+
+adb_battery() { # <serial> — 結果放進 BATTERY_LEVEL / BATTERY_STATUS / BATTERY_TEMP
+  BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
+  local out code raw
+  out="$(run_timeout 10 adb -s "$1" shell dumpsys battery 2>/dev/null)"
+  [ -n "$out" ] || return 1
+  BATTERY_LEVEL="$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]*level:[[:space:]]*([0-9]+).*/\1/p' | head -1)"
+  code="$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]*status:[[:space:]]*([0-9]+).*/\1/p' | head -1)"
+  BATTERY_STATUS="$(battery_status_name "${code:-0}")"
+  # temperature 的單位是 0.1°C 的整數（275 = 27.5°C）
+  raw="$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]*temperature:[[:space:]]*(-?[0-9]+).*/\1/p' | head -1)"
+  if [ -n "$raw" ]; then
+    BATTERY_TEMP="$(awk -v t="$raw" 'BEGIN { printf "%.1f", t / 10 }')"
+  fi
+  [ -n "$BATTERY_LEVEL" ]
+}
+
+# 給人看的電量字串，例如「78%  放電中  27.5°C」
+battery_human() {
+  [ -n "$BATTERY_LEVEL" ] || { printf '（取不到）'; return 0; }
+  printf '%s%%  %s' "$BATTERY_LEVEL" "$(battery_status_zh "$BATTERY_STATUS")"
+  [ -n "$BATTERY_TEMP" ] && printf '  %s°C' "$BATTERY_TEMP"
+  return 0
+}
+
+usb_serials() { # 所有非 host:port 形式且狀態為 device 的 serial
+  adb devices 2>/dev/null | awk 'NR>1 && $1 != "" && $1 !~ /:/ && $2=="device" {print $1}'
+}
+
+usb_unauthorized() {
+  adb devices 2>/dev/null | awk 'NR>1 && $1 != "" && $1 !~ /:/ && $2=="unauthorized" {print $1; exit}'
+}
+
+# adb server 自己掛掉時的訊息（跟「連不到手機」是兩回事，不能混為一談）
+ADB_DAEMON_ERR='cannot connect to daemon|daemon still not running|failed to start daemon|protocol fault|adb server version'
+
+ensure_adb_server() {
+  run_timeout 25 adb start-server >/dev/null 2>&1
+  return 0
+}
+
+ADB_CONNECT_OUT=""
+adb_connect() { # <serial> → 0 成功 / 1 失敗
+  ADB_CONNECT_OUT="$(run_timeout 20 adb connect "$1" 2>&1)"
+
+  # 實測：`adb tcpip` 會讓手機端 adbd 重啟，Mac 上的 adb server 有時會跟著掛掉，
+  # 緊接著的 connect 就會撞上 server 還沒起來的空窗。先把 server 拉起來再重試一次。
+  if printf '%s' "$ADB_CONNECT_OUT" | grep -qiE "$ADB_DAEMON_ERR"; then
+    ensure_adb_server
+    sleep 1
+    ADB_CONNECT_OUT="$(run_timeout 20 adb connect "$1" 2>&1)"
+  fi
+
+  if printf '%s' "$ADB_CONNECT_OUT" \
+     | grep -qiE 'failed to connect|cannot connect|unable to connect|connection refused|operation timed out|no route to host'; then
+    return 1
+  fi
+  [ -n "$ADB_CONNECT_OUT" ] || return 1
+  return 0
+}
+
+wait_for_device() { # <serial> <secs>
+  local s="$1" limit="$2" i=0 st
+  while [ "$i" -lt "$limit" ]; do
+    st="$(adb_state "$s")"
+    [ "$st" = "device" ] && return 0
+    [ "$st" = "unauthorized" ] && return 2
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+connect_failed_reboot_hint() {
+  err "無法連上 ${SERIAL}（${PROFILE}）"
+  if [ -n "$ADB_CONNECT_OUT" ]; then
+    hint "adb: $(printf '%s' "$ADB_CONNECT_OUT" | tr '\n' ' ')"
+  else
+    # run_timeout 砍掉沒回應的 adb connect，輸出會是空的
+    hint "adb connect 逾時，對方完全沒有回應"
+  fi
+
+  # 本機 adb server 的問題，不要誤導成手機重開機
+  if printf '%s' "$ADB_CONNECT_OUT" | grep -qiE "$ADB_DAEMON_ERR"; then
+    err "這是本機 adb server 的問題，不是手機或 Tailscale。"
+    hint "adb kill-server && adb start-server"
+    exit 1
+  fi
+
+  err "手機上的 adb ${ADB_PORT} 埠沒在聽 —— 通常代表手機重開機過（非 root 無法持久化）。"
+  hint "請把這支手機接回 USB 或回到同一區網，重跑：hangar setup --name $PROFILE"
+  exit 1
+}
+
+ensure_connected() {
+  local st
+  st="$(adb_state "$SERIAL")"
+
+  case "$st" in
+    device) return 0 ;;
+    unauthorized)
+      err "adb 狀態為 unauthorized（${PROFILE}）"
+      hint "請看手機畫面上的「允許 USB 偵錯」對話框，勾選「一律允許透過這台電腦」後按允許"
+      hint "按完再執行一次 hangar"
+      exit 1 ;;
+    offline)
+      warn "adb 狀態為 offline，自動重連一次…"
+      adb disconnect "$SERIAL" >/dev/null 2>&1
+      sleep 1
+      adb_connect "$SERIAL" || connect_failed_reboot_hint ;;
+    "")
+      info "建立 adb 連線：$SERIAL"
+      adb_connect "$SERIAL" || connect_failed_reboot_hint ;;
+    *)
+      warn "adb 狀態未知（${st}），重連一次…"
+      adb disconnect "$SERIAL" >/dev/null 2>&1
+      sleep 1
+      adb_connect "$SERIAL" || connect_failed_reboot_hint ;;
+  esac
+
+  wait_for_device "$SERIAL" 8
+  case $? in
+    0) ok "adb 已連線：$SERIAL"; return 0 ;;
+    2) err "adb 狀態為 unauthorized"
+       hint "請在手機上按「一律允許」後重試"
+       exit 1 ;;
+    *)
+       st="$(adb_state "$SERIAL")"
+       if [ "$st" = "offline" ]; then
+         warn "連線仍是 offline，再重試一次…"
+         adb disconnect "$SERIAL" >/dev/null 2>&1
+         sleep 1
+         adb_connect "$SERIAL" || connect_failed_reboot_hint
+         if wait_for_device "$SERIAL" 8; then
+           ok "adb 已連線：$SERIAL"
+           return 0
+         fi
+       fi
+       err "adb 連上了但狀態一直不是 device（目前：${st:-unknown}）"
+       hint "試試 hangar reset -p ${PROFILE}；若仍失敗代表手機重開過，請重跑 setup"
+       exit 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- scrcpy ----
+
+scrcpy_major() {
+  local v
+  v="$(scrcpy --version 2>/dev/null | head -1 | sed -nE 's/^scrcpy[^0-9]*([0-9]+).*/\1/p')"
+  [ -n "$v" ] || v=0
+  printf '%s' "$v"
+}
+
+# 只清掉「這一支手機」的殘留視窗，不影響其他手機
+kill_stale_scrcpy() {
+  local pids
+  pids="$(pgrep -f "scrcpy .*${SERIAL}" 2>/dev/null)"
+  [ -n "$pids" ] || return 0
+  warn "[$PROFILE] 偵測到殘留的 scrcpy（pid: $(printf '%s' "$pids" | tr '\n' ' ')），先關掉"
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null
+  sleep 1
+  pids="$(pgrep -f "scrcpy .*${SERIAL}" 2>/dev/null)"
+  # shellcheck disable=SC2086
+  [ -n "$pids" ] && kill -KILL $pids 2>/dev/null
+  return 0
+}
+
+# 預設投影時把手機自己的螢幕關掉（--screen-on 可關掉這個行為）
+SCREEN_OFF=1
+
+SCRCPY_ARGS=()
+build_scrcpy_args() { # <hq|lq>
+  local profile="$1" maj bitrate
+  maj="$(scrcpy_major)"
+  SCRCPY_ARGS=(-s "$SERIAL" --stay-awake)
+  [ "$SCREEN_OFF" = "1" ] && SCRCPY_ARGS+=(--turn-screen-off)
+
+  if [ "$profile" = "hq" ]; then
+    SCRCPY_ARGS+=(--max-size=1280 --max-fps=60)
+    bitrate="8M"
+  else
+    SCRCPY_ARGS+=(--max-size=1024 --max-fps=30)
+    bitrate="3M"
+  fi
+
+  if [ "$maj" -ge 2 ]; then
+    SCRCPY_ARGS+=("--video-bit-rate=$bitrate" --no-audio)
+    [ "$profile" = "lq" ] && SCRCPY_ARGS+=(--video-codec=h265)
+  else
+    # scrcpy 1.x：沒有音訊轉發，旗標名稱也不同
+    SCRCPY_ARGS+=("--bit-rate=$bitrate")
+    [ "$profile" = "lq" ] && warn "scrcpy 1.x 不支援 --video-codec，略過 h265"
+  fi
+}
+
+# 多台同時投影時，用 profile 名稱當視窗標題比較好分辨
+add_window_title() { # <extra args...>
+  local a
+  for a in "$@"; do
+    case "$a" in --window-title*) return 0 ;; esac
+  done
+  SCRCPY_ARGS+=("--window-title=$PROFILE")
+}
+
+# 判斷路徑，結果放進全域 $QUALITY（hq/lq）
+# 刻意不用 command substitution 回傳：函式內的 ok()/info() 會寫 stdout，會污染回傳值
+QUALITY=""
+decide_profile_quality() { # <force>
+  local force="$1" path kind ms
+  path="$(ts_path "$PHONE_IP")"
+  kind="${path%% *}"; ms="${path##* }"
+  case "$kind" in
+    direct)  ok "[$PROFILE] Tailscale：direct（${ms}ms）"; QUALITY="hq" ;;
+    relay)   warn "[$PROFILE] Tailscale：經由 DERP relay（${ms}ms）——延遲較高，自動降到低頻寬參數"
+             hint "想改善的話：確認兩端 UDP 打洞未被防火牆擋住"
+             QUALITY="lq" ;;
+    *)       warn "[$PROFILE] 無法判定連線路徑（tailscale ping 無回應），保守使用低頻寬參數"
+             QUALITY="lq" ;;
+  esac
+  if [ -n "$force" ]; then
+    [ "$force" != "$QUALITY" ] && info "[$PROFILE] 手動覆寫畫質：$QUALITY → $force"
+    QUALITY="$force"
+  fi
+}
+
+# 確認手機在 tailnet 上（失敗則 return 1）
+check_peer_online() {
+  local peer online
+  peer="$(ts_peer "${PHONE_HOST:-$PHONE_IP}")"
+  [ -n "$peer" ] || peer="$(ts_peer "$PHONE_IP")"
+  if [ -z "$peer" ]; then
+    err "[$PROFILE] tailnet 裡找不到節點（${PHONE_HOST:-$PHONE_IP}）"
+    hint "手機可能換了名稱或被移出 tailnet，重跑：hangar setup --name $PROFILE"
+    return 1
+  fi
+  online="$(printf '%s' "$peer" | jq -r 'if .Online then "yes" else "no" end')"
+  if [ "$online" != "yes" ]; then
+    err "[$PROFILE] 手機不在 tailnet 上（節點顯示離線）"
+    hint "請在該手機上打開 Tailscale App 並確認已連線"
+    return 1
+  fi
+  return 0
+}
+
+# --------------------------------------------------------------- setup ------
+
+read_hostport() { # <var-name> <prompt>
+  local __var="$1" __prompt="$2" __v
+  while :; do
+    printf '%s' "$__prompt" >&2
+    read -r __v || die "已取消"
+    __v="$(printf '%s' "$__v" | tr -d '[:space:]')"
+    if printf '%s' "$__v" | grep -qE '^[A-Za-z0-9._-]+:[0-9]{1,5}$'; then
+      printf -v "$__var" '%s' "$__v"
+      return 0
+    fi
+    err "格式不對，要像 192.168.1.23:37451"
+  done
+}
+
+pick_usb_serial() {
+  local serials total
+  serials="$(usb_serials)"
+  total="$(printf '%s' "$serials" | grep -c .)"
+  [ "$total" -eq 0 ] && return 1
+  if [ "$total" -eq 1 ]; then printf '%s' "$serials"; return 0; fi
+
+  # 插了多支手機 → 讓使用者選
+  info "偵測到 $total 支 USB 裝置：" >&2
+  local i=0 s model
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    i=$((i + 1))
+    model="$(run_timeout 8 adb -s "$s" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
+    printf '   %2d) %-20s %s\n' "$i" "$s" "${model:-?}" >&2
+  done < <(printf '%s\n' "$serials")
+  local n
+  while :; do
+    printf '%s' "  選擇要設定的手機（1-${total}）＞ " >&2
+    read -r n || die "已取消"
+    n="$(printf '%s' "$n" | tr -d '[:space:]')"
+    if printf '%s' "$n" | grep -qE '^[0-9]+$' && [ "$n" -ge 1 ] && [ "$n" -le "$total" ]; then
+      printf '%s' "$(printf '%s\n' "$serials" | sed -n "${n}p")"
+      return 0
+    fi
+    err "請輸入 1 到 $total 之間的數字"
+  done
+}
+
+cmd_setup() {
+  local want_name="" alias_name="" existing=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name|-n)  alias_name="${2:-}"; [ -n "$alias_name" ] || die "--name 後面要接名稱"; shift 2 ;;
+      --existing) existing=1; shift ;;
+      -*)         die "setup 不認得參數：$1" ;;
+      *)          want_name="$1"; shift ;;
+    esac
+  done
+
+  require_deps
+  migrate_legacy
+
+  # 重開機後的復原路徑：profile 已經存在就沿用它記錄的節點，不必再選一次
+  if [ -z "$want_name" ] && [ -n "$alias_name" ]; then
+    local known
+    known="$(profile_field "$(sanitize_name "$alias_name")" PHONE_HOST 2>/dev/null)"
+    if [ -n "$known" ]; then
+      want_name="$known"
+      info "沿用 profile「$(sanitize_name "$alias_name")」記錄的節點：$known"
+    fi
+  fi
+
+  if [ -n "$existing" ]; then
+    info "hangar setup --existing — 連到已經設定好的手機"
+  else
+    info "hangar setup — 初始化 adb over TCP"
+  fi
+  echo
+
+  if [ -n "$existing" ]; then
+    # 第二台電腦：手機的 5555 已經由別台電腦開好了，這裡只要建立設定並取得授權。
+    info "--existing：略過 USB／配對／adb tcpip，只在這台電腦建立設定"
+  else
+    # --- 1) 先確保有一條既有的 adb 連線（USB 或無線偵錯）-------------------
+    local base_serial
+    base_serial="$(pick_usb_serial)"
+
+    if [ -n "$base_serial" ]; then
+      ok "使用 USB 裝置：$base_serial"
+    else
+      local unauth
+      unauth="$(usb_unauthorized)"
+      if [ -n "$unauth" ]; then
+        err "USB 裝置 $unauth 尚未授權"
+        hint "請在手機畫面上按「一律允許透過這台電腦進行 USB 偵錯」後重跑 hangar setup"
+        exit 1
+      fi
+
+      warn "沒有偵測到 USB 裝置，改走「無線偵錯」配對流程"
+      echo
+      printf '%s\n' "  手機上請開啟：設定 → 系統 → 開發人員選項 → 無線偵錯 → 使用配對碼配對裝置"
+      printf '%s\n' "  ${C_DIM}（mDNS 不會穿過 Tailscale，所以這一步必須在同一個 Wi-Fi 下做）${C_0}"
+      echo
+
+      local pair_hp pair_code
+      read_hostport pair_hp "  配對畫面上的 IP:PORT ＞ "
+      while :; do
+        printf '%s' "  6 位數配對碼 ＞ " >&2
+        read -r pair_code || die "已取消"
+        pair_code="$(printf '%s' "$pair_code" | tr -d '[:space:]')"
+        printf '%s' "$pair_code" | grep -qE '^[0-9]{6}$' && break
+        err "配對碼要是 6 位數字"
+      done
+
+      info "adb pair $pair_hp"
+      local pair_out
+      pair_out="$(run_timeout 30 adb pair "$pair_hp" "$pair_code" 2>&1)"
+      printf '%s\n' "$pair_out"
+      if ! printf '%s' "$pair_out" | grep -qi 'Successfully paired'; then
+        die "配對失敗。請確認配對視窗還開著、IP:PORT 與配對碼都是最新的（每次重開會變）"
+      fi
+      ok "配對成功"
+      echo
+
+      # 無線偵錯主畫面上的連線埠，跟配對埠不一樣
+      local conn_hp
+      printf '%s\n' "  回到「無線偵錯」主畫面，看「裝置的 IP 位址和連接埠」"
+      read_hostport conn_hp "  無線偵錯的 IP:PORT ＞ "
+
+      info "adb connect $conn_hp"
+      if ! adb_connect "$conn_hp"; then
+        printf '%s\n' "$ADB_CONNECT_OUT"
+        die "連線失敗，請確認 IP:PORT 正確且電腦與手機在同一區網"
+      fi
+      printf '%s\n' "$ADB_CONNECT_OUT"
+      if ! wait_for_device "$conn_hp" 8; then
+        die "連上了但狀態不是 device（目前：$(adb_state "$conn_hp")）"
+      fi
+      base_serial="$conn_hp"
+      ok "已連線：$base_serial"
+    fi
+
+    local setup_model
+    setup_model="$(run_timeout 8 adb -s "$base_serial" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
+    [ -n "$setup_model" ] && info "機型：$setup_model"
+
+    echo
+    # --- 2) 切到固定的 5555 -------------------------------------------------
+    info "adb -s $base_serial tcpip $ADB_PORT"
+    local tcpip_out
+    tcpip_out="$(run_timeout 20 adb -s "$base_serial" tcpip "$ADB_PORT" 2>&1)"
+    printf '%s\n' "$tcpip_out"
+    if printf '%s' "$tcpip_out" | grep -qiE 'error|cannot|failed'; then
+      die "adb tcpip 失敗"
+    fi
+    sleep 2
+    # 實測 adb tcpip 之後本機 adb server 可能跟著重啟，先確保它活著再繼續
+    ensure_adb_server
+    ok "adbd 已重啟並在 0.0.0.0:${ADB_PORT} 監聽（含 Tailscale 介面）"
+    case "$base_serial" in *:*) adb disconnect "$base_serial" >/dev/null 2>&1 ;; esac
+  fi
+
+  echo
+  # --- 3) 找出手機的 Tailscale IP ----------------------------------------
+  ts_require_up
+
+  local peer=""
+  if [ -n "$want_name" ]; then
+    peer="$(ts_peer "$want_name")"
+    [ -n "$peer" ] || warn "tailnet 裡找不到名為 '$want_name' 的節點"
+  fi
+
+  if [ -z "$peer" ]; then
+    info "tailnet 內的節點："
+    local rows
+    rows="$(ts_list_peers)"
+    [ -n "$rows" ] || die "tailnet 裡沒有其他節點，請確認手機端也登入了同一個 tailnet"
+    local idx hn hip hos hst
+    while IFS='|' read -r idx hn hip hos hst; do
+      [ -n "$idx" ] || continue
+      printf '   %2s) %s %s %s %s\n' \
+        "$idx" "$(pad "$hn" 22)" "$(pad "$hip" 16)" "$(pad "$hos" 9)" "$hst"
+    done < <(printf '%s\n' "$rows")
+    local n total
+    total="$(printf '%s\n' "$rows" | grep -c .)"
+    while :; do
+      printf '%s' "  選擇這支手機對應的節點（1-${total}）＞ " >&2
+      read -r n || die "已取消"
+      n="$(printf '%s' "$n" | tr -d '[:space:]')"
+      if printf '%s' "$n" | grep -qE '^[0-9]+$' && [ "$n" -ge 1 ] && [ "$n" -le "$total" ]; then
+        break
+      fi
+      err "請輸入 1 到 $total 之間的數字"
+    done
+    local picked_name
+    picked_name="$(printf '%s\n' "$rows" | awk -F'|' -v k="$n" '$1==k {print $2}')"
+    peer="$(ts_peer "$picked_name")"
+    [ -n "$peer" ] || die "無法取得該節點資訊"
+  fi
+
+  PHONE_HOST="$(printf '%s' "$peer" | jq -r '.HostName // ""')"
+  PHONE_IP="$(printf '%s' "$peer" | jq -r '(.TailscaleIPs // [])[0] // ""')"
+  local online
+  online="$(printf '%s' "$peer" | jq -r 'if .Online then "yes" else "no" end')"
+
+  [ -n "$PHONE_IP" ] || die "該節點沒有 Tailscale IP"
+  ok "手機節點：$PHONE_HOST ($PHONE_IP)"
+  [ "$online" = "yes" ] || warn "此節點目前在 tailnet 顯示為離線，請確認手機端 Tailscale 已開啟"
+
+  # --- 4) 決定 profile 名稱（多台手機用這個區分）-------------------------
+  PROFILE="$(sanitize_name "${alias_name:-${PHONE_HOST:-phone}}")"
+  [ -n "$PROFILE" ] || PROFILE="phone"
+
+  # 同一個名稱但指向不同 IP → 提醒是覆蓋
+  if [ -f "$(profile_path "$PROFILE")" ]; then
+    local old_ip=""
+    old_ip="$(grep -E '^PHONE_IP=' "$(profile_path "$PROFILE")" | head -1 | cut -d'"' -f2)"
+    if [ -n "$old_ip" ] && [ "$old_ip" != "$PHONE_IP" ]; then
+      warn "profile「${PROFILE}」原本指向 ${old_ip}，將更新為 $PHONE_IP"
+    fi
+  fi
+  # 不同名稱卻指到同一個 IP → 提醒重複
+  local other
+  while IFS= read -r other; do
+    [ -n "$other" ] && [ "$other" != "$PROFILE" ] || continue
+    if grep -qE "^PHONE_IP=\"$PHONE_IP\"" "$(profile_path "$other")" 2>/dev/null; then
+      warn "profile「${other}」也指向 ${PHONE_IP}，兩者是同一支手機"
+    fi
+  done < <(list_profiles)
+
+  SERIAL="${PHONE_IP}:${ADB_PORT}"
+  save_profile
+  info "這支手機的名稱是「${C_B}$PROFILE${C_0}」（之後用 hangar -p $PROFILE 指定）"
+
+  if [ "$(count_profiles)" -eq 1 ]; then
+    set_default_profile "$PROFILE"
+  elif ! get_default_profile >/dev/null 2>&1; then
+    set_default_profile "$PROFILE"
+    info "已設為預設手機（改用 hangar use <名稱> 可更換）"
+  fi
+
+  echo
+  # --- 5) 用 Tailscale IP 實際驗證一次 ------------------------------------
+  info "驗證：adb connect $SERIAL"
+  if ! adb_connect "$SERIAL"; then
+    printf '%s\n' "$ADB_CONNECT_OUT"
+    if printf '%s' "$ADB_CONNECT_OUT" | grep -qiE "$ADB_DAEMON_ERR"; then
+      err "本機 adb server 起不來（跟 Tailscale 無關）"
+      hint "adb kill-server && adb start-server，然後重跑 hangar setup"
+    elif [ -n "$existing" ]; then
+      err "透過 Tailscale 連線失敗"
+      hint "--existing 假設手機的 ${ADB_PORT} 已經開著。請確認："
+      hint "  1. 有另一台電腦跑過 hangar setup，而且手機之後沒有重開機"
+      hint "  2. tailnet ACL 允許「這台電腦」連 ${ADB_PORT} 埠（新電腦要另外加進 src）"
+      hint "若手機重開過，要由接得到 USB／同區網的那台電腦重跑 hangar setup"
+    else
+      err "透過 Tailscale 連線失敗"
+      hint "檢查：手機端 Tailscale 是否開著、tailnet ACL 是否允許這台電腦連 ${ADB_PORT} 埠"
+    fi
+    exit 1
+  fi
+  printf '%s\n' "$ADB_CONNECT_OUT"
+  if ! wait_for_device "$SERIAL" 10; then
+    local st; st="$(adb_state "$SERIAL")"
+    if [ "$st" = "unauthorized" ]; then
+      err "狀態 unauthorized"
+      hint "這台電腦還沒被手機授權過（換電腦第一次連都會這樣，是正常的）。"
+      hint "手機畫面上會跳出「允許 USB 偵錯」，勾「一律允許透過這台電腦」再按允許，"
+      hint "然後重跑一次這個指令。"
+      exit 1
+    fi
+    die "連上了但狀態不是 device（目前：${st:-unknown}）"
+  fi
+
+  echo
+  ok "setup 完成。之後執行 ${C_B}hangar -p $PROFILE${C_0} 就能投影（手機在 4G/5G 也可以）。"
+  if [ -n "$existing" ]; then
+    warn "注意：手機重開機後 ${ADB_PORT} 會消失（非 root 無法持久化）。"
+    hint "這台電腦沒有 USB／同區網的話救不回來，要由接得到手機的那台電腦重跑完整的 hangar setup。"
+  else
+    warn "注意：手機重開機後 ${ADB_PORT} 會消失（非 root 無法持久化），必須回到同一區網或插 USB 重跑 setup。"
+  fi
+}
+
+# --------------------------------------------------------------- mirror -----
+
+cmd_mirror() {
+  local force="" want=""
+  local -a extra=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --hq) force="hq"; shift ;;
+      --lq) force="lq"; shift ;;
+      --screen-on) SCREEN_OFF=0; shift ;;
+      -p|--phone) want="${2:-}"; [ -n "$want" ] || die "-p 後面要接手機名稱"; shift 2 ;;
+      --)   shift; extra=("$@"); break ;;
+      *)    die "未知參數：$1（用 hangar help 看說明）" ;;
+    esac
+  done
+
+  # 使用者自己在 -- 後面傳了關螢幕的旗標，就不要重複加一次
+  # （bash 3.2 + set -u 展開空陣列會炸，所以先擋掉）
+  if [ "${#extra[@]}" -gt 0 ]; then
+    local a
+    for a in "${extra[@]}"; do
+      case "$a" in -S|--turn-screen-off) SCREEN_OFF=0 ;; esac
+    done
+  fi
+
+  require_deps
+  resolve_profile "$want"
+  load_profile "$PROFILE"
+  ts_require_up
+
+  check_peer_online || exit 1
+
+  decide_profile_quality "$force"
+
+  ensure_connected
+  kill_stale_scrcpy
+
+  build_scrcpy_args "$QUALITY"
+  if [ "${#extra[@]}" -gt 0 ]; then
+    add_window_title "${extra[@]}"
+    SCRCPY_ARGS+=("${extra[@]}")
+  else
+    add_window_title
+  fi
+
+  info "[$PROFILE] 啟動 scrcpy（${QUALITY}）"
+  hint "scrcpy ${SCRCPY_ARGS[*]}"
+  exec scrcpy "${SCRCPY_ARGS[@]}"
+}
+
+# 同時投影全部手機（每支一個視窗，背景執行）
+cmd_all() {
+  local force=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --hq) force="hq"; shift ;;
+      --lq) force="lq"; shift ;;
+      --screen-on) SCREEN_OFF=0; shift ;;
+      *)    die "all 不認得參數：$1" ;;
+    esac
+  done
+
+  require_deps
+  migrate_legacy
+  ts_require_up
+
+  local total; total="$(count_profiles)"
+  [ "$total" -gt 0 ] || { err "還沒有設定任何手機"; hint "hangar setup"; exit 1; }
+
+  local started=0 failed=0 name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    echo
+    info "── $name ──"
+    (
+      load_profile "$name" || exit 1
+      check_peer_online || exit 1
+      decide_profile_quality "$force"
+      ensure_connected || exit 1
+      kill_stale_scrcpy
+      build_scrcpy_args "$QUALITY"
+      add_window_title
+      info "[$name] 啟動 scrcpy（${QUALITY}）"
+      scrcpy "${SCRCPY_ARGS[@]}" >/dev/null 2>&1 &
+      printf '%s' "$!" > "$CONFIG_DIR/.pid-$name"
+    )
+    if [ $? -eq 0 ] && [ -s "$CONFIG_DIR/.pid-$name" ]; then
+      ok "[$name] scrcpy pid $(cat "$CONFIG_DIR/.pid-$name")"
+      rm -f "$CONFIG_DIR/.pid-$name"
+      started=$((started + 1))
+    else
+      rm -f "$CONFIG_DIR/.pid-$name"
+      failed=$((failed + 1))
+    fi
+  done < <(list_profiles)
+
+  echo
+  ok "已啟動 $started 個視窗${failed:+，失敗 $failed 支}"
+  [ "$failed" -eq 0 ] || exit 1
+}
+
+# --------------------------------------------------------------- status -----
+
+cmd_status() {
+  local want=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p|--phone) want="${2:-}"; [ -n "$want" ] || die "-p 後面要接手機名稱"; shift 2 ;;
+      *) die "status 不認得參數：$1" ;;
+    esac
+  done
+
+  require_deps
+  resolve_profile "$want"
+  load_profile "$PROFILE"
+  ts_load
+
+  local state
+  state="$(printf '%s' "$TS_JSON" | jq -r '.BackendState // "Unknown"')"
+
+  printf '%shangar%s v%s\n\n' "$C_B" "$C_0" "$VERSION"
+  kv "手機"     "$PROFILE"
+  kv "設定檔"   "$(profile_path "$PROFILE")"
+  kv "節點名稱" "${PHONE_HOST:-（未命名）}"
+  kv "Tailscale IP" "$PHONE_IP"
+  echo
+
+  kv "Tailscale" "$state"
+  if [ "$state" != "Running" ]; then
+    kv "" "${C_YEL}未連線 → tailscale up${C_0}"
+    echo
+  else
+    local peer online
+    peer="$(ts_peer "${PHONE_HOST:-$PHONE_IP}")"
+    [ -n "$peer" ] || peer="$(ts_peer "$PHONE_IP")"
+    if [ -z "$peer" ]; then
+      kv "節點" "${C_RED}不在 tailnet 內${C_0}"
+      echo
+    else
+      online="$(printf '%s' "$peer" | jq -r 'if .Online then "online" else "offline" end')"
+      if [ "$online" = "online" ]; then
+        kv "節點" "${C_GRN}online${C_0}"
+        local path kind ms
+        path="$(ts_path "$PHONE_IP")"
+        kind="${path%% *}"; ms="${path##* }"
+        case "$kind" in
+          direct) kv "連線路徑" "${C_GRN}direct${C_0}  latency ${ms}ms  → 高畫質" ;;
+          relay)  kv "連線路徑" "${C_YEL}DERP relay${C_0}  latency ${ms}ms  → 低頻寬" ;;
+          *)      kv "連線路徑" "${C_YEL}unknown（ping 無回應）${C_0}" ;;
+        esac
+      else
+        kv "節點" "${C_RED}offline${C_0}（手機端 Tailscale 沒開？）"
+      fi
+      echo
+    fi
+  fi
+
+  local st
+  st="$(adb_state "$SERIAL")"
+  if [ -z "$st" ]; then
+    kv "adb" "未連線，嘗試連線中…"
+    if adb_connect "$SERIAL"; then
+      wait_for_device "$SERIAL" 8 >/dev/null 2>&1
+      st="$(adb_state "$SERIAL")"
+    else
+      st=""
+    fi
+  fi
+
+  case "$st" in
+    device)
+      kv "adb" "${C_GRN}device${C_0}  ($SERIAL)"
+      local model rel sdk
+      model="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
+      rel="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.build.version.release 2>/dev/null | tr -d '\r\n')"
+      sdk="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r\n')"
+      kv "機型" "${model:-?}"
+      kv "Android" "${rel:-?}${sdk:+ (API $sdk)}"
+      ;;
+    unauthorized)
+      kv "adb" "${C_RED}unauthorized${C_0}  ($SERIAL)"
+      kv "" "請在手機上按「一律允許」"
+      ;;
+    offline)
+      kv "adb" "${C_YEL}offline${C_0}  ($SERIAL)"
+      kv "" "試試 hangar reset -p $PROFILE"
+      ;;
+    "")
+      kv "adb" "${C_RED}未連線${C_0}  ($SERIAL)"
+      kv "" "${ADB_PORT} 沒在聽 → 手機可能重開過，請重跑 hangar setup --name $PROFILE"
+      ;;
+    *)
+      kv "adb" "$st  ($SERIAL)"
+      ;;
+  esac
+
+  local pids
+  pids="$(pgrep -f "scrcpy .*${SERIAL}" 2>/dev/null | tr '\n' ' ')"
+  echo
+  kv "scrcpy" "${pids:-（未執行）}"
+
+  local total; total="$(count_profiles)"
+  if [ "$total" -gt 1 ]; then
+    echo
+    printf '  %s其他已設定的手機：hangar list%s\n' "$C_DIM" "$C_0"
+  fi
+  echo
+}
+
+# ----------------------------------------------------------- list / use -----
+
+cmd_list() {
+  require_deps
+  migrate_legacy
+  local total; total="$(count_profiles)"
+  if [ "$total" -eq 0 ]; then
+    warn "還沒有設定任何手機"
+    hint "hangar setup"
+    return 0
+  fi
+
+  ts_load
+  local def; def="$(get_default_profile 2>/dev/null)"
+
+  printf '\n  %s %s %s %s %s %s\n' \
+    "$(pad "" 2)" "$(pad "名稱" 16)" "$(pad "Tailscale IP" 17)" \
+    "$(pad "tailnet" 12)" "$(pad "adb" 13)" "節點"
+  printf '  %s\n' "$(printf '─%.0s' $(seq 1 72))"
+
+  local n
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    local PHONE_HOST="" PHONE_IP=""
+    # shellcheck disable=SC1090
+    . "$(profile_path "$n")" 2>/dev/null
+    local mark=" "; [ "$n" = "$def" ] && mark="*"
+
+    local peer net_txt net_col
+    peer="$(ts_peer "${PHONE_HOST:-$PHONE_IP}")"
+    [ -n "$peer" ] || peer="$(ts_peer "$PHONE_IP")"
+    if [ -z "$peer" ]; then
+      net_txt="不在 tailnet"; net_col="$C_RED"
+    elif [ "$(printf '%s' "$peer" | jq -r '.Online')" = "true" ]; then
+      net_txt="online";       net_col="$C_GRN"
+    else
+      net_txt="offline";      net_col="$C_YEL"
+    fi
+
+    local st adb_txt adb_col
+    st="$(adb_state "${PHONE_IP}:${ADB_PORT}")"
+    case "$st" in
+      device)       adb_txt="device";       adb_col="$C_GRN" ;;
+      offline)      adb_txt="offline";      adb_col="$C_YEL" ;;
+      unauthorized) adb_txt="unauthorized"; adb_col="$C_RED" ;;
+      "")           adb_txt="未連線";        adb_col="$C_DIM" ;;
+      *)            adb_txt="$st";          adb_col="" ;;
+    esac
+
+    # 顏色碼放在補齊過的內容外面，才不會被算進欄寬
+    printf '  %s %s %s %s%s%s %s%s%s %s\n' \
+      "$(pad "$mark" 2)" "$(pad "$n" 16)" "$(pad "$PHONE_IP" 17)" \
+      "$net_col" "$(pad "$net_txt" 12)" "$C_0" \
+      "$adb_col" "$(pad "$adb_txt" 13)" "$C_0" \
+      "${PHONE_HOST:-}"
+  done < <(list_profiles)
+
+  printf '\n  %s* = 預設（hangar use <名稱> 可更換）%s\n\n' "$C_DIM" "$C_0"
+}
+
+cmd_use() {
+  local want="${1:-}"
+  [ -n "$want" ] || { err "用法：hangar use <手機名稱>"; cmd_list; exit 1; }
+  migrate_legacy
+  resolve_profile "$want"
+  set_default_profile "$PROFILE"
+  ok "預設手機已設為「${PROFILE}」"
+}
+
+cmd_forget() {
+  local want="${1:-}"
+  [ -n "$want" ] || die "用法：hangar forget <手機名稱>"
+  migrate_legacy
+  resolve_profile "$want"
+  local f; f="$(profile_path "$PROFILE")"
+  printf '  要刪除 profile「%s」（%s）嗎？[y/N] ' "$PROFILE" "$f" >&2
+  local a; read -r a || a=""
+  case "$a" in
+    y|Y|yes|YES) ;;
+    *) info "取消"; return 0 ;;
+  esac
+  rm -f "$f"
+  ok "已刪除「${PROFILE}」（手機本身的 adb 設定不受影響）"
+  if [ "$(get_default_profile 2>/dev/null)" = "" ] && [ "$(count_profiles)" -ge 1 ]; then
+    local first; first="$(list_profiles | head -1)"
+    set_default_profile "$first"
+    info "預設手機改為「${first}」"
+  fi
+}
+
+# ---------------------------------------------------------------- reset -----
+
+cmd_reset() {
+  local want=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p|--phone) want="${2:-}"; [ -n "$want" ] || die "-p 後面要接手機名稱"; shift 2 ;;
+      *) die "reset 不認得參數：$1" ;;
+    esac
+  done
+
+  require_deps
+  resolve_profile "$want"
+  load_profile "$PROFILE"
+
+  info "[$PROFILE] 中斷 $SERIAL"
+  adb disconnect "$SERIAL" 2>&1 | sed 's/^/    /'
+  kill_stale_scrcpy
+  sleep 1
+
+  info "[$PROFILE] 重新連線 $SERIAL"
+  if ! adb_connect "$SERIAL"; then
+    printf '%s\n' "$ADB_CONNECT_OUT" | sed 's/^/    /'
+    connect_failed_reboot_hint
+  fi
+  printf '%s\n' "$ADB_CONNECT_OUT" | sed 's/^/    /'
+
+  if wait_for_device "$SERIAL" 10; then
+    ok "連線已重建：$SERIAL"
+  else
+    local st; st="$(adb_state "$SERIAL")"
+    if [ "$st" = "unauthorized" ]; then
+      err "狀態 unauthorized —— 請在手機上按「一律允許」"
+      exit 1
+    fi
+    err "重連後狀態仍不是 device（目前：${st:-unknown}）"
+    hint "手機可能重開過，請重跑 hangar setup --name $PROFILE"
+    exit 1
+  fi
+}
+
+# ----------------------------------------------------------------- help -----
+
+cmd_help() {
+  cat <<EOF
+${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
+
+用法：
+  hangar [-p 手機] [--hq|--lq] [--screen-on] [-- <scrcpy 參數…>]
+                                   投影（預設指令）
+  hangar all [--hq|--lq] [--screen-on]
+                                   同時投影所有已設定的手機（各開一個視窗）
+  hangar setup [節點名] [--name 別名]
+                                   初始化一支手機（需同區網或插 USB）
+  hangar setup --existing [節點名] [--name 別名]
+                                   手機已由別台電腦設定好，只在這台建立設定
+  hangar list                     列出已設定的手機與即時狀態
+  hangar use <手機>               設定預設手機
+  hangar forget <手機>            刪掉該手機的設定
+  hangar status [-p 手機]         Tailscale / adb / 裝置狀態
+  hangar reset  [-p 手機]         連線卡死時重建 adb 連線
+  hangar help
+
+多台手機：
+  每支手機一份 profile，放在 $PROFILE_DIR/<名稱>.conf。
+  名稱預設取自 Tailscale 節點名，可用 --name 自訂：
+
+    hangar setup --name work          # 公司機
+    hangar setup --name test          # 測試機
+    hangar -p work                    # 投影公司機
+    hangar use work                   # 設為預設，之後直接打 hangar
+    hangar all                        # 兩支一起開
+
+  只設定一支時不用加 -p；設定多支又沒指定預設時會列出來讓你選。
+  視窗標題預設是 profile 名稱，方便分辨。
+
+多台電腦：
+  手機的 5555 一旦開著，其他電腦不需要 USB 也不用再跑 adb tcpip：
+
+    hangar setup --existing pixel-4    # 在第二台電腦上
+    （手機會跳出授權對話框，按「一律允許」後再跑一次）
+
+  ACL 記得把新電腦也加進 src。手機重開機後，要由接得到 USB／同區網的
+  那台電腦重跑一次完整的 hangar setup，其他電腦就會自動恢復。
+
+選項：
+  --hq          強制高畫質（1280 / 8M / 60fps）
+  --lq          強制低頻寬（1024 / 3M / 30fps / h265）
+  --screen-on   不要關掉手機自己的螢幕（預設會關）
+  --            之後的參數原封不動傳給 scrcpy，例如：
+                hangar -p work -- --window-x=100
+
+預設會帶 --turn-screen-off：投影時手機自己的螢幕是黑的（省電、也不會被旁邊
+的人看到），畫面只出現在電腦上。手機並沒有鎖住，仍然可以從電腦端操作。
+scrcpy 關掉後螢幕會維持關著，按一下手機電源鍵就回來。
+
+限制：手機重開機後 adb 的 ${ADB_PORT} 埠會消失（非 root 無法持久化），
+      必須把那支手機接回 USB 或回到同一區網重跑一次 \`hangar setup\`。
+EOF
+}
+
+# ----------------------------------------------------------------- main -----
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    setup)           shift; cmd_setup "$@" ;;
+    status|st)       shift; cmd_status "$@" ;;
+    reset)           shift; cmd_reset "$@" ;;
+    list|ls)         shift; cmd_list ;;
+    use)             shift; cmd_use "${1:-}" ;;
+    forget|rm)       shift; cmd_forget "${1:-}" ;;
+    all)             shift; cmd_all "$@" ;;
+    help|-h|--help)  cmd_help ;;
+    --version|-V)    printf 'hangar %s\n' "$VERSION" ;;
+    ""|-*)           cmd_mirror "$@" ;;
+    *)               err "未知指令：$cmd"; echo; cmd_help; exit 1 ;;
+  esac
+}
+
+main "$@"
