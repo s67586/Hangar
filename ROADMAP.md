@@ -54,7 +54,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
-| M3a | agent 骨架：enroll（裝 APK、授權、寫序號與 token）、`/hello` 與 `/status`、`hangar` 這側接上 | |
+| M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上 | app 那半邊**已完成**；`hangar setup --enroll` 還沒 |
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | |
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
@@ -389,7 +389,12 @@ adb devices                      # 期望：手機回來了，而且 RD 機什�
 
 測完把每一步的實際結果補回這一節，然後才決定要不要把它寫進 README。
 
-5. **hub 已經站起來了，而且只站在 `--json` 上面。** `hub/hangar_hub.py` 對手機
+5. **agent 的協定被兩份實作夾住了。** `agent/` 是 Kotlin，`tests/agentbin/fake_agent.py`
+   是同一份協定的 Python 參考實作，`tests/test_agent_protocol.sh` 兩邊都打得過去
+   （帶 `HANGAR_AGENT_URL` 就打真的手機）。這是刻意的：同一份協定被寫兩次，
+   對不起來的地方就是協定沒講清楚的地方。參考實作同時也讓 `hangar` 那一側不用
+   有手機就能開發。
+6. **hub 已經站起來了，而且只站在 `--json` 上面。** `hub/hangar_hub.py` 對手機
    的所有知識都來自 `hangar list --json` 與 `hangar scan --json`，沒有自己去碰
    adb 或網路。要多顯示一個欄位是去改 hangar，不是在 hub 裡另外接一條路 ——
    這樣 CLI 與網頁永遠不會各說各話。
@@ -418,6 +423,9 @@ hangar/
 ├── README.md             # 安裝與使用
 ├── ROADMAP.md            # 這份：方向、里程碑、程式分層、測試
 ├── hangar_install.sh     # symlink 到 /usr/local/bin
+├── agent/                # 手機端 app（Kotlin，零外部相依，連 AndroidX 都沒有）
+│   ├── README.md         # 怎麼蓋、怎麼手動入伍、驗證到什麼程度
+│   └── app/src/main/     # HttpServer / Status / Enrollment / AgentService …
 ├── hub/
 │   ├── hangar_hub.py     # 常駐服務：輪詢 hangar --json、合併、開 HTTP
 │   └── static/
@@ -431,8 +439,10 @@ hangar/
     ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
     ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測、識別合併、--fix-ip
     ├── test_hub.sh       # hub：合併邏輯、HTTP 端點、唯讀保證
+    ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
     ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
-    └── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
+    ├── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
+    └── agentbin/         # 假的 agent（M3 協定的 Python 參考實作）
 ```
 
 `hangar` 這支 script 內部分層（由下往上）：
@@ -491,6 +501,7 @@ hangar 那邊，不是在 hub 裡另外接一條路。
 | `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
 | `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡）、`--fix-ip` 只改認得出來的那幾支且不碰 tailscale profile |
 | `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳 |
+| `test_agent_protocol.sh` | `/hello` 不需要 token 也不吐序號、`/status` 要 token、status 的每個欄位型別（電量是 0-100 整數、充電狀態用小寫那一套、`wifi_enabled` 可以是 null 但不能用 false 混充、拿不到的東西回 null 不塞假值、協定裡根本沒有 MAC 這一欄）、501 與 404 要分得出來、沒入伍是 409 不是 401。**帶 `HANGAR_AGENT_URL` 就直接打真的手機** |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。

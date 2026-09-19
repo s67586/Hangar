@@ -1,0 +1,8 @@
+# Gradle / Android build 產物
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+*.keystore
+*.jks

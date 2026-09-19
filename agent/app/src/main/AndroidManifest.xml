@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 常駐回報用。5599 只在區網上聽，不需要 INTERNET 以外的東西 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      這一個不是在 manifest 裡就會有的：它是 signature|privileged 級別，要由
+      入伍時的那一次 adb 授予：
+
+          adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
+
+      宣告在這裡只是為了讓那道 pm grant 有對象可以授。沒授到的話 app 照樣跑，
+      只是 /status 裡的 can.toggle_adb 會是 false。
+    -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
+    <application
+        android:allowBackup="false"
+        android:label="Hangar Agent"
+        android:theme="@android:style/Theme.Material.Light">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="Hangar Agent">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".AgentService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="測試機管理：常駐回報裝置狀態給區網上的 Hangar hub" />
+        </service>
+
+        <!--
+          入伍用。exported 是必要的 —— 發廣播的是 adb shell（shell uid），不是這個
+          app 自己。風險是同一支手機上的其他 app 也發得出這個廣播，所以
+          EnrollReceiver 採「第一次入伍者得之」：已經有 token 之後就拒收，要重來得
+          先 adb shell pm clear com.hangar.agent（那本來就需要 adb）。
+        -->
+        <receiver
+            android:name=".EnrollReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.hangar.agent.ENROLL" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
