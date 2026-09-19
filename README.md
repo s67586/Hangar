@@ -1,12 +1,22 @@
 # Hangar
 
-透過 **Tailscale** 遠端連到 Android 手機，用 **scrcpy** 投影畫面。
-手機在 4G/5G、在別的網段、在公司 NAT 後面都能投，不需要 VPN 以外的任何設定。
+一整隊 Android 測試機的停放、維護與調度。
 
-支援多支手機（每支一份 profile）。
+透過 **Tailscale** 遠端連到手機、用 **scrcpy** 投影畫面（手機在 4G/5G、在別的網段、
+在公司 NAT 後面都能投），並且管得到那些**沒開偵錯、adb 碰不到**的手機。
 
-> 目前是一支單機 CLI。長期目標是做成**網頁形式的手機裝置管理平台**，
-> 連線方式也不會只綁 Tailscale——路線圖見 [ROADMAP.md](ROADMAP.md)。
+| | |
+|---|---|
+| [`hangar`](hangar) | CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源 |
+| [`hub/`](hub) | 常駐服務 + 唯讀裝置牆網頁（Python 3 標準函式庫，零套件） |
+| [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
+
+> **[📖 使用手冊（一頁可讀版）](https://claude.ai/artifact/WyegAVdz2UzVitcvwB5kZ8)**
+> —— 這份 README 的內容整理成一頁，適合傳給同事。頁尾有它對應的 commit，
+> 落後了看得出來；**內容以這份 README 為準**。
+> 連結預設是私人的，要給別人看得先在那一頁上分享。
+
+> 專案方向、程式分層、測試涵蓋範圍與待確認清單見 [ROADMAP.md](ROADMAP.md)。
 
 ```
 hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
@@ -14,6 +24,8 @@ hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
+hangar enroll -p work       # 在這支手機上裝 agent（那唯一一次 USB）
+./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
 ```
 
 ---
