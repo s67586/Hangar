@@ -30,6 +30,11 @@ class EnrollReceiver : BroadcastReceiver() {
             if (Enrollment.isEnrolled(ctx)) "already_enrolled" else "bad_request"
         Log.i("hangar-agent", "enroll: $resultData")
 
-        if (ok) AgentService.start(ctx)
+        // 服務這時候多半叫不起來（Android 12+ 擋背景啟動前景服務），那不是錯誤：
+        // 入伍資料已經寫好了，電腦端接著會用 am start 把 app 叫到前景，
+        // 那條路徑才是被允許的。
+        if (ok && !AgentService.start(ctx)) {
+            Log.i("hangar-agent", "入伍完成，但服務要等 app 被打開才起得來")
+        }
     }
 }

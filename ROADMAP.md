@@ -54,7 +54,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
-| M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成**（都還沒在實機上跑過，見下面的待確認清單） |
+| M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成，而且在 Pixel 4 / Android 13 上實機驗過** |
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | |
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
@@ -73,6 +73,11 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
   Android 11+ 的無線偵錯配對碼一樣要人在裝置上操作。
   **結論：只要那台電腦用自己的金鑰直連手機，第一次就一定要有人在手機上按允許。**
   這件事 agent app 幫不上忙 —— 下面「hub 當 adb server」那條路才是繞開它的方式。
+- **Android 12+ 不准 app 從背景啟動前景服務**：實機實測踩到的。入伍廣播裡呼叫
+  `startForegroundService()` 會丟 `ForegroundServiceStartNotAllowedException`，
+  沒接住的話整支 app 當場崩潰（入伍資料已經寫好了，但服務起不來）。被允許的路徑
+  是「有人打開這個 app」與 `BOOT_COMPLETED`。所以 `hangar enroll` 在發完廣播之後
+  多一步 `am start`：那個流程手上本來就有 adb，不需要任何人碰手機。
 - **iOS 做不到對等**：Developer Mode（iOS 16+）必須人在裝置上開啟並重開機，
   無法遠端切換；電量與裝置資訊要靠 `libimobiledevice`，而且得先在 hub 上 USB 配對過。
   iOS 這條線現實的目標是「看得到、知道電量」，不是「管得動」。
@@ -263,16 +268,23 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 
 | # | 要確認什麼 | 怎麼確認 | 猜錯的話 |
 |---|---|---|---|
-| A1 | `WRITE_SECURE_SETTINGS` 能不能寫 `Settings.Global.adb_wifi_enabled` | `adb shell settings put global adb_wifi_enabled 1`，看無線偵錯有沒有真的開；再用 agent（已授權）寫一次 | M3c 整個做不成，重開機後還是要人插 USB |
+| A1 | `WRITE_SECURE_SETTINGS` 能不能**寫** `Settings.Global.adb_wifi_enabled` | `adb shell settings put global adb_wifi_enabled 1`，看無線偵錯有沒有真的開；再用 agent（已授權）寫一次 | M3c 整個做不成，重開機後還是要人插 USB |
 | A2 | 打開無線偵錯後，**之前配對過的電腦**能不能免配對重連 | 配對一次 → 重開機 → agent 開無線偵錯 → 電腦端不做任何事，看 `adb devices` | 「重開機自動恢復」破功，要人讀配對碼 → M3c 價值大減 |
 | A3 | 無線偵錯的埠怎麼找 | `dns-sd -B _adb-tls-connect._tcp`（macOS）／`avahi-browse` | 找不到就等於連不上，A1 A2 都白做 |
-| A4 | Gradle 建得出 APK 嗎 | `cd agent && gradle wrapper --gradle-version 8.5 && ./gradlew assembleDebug` | 要修 AGP／Kotlin 版本組合 |
+| A4 | **Gradle** 建得出 APK 嗎 | `cd agent && gradle wrapper --gradle-version 8.5 && ./gradlew assembleDebug` | 要修 AGP／Kotlin 版本組合 |
+
+> A1 的**前提**已經確認了：實機上 `pm grant` 之後 `WRITE_SECURE_SETTINGS: granted=true`，
+> 而且 agent 自己回報 `can.toggle_wifi_adb: true`（Android 13）。還沒確認的是「真的去寫
+> 那個值會發生什麼事」—— 那一步會動到裝置的安全設定，要有意識地做。
+>
+> A4 還沒答案：驗證那一輪是用 SDK 內建工具（kotlinc + d8 + aapt2 + apksigner）手動組出
+> APK 的，證明的是**程式本身跑得起來**，不是 Gradle 那條路通。
 
 ### B. 會痛的（繞得過，但要知道）
 
 | # | 要確認什麼 | 怎麼確認 | 影響 |
 |---|---|---|---|
-| B1 | 前景服務在各家 ROM 的省電策略下活多久 | 裝上去放 24／72 小時，中間不碰手機，看 `/hello` 還答不答得出來 | **整套的單點故障**：agent 被殺 = 那支手機失聯 |
+| B1 | 前景服務在各家 ROM 的省電策略下活多久；以及手機重開機後它自己回不回得來 | 裝上去放 24／72 小時，中間不碰手機，看 `/hello` 還答不答得出來；然後重開機再看一次 | **整套的單點故障**：agent 被殺 = 那支手機失聯 |
 | B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 影響 M4 的復原路徑設計 |
 | B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完後用 `dns-sd -B _hangar-agent._tcp` 看得到嗎 | 看不到就退回「探 5599」那條路，只是慢 |
 | B4 | AP 有沒有開 client isolation | 兩支手機互 ping；或電腦 ping 手機 | 有的話整個區網掃描與 agent 都不通，得改走 Tailscale |
@@ -283,8 +295,6 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | # | 要確認什麼 | 怎麼確認 |
 |---|---|---|
 | C1 | agent 對電池的影響 | 裝了 agent 的手機放一天，比較耗電曲線 |
-| C2 | `hangar enroll` 在實機上走得完嗎 | 真的跑一次，四個步驟都要 ok |
-| C3 | Kotlin 那支與 Python 參考實作對不對得起來 | `HANGAR_AGENT_URL=http://<手機>:5599 HANGAR_AGENT_TOKEN=<token> tests/test_agent_protocol.sh` |
 | C4 | 加固 app 實際擋什麼 | 實測 protocol 另存於專案外部 |
 | C5 | hub 當 adb server 那條路可不可行 | 見下面那一節的最小驗證步驟 |
 | C6 | iOS 那條線（`libimobiledevice`）拿得到什麼 | 還沒開始 |
@@ -295,8 +305,16 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 |---|---|
 | Kotlin 編譯得過嗎 | 過（`kotlinc` 對著 `android.jar`，7 個檔） |
 | manifest 合法嗎 | 過（`aapt2 link`） |
-| 協定兩份實作對得起來嗎 | 對得起來（但兩份都是在電腦上跑的，見 C3） |
 | adb 授權能不能自動化 | **不能**。見上面「幾個要記住的現實限制」 |
+| **agent 在實機上跑得起來嗎** | **會**。Pixel 4 / Android 13：裝得上、服務起得來、5599 答得出話 |
+| **`hangar enroll` 走得完嗎**（C2） | **走得完**，五步都 ok。但過程中發現 Android 12+ 的前景服務限制，多了 `am start` 那一步才行 |
+| **`WRITE_SECURE_SETTINGS` 拿得到嗎** | **拿得到**。`pm grant` 之後 `granted=true`，agent 自報 `can.toggle_adb: true` |
+| **兩份實作對得起來嗎**（C3） | **對得起來**。同一份協定測試打真的 Kotlin agent，25/25 全過 |
+| **adb 不通時還看得到電量嗎** | **看得到**。adb `disconnected` 而機型與電量照樣回得來，`battery.source` 標 `agent` —— 這是整支 agent 存在的理由，它成立了 |
+
+實機那一輪還**沒**驗到的：手機真的重開機之後 agent 會不會自己回來（B1 那條的
+前半段）。測試時是用 `adb disconnect` 模擬「adb 不通」，那不等於重開機 ——
+而真的重開機要由手邊有那支手機的人做。
 
 ## 待實測：讓 hub 當唯一被授權的那台電腦
 

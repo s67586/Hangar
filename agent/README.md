@@ -14,10 +14,10 @@
 | `GET /hangar/v1/hello` | 好了（不需要 token，掃描靠它認人） |
 | `GET /hangar/v1/status` | 好了（電量、機型、Android 版本、偵錯開關現況、能力宣告） |
 | 入伍（收序號與 token） | 好了 |
-| 重開機後自己起來 | 好了（服務會回來；**把無線偵錯打開是 M3c，還沒做**） |
+| 重開機後自己起來 | 程式寫好了，**但還沒在實機上驗過重開機那一段**（把無線偵錯打開是 M3c，還沒做） |
 | `POST /hangar/v1/adb` 切偵錯 | 還沒（M4），現在回 501 |
 | mDNS 廣播 | 還沒（M3b） |
-| `hangar setup --enroll` | 還沒 —— 電腦那一側還沒接，現在要手動下指令（見下面） |
+| `hangar enroll` | 好了 —— 電腦那一側接上了（實機跑過），下面那段手動流程留著當參考 |
 
 ## 蓋起來
 
@@ -41,9 +41,9 @@ Android Studio 會自己寫；用指令列的話：
 echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
 ```
 
-## 裝到手機上（在 `hangar setup --enroll` 做好之前的手動流程）
+## 裝到手機上（`hangar enroll` 幫你做完的那幾步）
 
-手機插 USB、開著 USB 偵錯，然後：
+平常用 `hangar enroll -p <手機>` 就好。下面是它實際做的事，出問題時用得上：
 
 ```bash
 # 1. 裝
@@ -116,9 +116,18 @@ HANGAR_AGENT_URL=http://192.168.1.77:5599 HANGAR_AGENT_TOKEN=<token> \
 |---|---|
 | Kotlin 編譯 | **過了**（`kotlinc` 對著 `android.jar` 編，7 個檔） |
 | AndroidManifest | **過了**（`aapt2 link` 通過，權限與元件都在） |
-| 協定 | **過了**，但驗的是 Python 參考實作，不是這支 app |
-| Gradle 真的產出 APK | **沒驗過** —— 這台機器上沒有完整的 gradle distribution |
-| 裝到手機上跑起來 | **沒驗過** —— 沒有實機 |
+| 協定 | **過了** —— 同一份測試打真的 agent，25/25 |
+| 裝到手機上跑起來 | **過了** —— Pixel 4 / Android 13 |
+| `WRITE_SECURE_SETTINGS` | **拿得到** —— `pm grant` 之後 `granted=true` |
+| Gradle 真的產出 APK | **還沒驗過** |
 
-所以第一次 `./gradlew assembleDebug` 有可能還要修一兩個 Gradle 層面的東西。
-程式邏輯本身是編譯過的。
+實機那一輪的 APK 是用 SDK 內建工具手動組的（`kotlinc` → `d8` → `aapt2 link`
+→ `apksigner`），因為那台機器上沒有完整的 gradle distribution。所以「程式跑得
+起來」是確定的，「`./gradlew assembleDebug` 通不通」還沒有答案。
+
+實機上踩到的一件事已經修進程式裡了：**Android 12+ 不准 app 從背景啟動前景
+服務**。入伍廣播裡呼叫 `startForegroundService()` 會丟
+`ForegroundServiceStartNotAllowedException`，而且沒接住的話整支 app 當場崩潰。
+現在 `AgentService.start()` 會回傳成功與否而不是拋例外，`hangar enroll` 則在
+發完廣播之後多一步 `am start` 把 app 叫到前景 —— 那條路徑是被允許的，而且入伍
+流程手上本來就有 adb，不需要任何人碰手機。

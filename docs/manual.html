@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 2f94cbad11bf</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 6d26202c0241</span><span class="fact">hangar v1.2.0</span></div>
 </header>
 
 <div class="cols">
@@ -444,7 +444,16 @@ hangar scan --json           區網上看得到的所有東西：IP、MAC、廠�
 ./hub/hangar_hub.py --bind 0.0.0.0 --port 8787   <span class="c"># 要給同事看才這樣開</span></pre></div>
 <p>用的是 Python 3 的標準函式庫，<strong>沒有任何套件要裝</strong> —— 常駐機器上不該為了看一頁 網頁而先裝一套生態系，跟 <code>hangar</code> 自己是一支無相依 bash script 是同一個理由。</p>
 <div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--bind</code> / <code>--port</code></td><td class="wrap"><code>127.0.0.1</code> / <code>8787</code></td><td class="wrap">預設只有本機看得到</td></tr><tr><td class="wrap"><code>--list-interval</code></td><td class="wrap">30 秒</td><td class="wrap">多久問一次 <code>hangar list</code></td></tr><tr><td class="wrap"><code>--scan-interval</code></td><td class="wrap">300 秒</td><td class="wrap">多久掃一次區網（ping 整個 /24 不便宜）</td></tr><tr><td class="wrap"><code>--subnet</code></td><td class="wrap">自動偵測</td><td class="wrap">同 <code>hangar scan --subnet</code></td></tr><tr><td class="wrap"><code>--no-scan</code></td><td class="wrap"></td><td class="wrap">完全不掃區網，只看已設定的手機</td></tr></table></div>
-<p>端點：<code>/</code>（裝置牆）、<code>/api/devices</code>（合併後的 JSON）、<code>/healthz</code>。</p>
+<p>端點：<code>/</code>（裝置牆）、<code>/api/devices</code>（合併後的 JSON）、<code>/api/refresh</code>（POST，見下面）、<code>/healthz</code>。</p>
+<h3 id="多久更新一次">多久更新一次</h3>
+<p>三層，各自獨立：</p>
+<div class="tw"><table><tr><th></th><th>預設</th><th></th></tr><tr><td class="wrap"><code>hangar list --probe</code></td><td class="wrap">30 秒</td><td class="wrap">已設定手機的狀態與電量</td></tr><tr><td class="wrap"><code>hangar scan</code></td><td class="wrap">300 秒</td><td class="wrap">區網上還有什麼（ping 整個 /24 不便宜，所以慢）</td></tr><tr><td class="wrap">網頁重抓 <code>/api/devices</code></td><td class="wrap">10 秒</td><td class="wrap">純讀 hub 的快取，不會去碰手機</td></tr></table></div>
+<p>所以牆上的東西最舊會是「間隔 + 10 秒」前的。不想等的話按頁面上的<strong>立即更新</strong>， 或直接打：</p>
+<div class="term"><div class="bar">bash</div><pre>curl -X POST &#x27;http://127.0.0.1:8787/api/refresh?what=all&#x27;   <span class="c"># 或 what=list / what=scan</span></pre></div>
+<p>它只是把輪詢<strong>提早叫醒</strong>，不是另外開一條路去問手機 —— 跑的還是同樣那兩個 <code>hangar</code> 指令，一樣不帶 <code>--fix-ip</code>。</p>
+<p>有最小間隔擋著：<code>list</code> 5 秒、<code>scan</code> 30 秒（掃描會對 254 個位址各送一個封包， 按住不放不該變成洗 ping）。太快就回 <code>429</code> 並告訴你還要等幾秒：</p>
+<div class="term"><div class="bar">json</div><pre>{ &quot;ok&quot;: false, &quot;refreshed&quot;: [], &quot;throttled&quot;: [ { &quot;source&quot;: &quot;scan&quot;, &quot;retry_after_s&quot;: 22.0 } ] }</pre></div>
+<p><code>GET /api/refresh</code> 是 404 —— 觸發器不該掛在 GET 上，不然任何會預抓網址的東西 都會去戳一次手機。</p>
 <h3 id="那頁上的狀態是什麼意思">那頁上的狀態是什麼意思</h3>
 <div class="tw"><table><tr><td class="wrap"><code>ready</code></td><td class="wrap">adb 是 <code>device</code>，可以 build 也可以投影</td></tr><tr><td class="wrap"><code>no_adb</code></td><td class="wrap">連得到，但 adb 不是 <code>device</code> —— 幾乎都是手機重開機把 5555 弄丟了</td></tr><tr><td class="wrap"><code>unauthorized</code></td><td class="wrap">這台 hub 還沒被那支手機授權過（要有人在手機上按允許）</td></tr><tr><td class="wrap"><code>offline</code></td><td class="wrap">手機不在線上</td></tr><tr><td class="wrap"><code>unknown</code></td><td class="wrap">只從掃描看到它，<code>hangar list</code> 那邊沒資料（那次輪詢多半失敗了）</td></tr><tr><td class="wrap"><code>unmanaged</code></td><td class="wrap">掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP、MAC、廠商</td></tr></table></div>
 <p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序（見上面的 <a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
@@ -641,7 +650,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 2f94cbad11bf</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 6d26202c0241</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>

@@ -87,6 +87,29 @@ get_devices() {
   printf '%s' "$out"
 }
 
+# post <url> → "<狀態碼>|<body>"；get_code 同理但用 GET
+post() { python3 -c '
+import sys, urllib.request, urllib.error
+r = urllib.request.Request(sys.argv[1], data=b"", method=sys.argv[2])
+try:
+    resp = urllib.request.urlopen(r, timeout=5)
+    print("%d|%s" % (resp.status, resp.read().decode()))
+except urllib.error.HTTPError as e:
+    print("%d|%s" % (e.code, e.read().decode()))
+except Exception as e:
+    print("0|%s" % e)' "$1" POST; }
+get_code() { python3 -c '
+import sys, urllib.request, urllib.error
+try:
+    resp = urllib.request.urlopen(sys.argv[1], timeout=5)
+    print("%d|%s" % (resp.status, resp.read().decode()))
+except urllib.error.HTTPError as e:
+    print("%d|%s" % (e.code, e.read().decode()))
+except Exception as e:
+    print("0|%s" % e)' "$1"; }
+# grep -c 數到 0 時離開碼是 1，直接接 || echo 0 會印出兩個 0
+nlines() { local n; n="$(grep -c "${2:-.}" "$1" 2>/dev/null)" || n=0; printf '%s' "${n:-0}"; }
+
 trap 'hub_stop' EXIT
 
 echo "=== H1. 端點活著 ==="
@@ -99,7 +122,7 @@ echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
 assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "2" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "3" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 echo "=== H2. 兩份資料合成一張裝置牆 ==="
@@ -318,6 +341,49 @@ out2="$(get_devices)"
 t2="$(q 'd["polled_at"]["list"]' "$out2")"
 if [ "$t1" != "$t2" ]; then echo "  PASS  下一輪照樣跑"; PASS=$((PASS+1));
 else echo "  FAIL  輪詢停住了（$t1 = ${t2}）"; FAIL=$((FAIL+1)); fi
+hub_stop
+
+echo "=== H12. 主動輪詢：不想等下一輪的時候 ==="
+# 預設 list 30 秒、scan 300 秒。剛插上一支手機還要等半分鐘才看得到，很難用。
+# 這一節把間隔設成 600 秒：沒有主動輪詢的話，測試期間絕不會有第二次。
+code1() { printf '%s' "$1" | head -1 | cut -d'|' -f1; }
+body1() { printf '%s' "$1" | cut -d'|' -f2-; }
+
+hub_env
+hub_start --list-interval 600 --scan-interval 600 \
+  || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+out="$(get_devices)"
+
+# 節流是照「上一輪開始到現在」算的，剛啟動時那一輪才剛開始 —— 這時候該被擋
+r="$(post "$HUB_URL/api/refresh?what=list")"
+assert "剛問過就按要被擋" "429" "$(code1 "$r")"
+check  "而且說得出要等多久" "retry_after_s" "$(body1 "$r")"
+
+# 等過最小間隔（list 是 5 秒）再按
+n1="$(nlines "$MOCK_STATE/argv_log" list)"
+sleep 6
+r="$(post "$HUB_URL/api/refresh?what=list")"
+assert "過了間隔就叫得動"  "200"  "$(code1 "$r")"
+assert "說得出叫醒了誰"    "list" "$(q 'd["refreshed"][0]' "$(body1 "$r")")"
+n2="$n1"
+for i in $(seq 1 50); do
+  n2="$(nlines "$MOCK_STATE/argv_log" list)"
+  [ "$n2" -gt "$n1" ] && break
+  sleep 0.2
+done
+if [ "$n2" -gt "$n1" ]; then echo "  PASS  真的又問了一次（間隔還有 600 秒）"; PASS=$((PASS+1));
+else echo "  FAIL  沒有提早問（$n1 → $n2）"; FAIL=$((FAIL+1)); fi
+
+# 掃描那一邊的門檻高很多：它會對 254 個位址各送一個封包，按住不放不該變成洗 ping
+r="$(post "$HUB_URL/api/refresh?what=scan")"
+assert "掃描的節流更嚴"    "429" "$(code1 "$r")"
+check  "回報是哪個來源被擋" "scan" "$(body1 "$r")"
+
+# 唯讀的承諾不變：主動輪詢也不准帶 --fix-ip
+nocheck "主動輪詢也不帶 --fix-ip" "fix-ip" "$(cat "$MOCK_STATE/argv_log")"
+# GET 不該是觸發器 —— 那會讓任何預抓網址的東西都去戳一次手機
+assert "GET 不觸發輪詢"    "404" "$(code1 "$(get_code "$HUB_URL/api/refresh")")"
+assert "不認得的 what 回 400" "400" "$(code1 "$(post "$HUB_URL/api/refresh?what=nonesuch")")"
 hub_stop
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"

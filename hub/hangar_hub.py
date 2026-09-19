@@ -17,9 +17,10 @@
 
 端點：
 
-    GET /                裝置牆（HTML）
-    GET /api/devices     合併後的裝置清單（JSON）
-    GET /healthz         還活著嗎
+    GET  /                裝置牆（HTML）
+    GET  /api/devices     合併後的裝置清單（JSON）
+    POST /api/refresh     現在就去問一次（?what=list|scan|all）
+    GET  /healthz         還活著嗎
 """
 
 import argparse
@@ -35,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 2
+API_SCHEMA = 3
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -244,6 +245,25 @@ class State:
         self.list_at = None
         self.scan_at = None
         self.errors = {}          # 來源 → 錯誤字串（連不到 hangar 這種）
+        # 主動輪詢用：每個來源一個「醒來」旗標，POST /api/refresh 就是把它立起來
+        self.wake = {}            # 來源 → threading.Event
+        self.started_at = {}      # 來源 → 這一輪是什麼時候開始的
+        self.busy = {}            # 來源 → 現在正在跑嗎
+
+    def begin(self, kind):
+        with self._lock:
+            self.started_at[kind] = time.time()
+            self.busy[kind] = True
+
+    def done(self, kind):
+        with self._lock:
+            self.busy[kind] = False
+
+    def since_start(self, kind):
+        """距離這個來源上一輪開始過了多久。沒跑過就是很久很久。"""
+        with self._lock:
+            t = self.started_at.get(kind)
+        return float("inf") if t is None else time.time() - t
 
     def update(self, kind, data, err):
         with self._lock:
@@ -270,6 +290,9 @@ class State:
                 "devices": devices,
                 "subnet": (self.scan_data or {}).get("subnet"),
                 "polled_at": {"list": self.list_at, "scan": self.scan_at},
+                # 現在有沒有哪一邊正在問。網頁靠這個把「更新中」顯示出來 ——
+                # 按了按鈕之後畫面要有反應，不然使用者會再按一次。
+                "polling": {k: bool(v) for k, v in self.busy.items()},
                 "errors": errors,
             }
 
@@ -281,7 +304,9 @@ def poller(state, kind, hangar, args, interval, timeout, stop):
     而且沒有任何跡象 —— 「沒有更新」跟「沒有變化」在畫面上長得一模一樣，那是最
     糟的失敗方式。任何沒預期到的例外都變成一則錯誤顯示在牆上，然後繼續跑。
     """
+    wake = state.wake[kind]
     while not stop.is_set():
+        state.begin(kind)
         try:
             data, err = run_hangar(hangar, args, timeout)
             state.update(kind, data, err)
@@ -291,10 +316,19 @@ def poller(state, kind, hangar, args, interval, timeout, stop):
             msg = "%s 這一輪炸了：%s: %s" % (kind, type(e).__name__, e)
             state.update(kind, None, msg)
             print("[%s] %s" % (kind, msg), file=sys.stderr, flush=True)
-        stop.wait(interval)
+        finally:
+            state.done(kind)
+        # 等下一輪，但 /api/refresh 可以把它提早叫醒
+        wake.wait(interval)
+        wake.clear()
 
 
 # ------------------------------------------------------------------ HTTP ----
+
+# 主動輪詢的最小間隔。按鈕按住不放不該變成對整個區網洗 ping ——
+# 掃描那一邊尤其：它會對 254 個位址各送一個封包。
+REFRESH_MIN = {"list": 5.0, "scan": 30.0}
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "hangar-hub"
@@ -317,9 +351,39 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file(full, kind)
         self.send_error(404)
 
-    def _json(self, obj):
+    def do_POST(self):
+        path, _, query = self.path.partition("?")
+        if path != "/api/refresh":
+            return self.send_error(404)
+        want = "all"
+        for part in query.split("&"):
+            if part.startswith("what="):
+                want = part[5:]
+        kinds = [k for k in self.state.wake if want in ("all", k)]
+        if not kinds:
+            return self._json(400, {"ok": False,
+                                    "reason": "不認得的 what：%s" % want})
+        woke, waited = [], []
+        for k in kinds:
+            ago = self.state.since_start(k)
+            need = REFRESH_MIN.get(k, 5.0)
+            if ago < need:
+                waited.append({"source": k, "retry_after_s": round(need - ago, 1)})
+                continue
+            self.state.wake[k].set()
+            woke.append(k)
+        if not woke:
+            # 全部都被節流擋下來 —— 429 而不是 200，呼叫端才知道沒有真的去問
+            return self._json(429, {"ok": False, "refreshed": [],
+                                    "throttled": waited,
+                                    "reason": "剛問過了，等一下再來"})
+        return self._json(200, {"ok": True, "refreshed": woke, "throttled": waited})
+
+    def _json(self, *args):
+        """_json(obj) 或 _json(status, obj)。"""
+        status, obj = (200, args[0]) if len(args) == 1 else args
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -369,11 +433,17 @@ def main(argv=None):
     stop = threading.Event()
     threads = []
 
+    # 每個來源一個喚醒旗標。poller 等在它上面，/api/refresh 把它立起來。
+    for kind in ("list", "scan"):
+        state.wake[kind] = threading.Event()
+
     list_args = ["list", "--json", "--probe"]
     threads.append(threading.Thread(
         target=poller, args=(state, "list", hangar, list_args,
                              args.list_interval, args.timeout, stop), daemon=True))
-    if not args.no_scan:
+    if args.no_scan:
+        state.wake.pop("scan", None)      # 沒人服務的旗標不要留著騙人
+    else:
         # 這裡刻意不帶 --fix-ip：那會改 profile，固定輪詢的程式不該無條件做。
         scan_args = ["scan", "--json"]
         if args.subnet:
@@ -397,6 +467,9 @@ def main(argv=None):
         pass
     finally:
         stop.set()
+        # 叫醒還在等下一輪的 poller，不然要等滿一個 interval 才收得掉
+        for ev in state.wake.values():
+            ev.set()
         httpd.server_close()
     return 0
 

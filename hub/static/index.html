@@ -24,7 +24,14 @@
   header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 4px; }
   h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
   .meta { color: var(--dim); font-size: 13px; }
-  .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; }
+  .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  button.refresh {
+    font: inherit; font-size: 12.5px; color: var(--fg); background: var(--card);
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  }
+  button.refresh:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
+  button.refresh:disabled { opacity: .55; cursor: default; }
+  .said { font-size: 12.5px; color: var(--dim); }
   .counts b { color: var(--fg); font-weight: 600; }
 
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
@@ -64,7 +71,11 @@
     <h1>Hangar 裝置牆</h1>
     <span class="meta" id="meta"></span>
   </header>
-  <div class="counts" id="counts"></div>
+  <div class="counts">
+    <span id="counts"></span>
+    <button class="refresh" id="refresh" type="button">立即更新</button>
+    <span class="said" id="said"></span>
+  </div>
   <div id="errors"></div>
   <div class="grid" id="grid"></div>
   <div id="empty"></div>
@@ -167,8 +178,12 @@ async function tick() {
   }
 
   const ds = data.devices || [];
+  const busy = Object.entries(data.polling || {}).filter(([, v]) => v).map(([k]) => k);
   document.getElementById("meta").textContent =
-    `${data.subnet || "網段未知"}｜list ${ago(data.polled_at.list)}｜scan ${ago(data.polled_at.scan)}`;
+    `${data.subnet || "網段未知"}｜list ${ago(data.polled_at.list)}｜scan ${ago(data.polled_at.scan)}` +
+    (busy.length ? `｜${busy.join(" / ")} 更新中…` : "");
+  // 更新中就把按鈕鎖起來，不然使用者會連按，而掃描那一邊是對整個 /24 送封包
+  document.getElementById("refresh").disabled = busy.length > 0;
 
   const n = s => ds.filter(d => d.state === s).length;
   const lowN = ds.filter(d => d.battery && d.battery.low).length;
@@ -187,6 +202,30 @@ async function tick() {
   document.getElementById("empty").innerHTML = ds.length ? ""
     : `<div class="empty">還沒看到任何裝置。hangar 那邊先跑得起來嗎？<code>hangar list</code> / <code>hangar scan</code></div>`;
 }
+
+// 主動輪詢：不想等下一輪（list 預設 30 秒、scan 300 秒）的時候按這個。
+// hub 那邊有最小間隔，按太快會收到 429，照實說出來就好。
+const btn = document.getElementById("refresh");
+const said = document.getElementById("said");
+btn.addEventListener("click", async () => {
+  btn.disabled = true;
+  said.textContent = "問了…";
+  try {
+    const r = await fetch("/api/refresh?what=all", { method: "POST" });
+    const j = await r.json();
+    if (r.ok) {
+      said.textContent = `正在更新：${(j.refreshed || []).join(" / ")}`;
+    } else {
+      const w = (j.throttled || []).map(x => `${x.source} 再等 ${x.retry_after_s} 秒`);
+      said.textContent = w.length ? w.join("、") : (j.reason || "現在不行");
+    }
+  } catch (e) {
+    said.textContent = "叫不動 hub（" + esc(e.message) + "）";
+  }
+  // 馬上抓一次，之後的 10 秒輪詢會接手把「更新中」清掉
+  setTimeout(tick, 400);
+  setTimeout(() => { said.textContent = ""; }, 6000);
+});
 
 tick();
 setInterval(tick, 10000);

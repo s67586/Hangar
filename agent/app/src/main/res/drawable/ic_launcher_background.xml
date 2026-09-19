@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 夜色的機棚外面。色階取自 hub 裝置牆深色模式的卡片色到底色，再壓深一點 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="@color/hangar_night_top"
+        android:endColor="@color/hangar_night_bottom"
+        android:type="linear" />
+</shape>

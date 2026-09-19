@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import android.util.Log
 
 /**
  * 常駐的前景服務：把 HTTP server 撐著。
@@ -25,9 +26,20 @@ class AgentService : Service() {
         /** 給 /status 的 uptime 用。服務重啟就重新算，那正是想知道的事。 */
         @Volatile var startedAt: Long = System.currentTimeMillis()
 
-        fun start(ctx: Context) {
-            val i = Intent(ctx, AgentService::class.java)
-            ctx.startForegroundService(i)
+        /**
+         * 把服務叫起來。回傳有沒有成功。
+         *
+         * Android 12+ 不准 app 從背景啟動前景服務（實機實測：從入伍廣播裡呼叫會丟
+         * ForegroundServiceStartNotAllowedException，而且沒接住的話整支 app 當場
+         * 崩潰）。這裡接住它 —— 叫不起來是一種要處理的狀況，不是當機的理由。
+         * 真正把它叫起來的路徑是「有人打開這個 app」或「開機廣播」，那兩個才被允許。
+         */
+        fun start(ctx: Context): Boolean = try {
+            ctx.startForegroundService(Intent(ctx, AgentService::class.java))
+            true
+        } catch (e: Exception) {
+            Log.w("hangar-agent", "startForegroundService 被擋下來了", e)
+            false
         }
     }
 
@@ -64,7 +76,7 @@ class AgentService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setContentTitle("Hangar Agent")
             .setContentText("$state ・ 連接埠 ${HttpServer.PORT}")
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setSmallIcon(R.drawable.ic_stat_hangar)
             .setContentIntent(open)
             .setOngoing(true)
             .build()

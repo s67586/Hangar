@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108" role="img" aria-label="Hangar Agent">
+<title>Hangar Agent</title>
+<!-- 由 agent/app/src/main/res 的 icon 資源產生；那邊改了這裡要一起換 -->
+<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#243140"/><stop offset="1" stop-color="#10161C"/></linearGradient><clipPath id="m"><rect width="108" height="108" rx="24" ry="24"/></clipPath></defs>
+<g clip-path="url(#m)"><rect width="108" height="108" fill="url(#bg)"/>
+  <path fill="#E9EDF2" fill-rule="evenodd" d="M28,74 L28,52 A26,26 0 0 1 80,52 L80,74 Z M36,74 L36,52 A18,18 0 0 1 72,52 L72,74 Z"/>
+  <path fill="#E9EDF2" d="M47,44 L61,44 A4,4 0 0 1 65,48 L65,70 A4,4 0 0 1 61,74 L47,74 A4,4 0 0 1 43,70 L43,48 A4,4 0 0 1 47,44 Z"/>
+  <path fill="#3FB950" d="M47.5,47 L60.5,47 A2,2 0 0 1 62.5,49 L62.5,68.5 A2,2 0 0 1 60.5,70.5 L47.5,70.5 A2,2 0 0 1 45.5,68.5 L45.5,49 A2,2 0 0 1 47.5,47 Z"/>
+</g></svg>

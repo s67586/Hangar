@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hangar Agent 的標誌：機棚的拱形外殼，裡面停著一支螢幕亮著的手機。
+  綠色那塊是「這台還活著、還在回報」，跟 hub 裝置牆表示正常的那個綠是同一個。
+
+  畫布是 adaptive icon 規定的 108x108，但實際保證看得到的只有正中央直徑 66 的
+  圓 —— 各家啟動器的遮罩形狀不一樣，圓形是最兇的那個。所以所有圖形都壓在以
+  (54,54) 為心、半徑 33 的圓裡：拱腳外側角 (28,74) 距圓心 32.8，是最靠邊的一點。
+  要改大小的話先算這個。
+
+  牆厚固定 8：拱腳 36-28=8、拱頂 26-18=8（外半徑減內半徑）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 機棚外殼。evenOdd：外拱扣掉內拱＝一圈牆，底下不封口（棚門是開的） -->
+    <path
+        android:fillColor="@color/hangar_shell"
+        android:fillType="evenOdd"
+        android:pathData="M28,74 L28,52 A26,26 0 0 1 80,52 L80,74 Z
+                          M36,74 L36,52 A18,18 0 0 1 72,52 L72,74 Z" />
+
+    <!-- 機身 -->
+    <path
+        android:fillColor="@color/hangar_shell"
+        android:pathData="M47,44 L61,44 A4,4 0 0 1 65,48 L65,70 A4,4 0 0 1 61,74 L47,74 A4,4 0 0 1 43,70 L43,48 A4,4 0 0 1 47,44 Z" />
+
+    <!-- 亮著的螢幕。縮到 36px 時整支手機只剩這塊綠看得出來，邊框別再收窄了 -->
+    <path
+        android:fillColor="@color/hangar_live"
+        android:pathData="M47.5,47 L60.5,47 A2,2 0 0 1 62.5,49 L62.5,68.5 A2,2 0 0 1 60.5,70.5 L47.5,70.5 A2,2 0 0 1 45.5,68.5 L45.5,49 A2,2 0 0 1 47.5,47 Z" />
+</vector>

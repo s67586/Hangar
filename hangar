@@ -2347,14 +2347,24 @@ cmd_enroll() {
     exit 1; }
 
   echo
-  info "1/4 安裝 agent"
+  info "1/5 安裝 agent"
   local out
-  out="$(run_timeout 120 adb -s "$SERIAL" install -r "$apk" 2>&1)" || {
-    printf '%s\n' "$out"; die "安裝失敗"; }
-  printf '%s' "$out" | grep -qi 'success' || { printf '%s\n' "$out"; die "安裝失敗"; }
+  out="$(run_timeout 120 adb -s "$SERIAL" install -r "$apk" 2>&1)" || true
+  if ! printf '%s' "$out" | grep -qi 'success'; then
+    printf '%s\n' "$out"
+    # 換了簽章金鑰（debug 版 ↔ release 版、或換了一台電腦 build）就會是這個。
+    # 這件事光看 adb 的訊息不好懂，而解法很明確，值得直接講。
+    if printf '%s' "$out" | grep -q 'INSTALL_FAILED_UPDATE_INCOMPATIBLE'; then
+      err "手機上那支 agent 是用另一把金鑰簽的，不能就地更新"
+      hint "先移除再裝（會一併清掉入伍狀態，之後這個指令會重新入伍）："
+      hint "  adb -s ${SERIAL} uninstall com.hangar.agent"
+      exit 1
+    fi
+    die "安裝失敗"
+  fi
   ok "安裝完成"
 
-  info "2/4 授予 WRITE_SECURE_SETTINGS"
+  info "2/5 授予 WRITE_SECURE_SETTINGS"
   # 這一步就是整套的破口：一次性授予，重開機後仍然有效。失敗不致命 ——
   # 沒有它 agent 照樣回報電量，只是之後切不了偵錯（M4）。
   out="$(run_timeout 20 adb -s "$SERIAL" shell pm grant com.hangar.agent \
@@ -2366,7 +2376,7 @@ cmd_enroll() {
     ok "已授予"
   fi
 
-  info "3/4 交出裝置序號與 token"
+  info "3/5 交出裝置序號與 token"
   local serial_now
   serial_now="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
   [ -n "$serial_now" ] && DEVICE_SERIAL="$serial_now"
@@ -2391,7 +2401,15 @@ cmd_enroll() {
   save_profile --quiet
   ok "序號 ${DEVICE_SERIAL}，token 已寫進 $(profile_path "$PROFILE")"
 
-  info "4/4 驗證：直接問 agent"
+  # Android 12+ 不准 app 從背景啟動前景服務，所以 agent 收完入伍廣播是叫不起
+  # 自己的（實機實測過）。把 app 叫到前景一次就合法了 —— 而入伍這個流程手上
+  # 本來就有 adb，這一步不需要任何人碰手機。
+  info "4/5 把 agent 叫起來"
+  run_timeout 20 adb -s "$SERIAL" shell am start \
+    -n com.hangar.agent/.MainActivity >/dev/null 2>&1 || true
+  sleep 2
+
+  info "5/5 驗證：直接問 agent"
   agent_reset
   if agent_probe "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN"; then
     ok "agent ${AGENT_VERSION:-} 回應正常"

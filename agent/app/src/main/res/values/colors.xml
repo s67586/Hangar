@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      標誌的一整組顏色，改這裡就好。綠色與夜色取自 hub 裝置牆深色模式的同一組色。
+      ic_launcher_monochrome 與 ic_stat_hangar 不在這裡 —— 那兩個由系統上色，
+      本來就只能是純白。
+    -->
+    <color name="hangar_shell">#E9EDF2</color>
+    <color name="hangar_live">#3FB950</color>
+    <color name="hangar_night_top">#243140</color>
+    <color name="hangar_night_bottom">#10161C</color>
+</resources>

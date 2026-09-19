@@ -734,7 +734,37 @@ hangar scan --json           區網上看得到的所有東西：IP、MAC、廠�
 | `--subnet` | 自動偵測 | 同 `hangar scan --subnet` |
 | `--no-scan` | | 完全不掃區網，只看已設定的手機 |
 
-端點：`/`（裝置牆）、`/api/devices`（合併後的 JSON）、`/healthz`。
+端點：`/`（裝置牆）、`/api/devices`（合併後的 JSON）、`/api/refresh`（POST，見下面）、`/healthz`。
+
+### 多久更新一次
+
+三層，各自獨立：
+
+| | 預設 | |
+|---|---|---|
+| `hangar list --probe` | 30 秒 | 已設定手機的狀態與電量 |
+| `hangar scan` | 300 秒 | 區網上還有什麼（ping 整個 /24 不便宜，所以慢） |
+| 網頁重抓 `/api/devices` | 10 秒 | 純讀 hub 的快取，不會去碰手機 |
+
+所以牆上的東西最舊會是「間隔 + 10 秒」前的。不想等的話按頁面上的**立即更新**，
+或直接打：
+
+```bash
+curl -X POST 'http://127.0.0.1:8787/api/refresh?what=all'   # 或 what=list / what=scan
+```
+
+它只是把輪詢**提早叫醒**，不是另外開一條路去問手機 —— 跑的還是同樣那兩個
+`hangar` 指令，一樣不帶 `--fix-ip`。
+
+有最小間隔擋著：`list` 5 秒、`scan` 30 秒（掃描會對 254 個位址各送一個封包，
+按住不放不該變成洗 ping）。太快就回 `429` 並告訴你還要等幾秒：
+
+```json
+{ "ok": false, "refreshed": [], "throttled": [ { "source": "scan", "retry_after_s": 22.0 } ] }
+```
+
+`GET /api/refresh` 是 404 —— 觸發器不該掛在 GET 上，不然任何會預抓網址的東西
+都會去戳一次手機。
 
 ### 那頁上的狀態是什麼意思
 
