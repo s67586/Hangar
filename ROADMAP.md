@@ -13,6 +13,7 @@
 - 網頁上可以**切換偵錯功能**：RD 需要開著才能 build app 進去，
   QA 需要關著才能測加固／混淆過的正式版
 - 顯示電量，低電量時提醒充電
+- 在一排長得一樣的機器裡，認得出牆上這張卡是**哪一支**（見「[響鈴](#響鈴在一排手機裡認出是哪一支)」）
 - 不限 Android / iOS，目前以 Android 為主
 
 ## 關鍵結論：手機端 agent app 是中心，不是加分項
@@ -48,6 +49,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 | 網頁投影 | **遠期目標**，不排進 M1–M5。投影目前維持走 CLI 的 scrcpy，網頁只負責切偵錯（見里程碑下面那段） |
 | 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 `helper/`，helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
+| 牆上的響鈴按鈕 | 跟投影同一條路：走 helper，不走 hub。**hub 維持唯讀**，「網頁的寫入端點怎麼認證」那個決定留到 M4 再做（理由見「[響鈴](#響鈴在一排手機裡認出是哪一支)」的 A 案那段） |
 
 ## 里程碑
 
@@ -59,6 +61,8 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成，而且在 Pixel 4 / Android 13 上實機驗過** |
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | **已完成**（電腦端兩條路都有測試；手機端的 `NsdManager` 廣播還沒在實機上看過 —— 見待確認清單 B3）|
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
+| M3d | 響鈴：牆上按一下，那支手機響給你聽 —— 用來**識別**，不是用來找失聯的機器。只依賴 M3a，不卡 M3b／M3c | 做法已定（見「[響鈴](#響鈴在一排手機裡認出是哪一支)」），還沒寫 |
+| M3e | 反向識別：入伍時把 profile 名字也寫進手機，agent 那頁大字顯示。**協定不動**，最小的一條 | 做法已定（見「[反向識別](#反向識別m3e入伍時多寫一個名字)」），還沒寫 |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
 | M5 | iOS 唯讀 | |
 
@@ -92,13 +96,13 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.2.0` | `hangar:18` |
-| `list` / `status --json` | schema **2** | `JSON_SCHEMA`，`hangar:2037` |
+| `list` / `status --json` | schema **3** | `JSON_SCHEMA`，`hangar:2074` |
 | `scan --json` | schema **5** | `SCAN_SCHEMA`，`hangar:162` |
-| hub `/api/devices` | schema **5** | `API_SCHEMA`，`hub/hangar_hub.py:41` |
+| hub `/api/devices` | schema **6** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
 | agent 協定 | schema **1**，版本 `0.1.0` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/adb`（一律 501） | 5599/tcp |
-| helper 端點 | `POST /mirror`（只綁 127.0.0.1） | `helper/hangar_helper.py` |
+| helper 端點 | `POST /mirror`（只綁 127.0.0.1） | `API_SCHEMA` **1**，`helper/hangar_helper.py:66` |
 
 `POST /api/refresh` 是 hub 目前唯一的非 GET 端點。它**不會動手機**，只是把輪詢
 提早叫醒，跑的還是同樣那兩個唯讀的 `hangar` 指令 —— 「唯讀」在這份文件裡一律
@@ -202,6 +206,7 @@ agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價
 | `GET /hangar/v1/hello` | 不需要 token | 只回「我是 hangar agent、schema 幾號、版本幾號」。給掃描用的 |
 | `GET /hangar/v1/status` | 要 token | 裝置資訊、電量、偵錯開關現在的狀態 |
 | `POST /hangar/v1/adb` | 要 token | 切偵錯（M4 才實作） |
+| `POST /hangar/v1/ring` | 要 token | 響給人聽（M3d 才實作）。形狀見「[響鈴](#響鈴在一排手機裡認出是哪一支)」 |
 
 `status` 的形狀刻意跟 `hangar --json` 對齊，hub 合併時才不用翻譯：
 
@@ -333,6 +338,162 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 > 這張表寫的是 **M3a 當時**動到什麼，號碼停在那一刻。之後 `scan` 與 hub 都又
 > 往上加過，現在各是多少看上面的「現況速查」。
 
+## 響鈴：在一排手機裡認出是哪一支
+
+> **M3d。做法已定，還沒寫。** 只依賴 M3a（已完成、實機驗過），不依賴 M3b／M3c／M4，
+> 隨時可以插隊做。
+
+### 先把「找不到手機」拆開
+
+「找不到手機」至少是三件事，而響鈴只解其中兩件：
+
+| 情境 | 響鈴 |
+|---|---|
+| 一整排長得一樣的機器，不知道牆上這張卡是哪一支 | **解得掉，而且是最好的解** —— 按下去，響的那支就是 |
+| 手機在線上，但不知道它實體在哪（在誰桌上、在哪個抽屜） | 解得掉 |
+| 手機失聯了（牆上是 `offline` / `no_adb`，agent 也叫不動） | **解不掉** —— 叫不動的東西響不了 |
+
+第三種偏偏是最讓人抓狂的那一種。所以這個功能的定位是**識別**，不是**尋找**；
+里程碑名稱、按鈕文案、README 都要照這個講，不然做完會發現沒解到某些人以為的
+痛點。第三種要靠下面「互補的兩條便宜路」。
+
+### 只有 agent 這條路是乾淨的
+
+`adb` 那條不當主線。要讓手機真的發出聲音，得 `adb push` 一個音檔再
+`am start -a android.intent.action.VIEW`，會跳出「用哪個 app 開啟」的選單 ——
+髒，而且各家 ROM 不一樣。`input keyevent 224`（亮螢幕）與 `cmd vibrator` 倒是
+乾淨，但那不是響鈴。
+
+agent 反過來很簡單：它是一支 app，要的東西框架都給了 ——
+`RingtoneManager.TYPE_ALARM` + `AudioManager` 的 `STREAM_ALARM` + `Vibrator`。
+而且 agent 已經有前景服務撐著（`AgentService`），播聲音不需要任何新的豁免。
+
+這裡有兩個已經知道的坑，都進了待確認清單：
+
+**螢幕不要指望用 Activity 點亮。** Android 10+ 擋背景啟動 Activity —— 跟上面
+「Android 12+ 不准 app 從背景啟動前景服務」是同一家族的限制，而且繞法
+（`SYSTEM_ALERT_WINDOW`、full-screen intent）在 Android 14 又收緊了一次。改發
+一則**高優先度 notification**：它會跳 heads-up、會點亮螢幕，而
+`POST_NOTIFICATIONS` 在 manifest 裡已經有了，不必多要權限（B7）。順帶一提，
+在架上一排手機裡，亮起來的那支其實比響的那支更好認 —— 聲音在櫃子裡很難定位。
+
+**音量是個會回不去的狀態。** 手機被調成靜音的話，鈴響了也聽不到；但 agent 要是
+去改系統 alarm 音量，就得負責改回來，而 app 被 ROM 殺掉的時候它改不回來。這跟
+M4 的 `revert_after_s` 是同一類問題：**手機旁邊沒有人，任何會持續的狀態都要自己
+回來**。第一版**不碰系統音量**，只用 alarm stream（它本來就不受靜音影響，DND 的
+多數設定也放行）；要不要動音量等 B6／C8 實測完再說。
+
+### 協定：`POST /hangar/v1/ring`
+
+```json
+POST /hangar/v1/ring   要 token   { "seconds": 30 }
+     → 200             { "schema": 2, "ringing": true, "seconds": 30 }
+```
+
+| 規矩 | 為什麼 |
+|---|---|
+| **一定要自己停**，agent 端夾一個上限（暫定 120 秒） | 一支在抽屜裡響一整天的手機是災難。跟 M4 的 `revert_after_s` 同一個原則 |
+| 回應回的是**實際會響幾秒**，不是你要的幾秒 | 被上限夾過的話呼叫端要知道。呼叫端不准假設它拿到的就是它送出的 |
+| `{"seconds": 0}` 就是停 | 找到之後要能立刻關掉 |
+| 手機上那則通知要有一顆「找到了」 | 手機已經在你手上的時候，那是最快的路，比跑回電腦按快 |
+| 重複呼叫 = 重新計時，不疊加 | 按兩下不該變成響兩倍久 |
+| `can.ring` 是能力宣告，跟 `can.toggle_adb` 同一套 | 舊版 agent 根本沒有這個欄位。兩邊都必須忽略不認得的欄位 —— 所以牆上要把「沒有這個欄位」當成 `false`，不是當成壞掉 |
+| 錯誤碼沿用現在那套 | 沒入伍 409、token 不對 401、body 不是 JSON 400。不要為了一個新端點發明第二套 |
+| **不做「全部響」** | 20 支一起響沒有任何識別價值，只有噪音 |
+
+協定 schema **1 → 2**。`can` 多一個欄位、多一個端點，都是往上加而不是改意思。
+
+### 誰按得動：走 helper，hub 維持唯讀（A 案）
+
+牆上的鈴鐺跟投影按鈕走同一條路：打 `127.0.0.1` 上的 helper，helper 在**按按鈕
+那台電腦**上跑 `hangar ring -p <名稱>`，由 `hangar` 去打手機裡的 agent。
+**hub 一行都不用改**，「唯讀」那條規矩維持。
+
+不讓 hub 自己打（B 案）的理由不只是省事。hub 的寫入端點要配一套認證，而
+「誰在看這一頁」這題現在還沒有答案（見「[還沒決定](#還沒決定)」）。
+**不要讓一顆鈴鐺順便把那個決定做掉** —— 那是 M4 該正面處理的事。走 helper 則是
+直接借到它已經有的三道鎖：只綁 `127.0.0.1`、Origin 白名單、token；而且「你人在
+這台跑著 helper 的電腦前面」本身就是一層授權。
+
+要老實承認的不對稱：投影**必須**在本機（視窗要開在你面前），響鈴不必 ——
+聲音出在手機上，跟你坐在哪台電腦前無關。走 helper 是為了借授權模型，不是物理上
+非如此不可。代價是「沒跑 helper 就按不動」，這件事在響鈴上比在投影上難解釋。
+接受這個代價，換的是牆上兩顆按鈕行為一致（都要 helper、說明都在同一個地方），
+使用者不用學兩套。
+
+反面論點留在這裡，因為它之後可能會翻案：響鈴是**風險最低的寫入動作** ——
+不改任何持久狀態、會自己停、按錯了最糟就是某支手機響 30 秒。哪天真的要試
+「hub 的寫入端點與認證長什麼樣」，它是比 M4 的切偵錯好得多的白老鼠。那時候把它
+從 helper 搬到 hub 是個小改動：`hangar ring` 那一層不用動，換的只是誰去呼叫它。
+
+### 牆上長什麼樣
+
+- 每張卡一顆鈴鐺，只在 agent 叫得動**而且** `can.ring` 是 `true` 的時候是活的
+- 按不動的時候不要只給一顆死按鈕，要說明為什麼（沒入伍／agent 叫不動／這台電腦
+  沒跑 helper）—— 跟現在 helper 沒跑時那顆投影按鈕的處理一致，`hub/static/index.html`
+  裡那段註解講的就是這件事
+- 響鈴中的卡片要看得出來：倒數 + 一顆「停」
+- iOS 沒有這條（M5 是唯讀）
+
+### 互補的兩條便宜路
+
+響鈴是「從牆上找到手機」。這兩條是「從手機找到牆上」跟「根本不用找」，解的正是
+響鈴解不掉的第三種情境，而且都不需要新端點、不用碰認證那題：
+
+| | 內容 | 狀態 |
+|---|---|---|
+| 反向識別 | agent 那頁狀態畫面把 profile 名字大字顯示出來（`MainActivity` 現在只有序號） | **M3e**，見「[反向識別](#反向識別m3e入伍時多寫一個名字)」 |
+| 位置標籤 | profile 多一個 `LOCATION`（「三樓 A 櫃 第二層」），牆上顯示 | 還沒排。**對失聯的手機一樣有效** —— 「找不到手機」的情境裡，這條的涵蓋率恐怕比響鈴還高 |
+
+三個一起才算把「找不到手機」解完。
+
+### 會動到什麼（做的時候照這張改）
+
+| 元件 | 動到的地方 | schema |
+|---|---|---|
+| agent | `POST /hangar/v1/ring`；一個 `Ringer`（alarm stream + 震動 + 高優先度通知 + 會自己到點停的計時器）；`Status` 的 `can` 多 `ring` | 協定 1 → 2 |
+| `hangar` | `agent_ring`（agent 層）、`cmd_ring`（指令層）。transport 那一層不用動；`list --json` 的 `agent` 物件多帶 `can` | `list` 3 → 4 |
+| helper | `POST /ring`，跟 `/mirror` 同一套三道鎖與同一套「別丟出去就回報成功」 | helper 1 → 2 |
+| hub | **不用動** —— `agent` 物件是整包從 `hangar --json` 帶上來的。A 案就是為了這個 | 欄位有變就往上加 |
+| 牆 | 每張卡一顆鈴鐺 + 倒數 + 停；讀 `agent.can.ring` | |
+| 測試 | `tests/agentbin/fake_agent.py` 要同步實作 `/ring`（協定被兩份實作夾住的規矩）；`test_agent_protocol.sh`（上限夾得住、停得掉、沒入伍 409、舊版沒有 `can.ring` 不算壞）、`test_helper.sh`（`/ring` 的三道鎖）、`test_agent_client.sh`（`hangar ring`）、`test_hub.sh`（**hub 仍然沒有任何會動手機的端點**） | |
+
+最後那一項不是順手加的：A 案的整個價值就在「hub 維持唯讀」，那句保證要有測試
+夾著，不然它會在某一次「順手」裡消失。
+
+## 反向識別（M3e）：入伍時多寫一個名字
+
+> **做法已定，還沒寫。** 整個 M3 裡最小的一條 —— 沒有新端點、協定號碼不用動、
+> 手機端多一個字串欄位而已。
+
+手上拿著一支手機，想知道「這是牆上哪一張卡」，現在只能看 `MainActivity` 上的
+序號再回電腦比對。入伍那一刻電腦端本來就知道 profile 叫什麼，順手寫進去就好。
+
+| 元件 | 動到的地方 |
+|---|---|
+| `hangar` | `cmd_enroll` 的那道廣播多一個 `--es name "$PROFILE"` |
+| agent | `Enrollment` 多存一個 `name`（`enroll()` 的「第一次入伍者得之」規矩不變）；`EnrollReceiver` 多讀一個 extra；`MainActivity` 把它大字放在最上面，序號降一級 |
+| 測試 | `test_agent_client.sh`：廣播帶的名字要跟 profile 一致。`test_agent_protocol.sh` **不用動** |
+
+三個刻意不做的決定：
+
+**協定 schema 不用動。** 這個名字是走 enroll 廣播進去的，不是 HTTP 協定的一部分。
+`/hangar/v1/*` 那三個端點的形狀完全沒變，所以 agent 協定停在 schema 1，
+`tests/agentbin/fake_agent.py` 那份參考實作也不用跟。
+
+**名字不進 `/status`，也不做比對。** 同一支手機在不同電腦上**本來就會叫不同的
+名字** —— `helper` 的 `resolve()` 就是為這件事寫的（牆上的名字是 hub 那台機器
+取的，序號才是跨電腦不變的那個）。所以「手機裡記的名字」跟「你這台電腦上的
+profile 名字」對不起來是**正常狀態，不是錯誤**。回報它只會誘使某一層去比對，
+然後產生一整牆的假警報。它的用途就只有一個：給實際拿著手機的那個人看。
+
+**改名不會同步過去，先接受。** 入伍是「第一次入伍者得之」，所以之後 profile
+改了名字（現在沒有 rename 指令，實際上是去動 `~/.config/hangar/` 底下那個檔名，
+或乾脆重跑 `setup`），手機裡記的還是舊的那個。這是外觀問題，不值得為它開第二條寫入路。
+真的痛起來再加一個 token 認證的 `POST /hangar/v1/label` —— **不要**再開一個
+exported 廣播，那是同一支手機上任何 app 都發得出來的攻擊面（`EnrollReceiver`
+非 exported 不可是因為發的人是 shell uid，那是沒得選；這裡有得選）。
+
 ## 待確認清單
 
 這份是「還沒有人在真實世界裡看過」的東西的總表。有實機之後照著跑，把結果補回來。
@@ -362,6 +523,8 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完了，現在測得動：手機裝上新版 agent 後，在同區網的電腦跑 `dns-sd -B _hangar-agent._tcp`（macOS）或 `avahi-browse -rt _hangar-agent._tcp`（Linux）看得到嗎；再用 `hangar scan --json` 確認那台的 `agent.discovered_by` 是 `mdns` | 看不到就退回「探 5599」，只是慢。**電腦端已經自動處理這個退路**，不用改設定 |
 | B4 | AP 有沒有開 client isolation | 兩支手機互 ping；或電腦 ping 手機 | 有的話整個區網掃描與 agent 都不通，得改走 Tailscale |
 | B5 | 一個 /24 掃完要多久（真實網路，不是 mock） | `time hangar scan` | 太久的話 hub 的 `--scan-interval` 要往上調 |
+| B6 | 手機被調成靜音／開著勿擾時，alarm stream 還響不響（各家 ROM 不一） | 手動設成靜音與各級 DND，各按一次響鈴 | 不響的話響鈴要去動系統音量，那就多一個「會回不去的狀態」（見 C8） |
+| B7 | 高優先度 notification 會不會真的點亮螢幕、跳 heads-up | 螢幕關著時按響鈴，看它亮不亮 | 不亮的話只剩聲音；在櫃子裡聲音比亮光難定位，識別會慢很多 |
 
 ### C. 想知道的（還沒量過）
 
@@ -374,6 +537,7 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | C5 | hub 當 adb server 那條路可不可行 | 見「待實測 1」的最小驗證步驟 |
 | C7 | 已授權的 hub 能不能代按授權對話框 | 見「待實測 2」的最小驗證步驟 |
 | C6 | iOS 那條線（`libimobiledevice`）拿得到什麼 | 還沒開始 |
+| C8 | 響鈴要不要動系統 alarm 音量；動了之後 app 被 ROM 殺掉時還還得回來嗎 | 改音量 → 播 → `am force-stop com.hangar.agent` → 看音量回去了沒 |
 
 ### 已經確認過的（不用再問）
 
@@ -670,6 +834,11 @@ RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——�
 hub 目前沒有任何會動手機的端點（`POST /api/refresh` 只叫醒自己的輪詢）。
 要從網頁動手機（M4 的切偵錯）就會有真正的寫入端點，那時要決定的是認證
 怎麼做 —— 現在連「誰在看這頁」都不知道。
+
+響鈴（M3d）本來會提前把這題逼出來，但它決定走 helper 而不走 hub，所以這個決定
+**仍然留到 M4**。理由與那個決定的反面論點都寫在「[響鈴](#響鈴在一排手機裡認出是哪一支)」
+的 A 案那一段 —— 哪天想拿一個低風險的動作來試 hub 的認證長什麼樣，響鈴是現成的
+白老鼠，翻案的成本很低。
 
 agent 的端點目前定為明文 HTTP + token。要不要上 TLS、還是乾脆只在 tailnet 上
 開放，等 M3a 跑起來、知道實際的延遲與麻煩程度再決定。
