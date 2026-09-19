@@ -31,9 +31,10 @@ SERIAL=""
 TS=""
 TS_JSON=""
 
-# profile 的可選欄位（舊 profile 沒有這兩行，load_profile 會補預設值）
+# profile 的可選欄位（舊 profile 沒有這幾行，load_profile 會補預設值）
 TRANSPORT=""
 DEVICE_SERIAL=""
+PHONE_MAC=""
 
 # --json 時 stdout 只能有 JSON，給人看的訊息一律改走 stderr
 JSON_MODE=0
@@ -154,17 +155,23 @@ require_deps() {
 #     都會帶一份），沒有就老實說廠商不知道
 #   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
 
-SCAN_SCHEMA=1
+SCAN_SCHEMA=2
 SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
 case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
 SCAN_SUBNET=""        # 要掃的 /24 前三段，例如 192.168.1
 SCAN_SELF_IP=""       # 這台電腦自己的 IP，結果裡要排掉
 SCAN_HOSTS=""         # 一行一台："ip|mac|廠商|隨機MAC(0/1)|adb(open/closed/unknown)"
 SCAN_ERRORS=""        # 一行一筆的「code|給人看的訊息」，格式與 PROBE_ERRORS 相同
+SCAN_MATCHES=""       # 對回 profile 的結果："ip|profile|靠什麼對上的(mac/ip)"
+SCAN_LEARNED=""       # 這次新記住 MAC 的："profile|mac"
+SCAN_STALE=""         # profile 指著舊 IP 的："profile|舊 IP|現在的 IP"
 
 scan_add_error() { SCAN_ERRORS="${SCAN_ERRORS}${1}|${2}"$'\n'; }
 
-scan_reset() { SCAN_HOSTS=""; SCAN_ERRORS=""; SCAN_SUBNET=""; SCAN_SELF_IP=""; }
+scan_reset() {
+  SCAN_HOSTS=""; SCAN_ERRORS=""; SCAN_SUBNET=""; SCAN_SELF_IP=""
+  SCAN_MATCHES=""; SCAN_LEARNED=""; SCAN_STALE=""
+}
 
 # 讀 ARP 表要用哪個工具。arp 兩邊都有（macOS 內建、Linux 的 net-tools），
 # 新一點的 Linux 可能只有 iproute2 的 ip neigh。
@@ -382,16 +389,82 @@ scan_run() {
     SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}"$'\n'
   done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
 
+  scan_match_profiles
   return 0
 }
 
-# 這個 IP 是不是某個已設定的 profile？掃描結果標出來，才看得懂哪幾台已經入伍了。
-scan_profile_for_ip() {
-  local n
+# 把掃到的機器對回已設定的 profile —— 掃描結果要標出哪幾台已經入伍了。
+#
+# 為什麼不能只比 IP：DHCP 換位址之後，同一支手機在裝置牆上會變成「另一台」；
+# 更糟的是舊 IP 被分給別的機器時，只比 IP 會把那台**誤認**成這支手機。
+# 識別碼的可靠度由高到低是：
+#
+#   DEVICE_SERIAL  跨 IP、跨連線方式都不變，但要 adb 連上才拿得到
+#   MAC            同一個 SSID 下穩定（隨機 MAC 也是），換 SSID 才會變
+#   IP             隨時會變
+#
+# 掃描碰不到 adb，所以這一層能用的最好的東西是 MAC：第一次靠 IP 對上時把 MAC
+# 記進 profile（PHONE_MAC），之後就改用 MAC 認人。DEVICE_SERIAL 則是把 profile
+# 對上之後附在輸出裡，給 hub 當跨來源合併的主鍵。
+scan_match_profiles() {
+  SCAN_MATCHES=""; SCAN_LEARNED=""; SCAN_STALE=""
+  local ip mac rest n taken="" ptab="" pn pip pmac ptr
+
+  # 先把 profile 讀成一張表。每台主機都重讀一次檔案在 /24 上是幾百次 grep，
+  # hub 之後會固定輪詢，沒必要這樣花。
   while IFS= read -r n; do
     [ -n "$n" ] || continue
-    [ "$(profile_field "$n" PHONE_IP)" = "$1" ] && { printf '%s' "$n"; return 0; }
+    ptab="${ptab}${n}|$(profile_field "$n" PHONE_IP)|$(profile_field "$n" PHONE_MAC)|$(profile_field "$n" TRANSPORT)"$'\n'
   done < <(list_profiles)
+
+  # 第一輪：MAC 對得上就是它，IP 換過也一樣。一個 profile 只認領一台。
+  while IFS='|' read -r ip mac rest; do
+    [ -n "$ip" ] && [ -n "$mac" ] || continue
+    while IFS='|' read -r pn pip pmac ptr; do
+      [ -n "$pn" ] || continue
+      case "$taken" in *"|${pn}|"*) continue ;; esac
+      [ -n "$pmac" ] && [ "$pmac" = "$mac" ] || continue
+      SCAN_MATCHES="${SCAN_MATCHES}${ip}|${pn}|mac"$'\n'
+      taken="${taken}|${pn}|"
+      # profile 還指著舊 IP 的話要說 —— 認得出是同一支手機，但投影還是會連錯。
+      # 只有 lan profile 比得了：tailscale profile 存的是 100.x，跟區網 IP 本來就不同。
+      [ "$ptr" = "lan" ] && [ -n "$pip" ] && [ "$pip" != "$ip" ] \
+        && SCAN_STALE="${SCAN_STALE}${pn}|${pip}|${ip}"$'\n'
+      break
+    done <<< "$ptab"
+  done <<< "$SCAN_HOSTS"
+
+  # 第二輪：MAC 沒認領到的才退回比 IP，順便把 MAC 記起來（下次就走第一輪）。
+  while IFS='|' read -r ip mac rest; do
+    [ -n "$ip" ] || continue
+    case $'\n'"$SCAN_MATCHES" in *$'\n'"${ip}|"*) continue ;; esac
+    while IFS='|' read -r pn pip pmac ptr; do
+      [ -n "$pn" ] || continue
+      case "$taken" in *"|${pn}|"*) continue ;; esac
+      [ "$pip" = "$ip" ] || continue
+      # profile 記過一組**燒死的** MAC 卻跟眼前這台不一樣 → 這個 IP 現在是別台
+      # 機器的，不是這支手機。記的若是隨機 MAC 就不算數：那種本來就會換一組。
+      if [ -n "$pmac" ] && [ "$pmac" != "$mac" ] && ! scan_mac_is_random "$pmac"; then
+        continue
+      fi
+      SCAN_MATCHES="${SCAN_MATCHES}${ip}|${pn}|ip"$'\n'
+      taken="${taken}|${pn}|"
+      if [ -n "$mac" ] && [ "$pmac" != "$mac" ]; then
+        profile_set_field "$pn" PHONE_MAC "$mac" \
+          && SCAN_LEARNED="${SCAN_LEARNED}${pn}|${mac}"$'\n'
+      fi
+      break
+    done <<< "$ptab"
+  done <<< "$SCAN_HOSTS"
+}
+
+# scan_match_for_ip <ip> → "<profile>|<mac 或 ip>"；沒對上就 return 1
+scan_match_for_ip() {
+  local ip n kind
+  while IFS='|' read -r ip n kind; do
+    [ -n "$ip" ] && [ "$ip" = "$1" ] || continue
+    printf '%s|%s' "$n" "$kind"; return 0
+  done <<< "$SCAN_MATCHES"
   return 1
 }
 
@@ -507,8 +580,11 @@ lan_list_candidates() { # 用區網掃描的結果當候選清單
   while IFS='|' read -r ip mac vendor rnd adb; do
     [ -n "$ip" ] || continue
     n=$(( n + 1 ))
-    # 名稱欄：區網上沒有「節點名」這種東西，能給的最好答案是廠商，再不然是 MAC
-    if   [ "$rnd" -eq 1 ];   then label="隨機 MAC"
+    # 名稱欄：區網上沒有「節點名」這種東西。已經設定過的就用 profile 名稱
+    # （最有用的答案），其次是廠商，再不然是 MAC。
+    label="$(scan_match_for_ip "$ip")" && label="${label%%|*}" || label=""
+    if   [ -n "$label" ];    then :
+    elif [ "$rnd" -eq 1 ];   then label="隨機 MAC"
     elif [ -n "$vendor" ];   then label="$vendor"
     else                          label="$mac"; fi
     # OS 欄：5555 開著代表「這台是已經可以 adb 進去的 Android」；其餘一律不知道
@@ -699,6 +775,25 @@ profile_field() { # <profile> <欄位名> — 不 source，避免污染呼叫端
   grep -E "^$2=" "$(profile_path "$1")" | head -1 | cut -d'"' -f2
 }
 
+# profile_set_field <profile> <欄位名> <值> — 只動這一個欄位，其他行原封不動。
+# save_profile 是「整份重寫」，要先把所有欄位都讀進全域變數才安全；掃描只是想
+# 補記一個 MAC，用這個就好。
+profile_set_field() {
+  local f tmp
+  f="$(profile_path "$1")"; [ -f "$f" ] || return 1
+  tmp="$(mktemp "${TMPDIR:-/tmp}/hangar.XXXXXX")" || return 1
+  if grep -qE "^$2=" "$f"; then
+    sed -E "s|^$2=.*|$2=\"$3\"|" "$f" > "$tmp"
+  else
+    cat "$f" > "$tmp"
+    printf '%s="%s"\n' "$2" "$3" >> "$tmp"
+  fi
+  # 用 cat 回寫而不是 mv：保留原本的 inode 與權限
+  cat "$tmp" > "$f" && rm -f "$tmp"
+  chmod 600 "$f" 2>/dev/null
+  return 0
+}
+
 list_profiles() {
   [ -d "$PROFILE_DIR" ] || return 0
   local f n
@@ -830,13 +925,14 @@ resolve_profile() {
 # load_profile_soft <name> — 讀不到或缺 PHONE_IP 時 return 1，不會結束整個程式。
 # list 這種要一次列很多支的指令用這個：一支設定壞掉不該讓整張表都不見。
 load_profile_soft() {
-  PHONE_HOST=""; PHONE_IP=""; TRANSPORT=""; DEVICE_SERIAL=""
+  PHONE_HOST=""; PHONE_IP=""; TRANSPORT=""; DEVICE_SERIAL=""; PHONE_MAC=""
   # shellcheck disable=SC1090
   . "$(profile_path "$1")" 2>/dev/null || return 1
-  # TRANSPORT / DEVICE_SERIAL 是後來才加的欄位。舊 profile 沒有這兩行，
+  # TRANSPORT / DEVICE_SERIAL / PHONE_MAC 是後來才加的欄位。舊 profile 沒有這幾行，
   # 補預設值即可，不需要 migration（跟 migrate_legacy 是不同層級的事）。
   TRANSPORT="${TRANSPORT:-tailscale}"
   DEVICE_SERIAL="${DEVICE_SERIAL:-}"
+  PHONE_MAC="${PHONE_MAC:-}"
   PROFILE="$1"
   SERIAL="${PHONE_IP}:${ADB_PORT}"
   [ -n "$PHONE_IP" ]
@@ -847,7 +943,7 @@ load_profile() { # <name>
   load_profile_soft "$1" || die "$(profile_path "$1") 缺少 PHONE_IP，請重跑 hangar setup"
 }
 
-save_profile() { # [--quiet] — 使用目前的 $PROFILE / $PHONE_HOST / $PHONE_IP / $TRANSPORT / $DEVICE_SERIAL
+save_profile() { # [--quiet] — 使用目前的 $PROFILE / $PHONE_HOST / $PHONE_IP / $TRANSPORT / $DEVICE_SERIAL / $PHONE_MAC
   local quiet=0; [ "${1:-}" = "--quiet" ] && quiet=1
   mkdir -p "$PROFILE_DIR"
   cat > "$(profile_path "$PROFILE")" <<EOF
@@ -858,6 +954,8 @@ PHONE_IP="$PHONE_IP"
 TRANSPORT="${TRANSPORT:-tailscale}"
 # 硬體序號 —— 跨 IP、跨連線方式都不會變，是這支手機的穩定識別碼
 DEVICE_SERIAL="${DEVICE_SERIAL:-}"
+# 區網 MAC —— 由 hangar scan 第一次用 IP 對上時記起來，之後手機換 IP 也認得出來
+PHONE_MAC="${PHONE_MAC:-}"
 EOF
   chmod 600 "$(profile_path "$PROFILE")"
   [ "$quiet" -eq 1 ] || ok "設定已寫入 $(profile_path "$PROFILE")"
@@ -1381,11 +1479,16 @@ cmd_setup() {
   [ -n "$PROFILE" ] || PROFILE="phone"
 
   # 同一個名稱但指向不同 IP → 提醒是覆蓋
+  PHONE_MAC=""
   if [ -f "$(profile_path "$PROFILE")" ]; then
     local old_ip=""
     old_ip="$(grep -E '^PHONE_IP=' "$(profile_path "$PROFILE")" | head -1 | cut -d'"' -f2)"
     if [ -n "$old_ip" ] && [ "$old_ip" != "$PHONE_IP" ]; then
       warn "profile「${PROFILE}」原本指向 ${old_ip}，將更新為 $PHONE_IP"
+    else
+      # save_profile 是整份重寫，不先讀回來的話會把 scan 學到的 MAC 洗掉。
+      # IP 換了就不留：同一個名字改指到另一支手機時，舊的 MAC 是錯的。
+      PHONE_MAC="$(profile_field "$PROFILE" PHONE_MAC)" || PHONE_MAC=""
     fi
   fi
   # 不同名稱卻指到同一個 IP → 提醒重複
@@ -2117,23 +2220,34 @@ cmd_scan() {
   local rc=$?
 
   if [ "$JSON_MODE" -eq 1 ]; then
-    local errs objs="" ip mac vendor rnd adb prof
+    local errs objs="" ip mac vendor rnd adb m prof kind dser stale
     errs="$(printf '%s' "$SCAN_ERRORS" | jq -R -s -c \
       '[split("\n")[] | select(length > 0) | split("|")
         | { code: .[0], message: (.[1:] | join("|")) }]')"
     while IFS='|' read -r ip mac vendor rnd adb; do
       [ -n "$ip" ] || continue
-      prof="$(scan_profile_for_ip "$ip")" || prof=""
+      m="$(scan_match_for_ip "$ip")" || m=""
+      prof="${m%%|*}"; kind="${m##*|}"; dser=""; stale=0
+      if [ -n "$prof" ]; then
+        # hub 要的主鍵是序號，不是 IP 也不是 MAC。掃描自己拿不到，但 profile
+        # 裡有 —— 對上了就一起附出去，hub 才能把 scan 與 list 兩份資料合起來。
+        dser="$(profile_field "$prof" DEVICE_SERIAL)" || dser=""
+        case $'\n'"$SCAN_STALE" in *$'\n'"${prof}|"*) stale=1 ;; esac
+      fi
       objs="${objs}$(jq -n \
         --arg ip "$ip" --arg mac "$mac" --arg vendor "$vendor" \
-        --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" '
+        --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" \
+        --arg kind "$kind" --arg dser "$dser" --argjson stale "$stale" '
         def s: if . == "" then null else . end;
-        { ip:             $ip,
-          mac:            ($mac | s),
-          vendor:         ($vendor | s),
-          mac_randomized: ($rnd == 1),
-          adb_port:       $adb,
-          profile:        ($prof | s) }')"$'\n'
+        { ip:               $ip,
+          mac:              ($mac | s),
+          vendor:           ($vendor | s),
+          mac_randomized:   ($rnd == 1),
+          adb_port:         $adb,
+          profile:          ($prof | s),
+          matched_by:       ($kind | s),
+          device_serial:    ($dser | s),
+          profile_ip_stale: ($stale == 1) }')"$'\n'
     done <<< "$SCAN_HOSTS"
     printf '%s' "$objs" | jq -s \
       --argjson schema "$SCAN_SCHEMA" \
@@ -2188,7 +2302,8 @@ cmd_scan() {
       *)      a_txt="?";      a_col="$C_DIM" ;;
     esac
 
-    prof="$(scan_profile_for_ip "$ip")" || prof=""
+    prof="$(scan_match_for_ip "$ip")" || prof=""
+    prof="${prof%%|*}"
     if [ -n "$prof" ]; then p_txt="$prof"; else p_txt="-"; fi
 
     # 顏色碼放在補齊過的內容外面，才不會被算進欄寬
@@ -2208,9 +2323,25 @@ cmd_scan() {
     printf '  %s隨機 MAC 的裝置不能只靠 MAC 認人：使用者「忘記網路」再連就會換一組%s\n' \
       "$C_DIM" "$C_0"
   fi
+  local n mac oldip newip
+  while IFS='|' read -r n mac; do
+    [ -n "$n" ] || continue
+    printf '  %s記住了「%s」的 MAC（%s）—— 之後這支手機換 IP 也認得出來%s\n' \
+      "$C_DIM" "$n" "$mac" "$C_0"
+  done <<< "$SCAN_LEARNED"
   scan_oui_db >/dev/null || printf '  %s廠商查不到是因為這台機器上沒有 OUI 資料庫（裝 nmap 或 arp-scan 就有）%s\n' \
     "$C_DIM" "$C_0"
   echo
+
+  # 認得出是同一支手機，但 profile 指著舊位址 —— 投影還是會連到錯的地方，
+  # 所以這件事要用 warn 講，不能混在上面那堆灰字裡。
+  local oldip newip
+  while IFS='|' read -r n oldip newip; do
+    [ -n "$n" ] || continue
+    warn "「${n}」就是 ${newip} 這台（MAC 一樣），但 profile 還指著 ${oldip}"
+    hint "改 $(profile_path "$n") 裡的 PHONE_IP，或在路由器上把這支手機綁固定 IP"
+    echo
+  done <<< "$SCAN_STALE"
 }
 
 # ----------------------------------------------------------------- main -----

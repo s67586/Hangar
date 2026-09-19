@@ -42,7 +42,7 @@ out="$("$PM" scan --json 2>/dev/null)"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
   && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
-assert "有 schema 版本"      "1"                "$(q '.schema' "$out")"
+assert "有 schema 版本"      "2"                "$(q '.schema' "$out")"
 assert "掃的網段寫在結果裡"  "192.168.1.0/24"   "$(q '.subnet' "$out")"
 assert "hosts 是陣列"        "array"            "$(q '.hosts | type' "$out")"
 assert "errors 是空陣列"     "0"                "$(q '.errors | length' "$out")"
@@ -245,6 +245,108 @@ check  "5555 開著的標成 android" "|192.168.1.77|android|online" "$rows"
 check  "隨機 MAC 的名稱說得出來" "隨機 MAC"                      "$rows"
 assert "沒開 5555 的 OS 欄不亂猜" "?" \
   "$(printf '%s\n' "$rows" | awk -F'|' '$3=="192.168.1.1" {print $4}')"
+
+echo "=== S12. 識別合併：認人靠 MAC 與序號，不是靠 IP ==="
+# 只比 IP 的話，DHCP 一換位址同一支手機就變成「另一台」，而舊 IP 被分給別的
+# 機器時還會把那台誤認成這支手機。以下四件事是這一層的全部重點。
+mkprofile() { # <名稱> <IP> [MAC] [序號]
+  { printf 'PHONE_HOST=""\nPHONE_IP="%s"\nTRANSPORT="lan"\n' "$2"
+    [ -n "${3:-}" ] && printf 'PHONE_MAC="%s"\n' "$3"
+    [ -n "${4:-}" ] && printf 'DEVICE_SERIAL="%s"\n' "$4"
+  } > "$XDG_CONFIG_HOME/hangar/profiles/$1.conf"
+}
+pfield() { grep -E "^$2=" "$XDG_CONFIG_HOME/hangar/profiles/$1.conf" 2>/dev/null | head -1 | cut -d'"' -f2; }
+
+# (1) 第一次只能靠 IP 對上，對上就把 MAC 記進 profile
+lan_env
+mkprofile work 192.168.1.77
+out="$("$PM" scan --json 2>/dev/null)"
+assert "第一次是靠 IP 對上的"   "ip"   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .matched_by' "$out")"
+assert "MAC 記進 profile 了"    "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
+assert "沒對上的 matched_by 是 null" "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.90") | .matched_by' "$out")"
+# 記 MAC 是寫檔，不是輸出；--json 的 stdout 仍然只能有 JSON
+printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
+  && { echo "  PASS  學到 MAC 時 stdout 仍是純 JSON"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  stdout 被污染：$out"; FAIL=$((FAIL+1)); }
+
+# (2) 記過 MAC 之後，手機換了 IP 還是同一支
+lan_env
+mkprofile work 192.168.1.250 a4:03:e7:01:02:03
+out="$("$PM" scan --json 2>/dev/null)"
+assert "換了 IP 仍認得出來"     "work" "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile' "$out")"
+assert "而且說得出是靠 MAC"     "mac"  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .matched_by' "$out")"
+assert "profile 指著舊 IP 要標出來" "true" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_stale' "$out")"
+assert "沒換 IP 的不該被標成 stale" "false" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.1") | .profile_ip_stale' "$out")"
+out="$("$PM" scan 2>&1)"
+check "人類模式要講舊 IP 已經不對" "192.168.1.250" "$out"
+check "也要講手機現在在哪"         "就是 192.168.1.77 這台" "$out"
+check "並且指出 profile 要改哪裡"  "PHONE_IP"   "$out"
+
+# (3) 舊 IP 被別台機器拿走時，不可以把那台誤認成這支手機
+lan_env
+mkprofile work 192.168.1.1 a4:03:e7:01:02:03
+out="$("$PM" scan --json 2>/dev/null)"
+assert "IP 相同但 MAC 不同 → 不是它" "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.1") | .profile' "$out")"
+assert "真正的那支才是 work"          "work" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile' "$out")"
+assert "而且 MAC 沒有被改掉"          "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
+
+# (4) 一個 profile 只能認領一台機器
+lan_env
+mkprofile work 192.168.1.90 a4:03:e7:01:02:03
+out="$("$PM" scan --json 2>/dev/null)"
+assert "MAC 對上的那台算它"       "work" "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile' "$out")"
+assert "IP 對上的那台不能也算它" "null" "$(q '.hosts[] | select(.ip=="192.168.1.90") | .profile' "$out")"
+
+# (5) 隨機 MAC 會換一組，不能因為記過就把這支手機永遠鎖死在對不上
+lan_env
+mkprofile phone 192.168.1.90 de:ad:be:ef:00:99
+out="$("$PM" scan --json 2>/dev/null)"
+assert "隨機 MAC 換過 → 退回用 IP 對" "ip" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.90") | .matched_by' "$out")"
+assert "並且把新的那組記起來"         "de:ad:be:ef:00:01" "$(pfield phone PHONE_MAC)"
+
+# (6) 序號是 hub 合併資料時的主鍵，對上 profile 就要附出去
+lan_env
+mkprofile work 192.168.1.77 "" R58M12345AB
+out="$("$PM" scan --json 2>/dev/null)"
+assert "對上的附上裝置序號" "R58M12345AB" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .device_serial' "$out")"
+assert "沒對上的是 null"    "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.90") | .device_serial' "$out")"
+
+# (7) tailscale profile 存的是 100.x，拿區網 IP 去比沒有意義，不可以亂報 stale
+lan_env
+printf 'PHONE_HOST="pixel"\nPHONE_IP="100.101.102.77"\nTRANSPORT="tailscale"\nPHONE_MAC="a4:03:e7:01:02:03"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/pixel.conf"
+out="$("$PM" scan --json 2>/dev/null)"
+assert "tailscale profile 也認得出手機" "pixel" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile' "$out")"
+assert "但不可以說它的 IP 過期了" "false" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_stale' "$out")"
+
+# (8) 讀不懂的 profile 不可以讓整個比對停擺
+lan_env
+mkprofile work 192.168.1.77
+printf 'garbage without any fields\n' > "$XDG_CONFIG_HOME/hangar/profiles/broken.conf"
+out="$("$PM" scan --json 2>/dev/null)"
+assert "壞掉的 profile 不影響別支" "work" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile' "$out")"
+assert "而且它自己不會亂認一台" "0" \
+  "$(q '[.hosts[] | select(.profile=="broken")] | length' "$out")"
+
+# (9) 設定過的手機在 setup 的候選清單裡要直接顯示名稱，不是廠商
+lan_env
+mkprofile work 192.168.1.77
+rows="$(bash -c '
+  eval "$(sed "\$d" "'"$PM"'")"
+  TRANSPORT=lan transport_list_candidates
+' 2>/dev/null)"
+check "候選清單標出 profile 名稱" "|work|192.168.1.77|android|online" "$rows"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -238,14 +238,50 @@ hangar scan --json
 它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 `arp -an`
 （沒有 `arp` 就用 `ip neigh`），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播
 與多播位址（`ff:ff:…`、mDNS 的 `01:00:5e:…`）會濾掉 —— 那些背後沒有一台機器。
-`已設定` 那欄會把 IP 對得上的 profile 名稱標出來，方便對照哪幾台已經入伍了。
+
+#### `已設定` 那欄是怎麼認人的
+
+只比 IP 是不夠的：DHCP 換一次位址，同一支手機就會變成「另一台」；更糟的是
+舊 IP 被分給別的機器時，只比 IP 會把那台**誤認**成你的手機。所以識別碼的可靠度
+由高到低是：
+
+| | 穩定度 | 掃描拿得到嗎 |
+|---|---|---|
+| `DEVICE_SERIAL` | 跨 IP、跨連線方式都不變 | 拿不到（要 adb 連上才有） |
+| MAC | 同一個 SSID 下穩定 | 拿得到 |
+| IP | 隨時會變 | 拿得到 |
+
+掃描碰不到 adb，所以它能用的最好的東西是 MAC：**第一次靠 IP 對上時，把那台的
+MAC 記進 profile 的 `PHONE_MAC`，之後就改用 MAC 認人。**
+
+```
+  記住了「work」的 MAC（a4:03:e7:01:02:03）—— 之後這支手機換 IP 也認得出來
+```
+
+記過之後手機換了位址，`已設定` 那欄照樣標得出來，而且會提醒你 profile 過期了：
+
+```
+ !!  「work」就是 192.168.1.90 這台（MAC 一樣），但 profile 還指著 192.168.1.77
+    改 ~/.config/hangar/profiles/work.conf 裡的 PHONE_IP，或在路由器上把這支手機綁固定 IP
+```
+
+反過來，IP 對得上但 MAC 跟記住的不一樣時，那台**不會**被算成你的手機 ——
+那個位址現在是別台機器的。`hangar scan --json` 裡的 `matched_by` 就是在講
+這一台是靠什麼對上的（`mac` 比 `ip` 可信）。
+
+`DEVICE_SERIAL` 掃描自己拿不到，但 profile 裡有，所以對上之後會一起附在
+`--json` 輸出裡 —— 那是 hub 把 `scan` 與 `list` 兩份資料合起來時該用的主鍵。
 
 需要知道的限制：
 
 - **拿不到機型，也拿不到電量。** 沒開偵錯的手機 adb 完全碰不到，網路層只給得出
   IP 與 MAC。這一欄要補齊得等手機端的 agent app（見 [ROADMAP](ROADMAP.md)）。
-- **隨機 MAC 查不到廠商，也不能當識別碼。** Android 10+ / iOS 14+ 對每個 SSID
-  用一組隨機 MAC，`廠商` 會直接寫「隨機 MAC」而不是亂猜一個牌子。
+- **隨機 MAC 查不到廠商。** Android 10+ / iOS 14+ 對每個 SSID 用一組隨機 MAC，
+  `廠商` 會直接寫「隨機 MAC」而不是亂猜一個牌子。它在同一個 SSID 底下仍然穩定，
+  所以照樣拿來認人；但使用者「忘記網路」再重連就會換一組，那時會退回比 IP，
+  然後把新的那組重新記起來。
+- **tailscale profile 也認得出來，但不會說它的 IP 過期。** 那種 profile 存的是
+  100.x 的 tailnet 位址，跟區網 IP 本來就不一樣，拿來比沒有意義。
 - **廠商要靠系統上現成的 OUI 資料庫。** 裝了 `nmap` 或 `arp-scan` 就有；沒有的話
   這一欄一律是 `?`。hangar 不內建自己的表 —— 完整的表好幾萬筆，只抄一小份會把
   不認得的廠商全部誤判成不知名。要指定自己的表：`HANGAR_OUI_FILE=/path/to/oui`。
@@ -350,7 +386,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "subnet": "192.168.1.0/24",
   "hosts": [
     {
@@ -359,7 +395,10 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "vendor": "宏達電子",
       "mac_randomized": false,
       "adb_port": "open",
-      "profile": "work"
+      "profile": "work",
+      "matched_by": "mac",
+      "device_serial": "R58M12345AB",
+      "profile_ip_stale": false
     }
   ],
   "errors": []
@@ -367,7 +406,13 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 ```
 
 `adb_port` 是 `open` / `closed` / `unknown`（`--no-probe` 或這台機器沒有 `nc`）。
-`profile` 對不上任何已設定的手機時是 `null`。`subnet` 是實際掃過的範圍。
+`profile` 對不上任何已設定的手機時是 `null`，`matched_by` 與 `device_serial`
+也跟著是 `null`。`subnet` 是實際掃過的範圍。
+
+`matched_by` 是「這台是靠什麼認出來的」：`mac`（可信）或 `ip`（第一次，還沒記過
+MAC）。`device_serial` 來自對上的那個 profile，是跨 IP、跨連線方式都不變的主鍵。
+`profile_ip_stale` 為 `true` 表示 MAC 認得出是同一支手機，但那個 profile 的
+`PHONE_IP` 已經是舊的了 —— 投影會連到錯的地方。
 scan 自己的 error code：
 
 | code | 意思 |
@@ -397,14 +442,17 @@ scan 自己的 error code：
 每個 `.conf` 長這樣：
 
 ```sh
-PHONE_HOST="pixel-7"        # Tailscale 節點名
-PHONE_IP="100.x.y.z"        # Tailscale IP
-TRANSPORT="tailscale"       # 連線方式（tailscale / lan）
-DEVICE_SERIAL="1A2B3C4D"    # 硬體序號，跨 IP / 跨連線方式都不變
+PHONE_HOST="pixel-7"           # Tailscale 節點名
+PHONE_IP="100.x.y.z"           # Tailscale IP
+TRANSPORT="tailscale"          # 連線方式（tailscale / lan）
+DEVICE_SERIAL="1A2B3C4D"       # 硬體序號，跨 IP / 跨連線方式都不變
+PHONE_MAC="a4:03:e7:01:02:03"  # 區網 MAC，由 hangar scan 記下來（見上面的區網掃描）
 ```
 
-後兩行是可選的。舊版只有兩行的 profile 照樣能用，讀不到時
-`TRANSPORT` 當作 `tailscale`、`DEVICE_SERIAL` 當作空的，不需要做任何轉換。
+前兩行以外都是可選的。舊版只有兩行的 profile 照樣能用，讀不到時
+`TRANSPORT` 當作 `tailscale`、`DEVICE_SERIAL` 與 `PHONE_MAC` 當作空的，
+不需要做任何轉換。`PHONE_MAC` 是 `hangar scan` 第一次用 IP 對上這支手機時
+自己補上去的，你不用手寫；重跑 `setup` 而 IP 沒變的話也會留著。
 
 ### 典型流程
 
@@ -516,8 +564,9 @@ scp ~/.config/hangar/profiles/pixel-4.conf 另一台:~/.config/hangar/profiles/
 profile 裡把 `TRANSPORT` 寫成 `lan` 就好。這種 profile 不需要 `tailscale` CLI，
 改用 `nc` 測 5555 埠通不通（macOS 內建）。
 
-**`hangar setup` 目前只會產生 `tailscale` 的 profile**（區網掃描還沒實作），
-所以 lan 的要自己寫一份：
+**`hangar setup` 目前只會產生 `tailscale` 的 profile**，所以 lan 的要自己寫一份
+（`hangar scan` 已經列得出區網上有哪些裝置，但還沒有「從掃描結果直接建 profile」
+這條路）：
 
 ```bash
 # 1. 手機插 USB（或已經在同一區網、adb 連得到），把 adbd 切到 TCP 模式
@@ -543,7 +592,7 @@ chmod 600 ~/.config/hangar/profiles/deskphone.conf
 | 需要的工具 | `tailscale` | `nc`（macOS 內建） |
 | 連線路徑 | `tailscale ping` 判斷 direct / relay | 一律當 direct，所以預設走高畫質 |
 | 節點名 | 有，`PHONE_HOST` 用得到 | 沒有，`PHONE_HOST` 留空即可 |
-| 位址會不會變 | Tailscale IP 基本上不變 | DHCP 換位址就要改 `PHONE_IP`，建議在路由器上綁固定 IP |
+| 位址會不會變 | Tailscale IP 基本上不變 | DHCP 換位址就要改 `PHONE_IP`，建議在路由器上綁固定 IP。`hangar scan` 靠 MAC 認得出換過位址的手機並提醒你改 |
 | 手機重開機後 | 一樣要重跑 `setup`（5555 消失） | 一樣要重下一次 `adb tcpip 5555` |
 
 > **區網直連沒有 ACL 這層保護。** `adb tcpip 5555` 在區網上是全開的，

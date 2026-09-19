@@ -163,5 +163,24 @@ out="$("$PM" setup zenfone 2>&1)"
 check "提醒 IP 會被更新"   "原本指向 100.99.99.99" "$out"
 check "提醒與現有 profile 重複" "也指向 $P2" "$out"
 
+echo "=== M16. 重跑 setup 不可以把 scan 記住的 MAC 洗掉 ==="
+# save_profile 是整份重寫，不先讀回來就會把 PHONE_MAC 清成空的 ——
+# 那等於每次 setup 都要重新學一次，換 IP 就又認不得了。
+two_phones; : > "$MOCK_STATE/adb_devices"
+printf 'USBSERIAL1\tdevice\n' > "$MOCK_STATE/adb_devices"
+printf 'PHONE_HOST="zenfone"\nPHONE_IP="%s"\nTRANSPORT="tailscale"\nPHONE_MAC="a4:03:e7:01:02:03"\n' \
+  "$P2" > "$XDG_CONFIG_HOME/hangar/profiles/zenfone.conf"
+"$PM" setup zenfone >/dev/null 2>&1
+assert "IP 沒變就留著 MAC" "a4:03:e7:01:02:03" \
+  "$(grep -E '^PHONE_MAC=' "$XDG_CONFIG_HOME/hangar/profiles/zenfone.conf" | cut -d'"' -f2)"
+# 反過來：同一個名字改指到另一支手機時，舊的 MAC 是錯的，不能留
+two_phones; : > "$MOCK_STATE/adb_devices"
+printf 'USBSERIAL1\tdevice\n' > "$MOCK_STATE/adb_devices"
+printf 'PHONE_HOST="zenfone"\nPHONE_IP="100.99.99.99"\nTRANSPORT="tailscale"\nPHONE_MAC="a4:03:e7:01:02:03"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/zenfone.conf"
+"$PM" setup zenfone >/dev/null 2>&1
+assert "IP 換了就不留舊 MAC" "" \
+  "$(grep -E '^PHONE_MAC=' "$XDG_CONFIG_HOME/hangar/profiles/zenfone.conf" | cut -d'"' -f2)"
+
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

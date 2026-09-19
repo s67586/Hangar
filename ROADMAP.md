@@ -51,7 +51,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | | 內容 | 狀態 |
 |---|---|---|
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
-| M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單 | **已完成** |
+| M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併 | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | 卡在「後端用什麼寫」還沒決定 |
 | M3 | agent app：授權、電量回報、mDNS 廣播、重開機後自動重開 5555 | |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
@@ -78,6 +78,11 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 3. **「看得到但管不動」的裝置已經列得出來了。** `scan_*` 這一層跟 profile 無關，
    `hangar scan --json` 回答的是網段而不是某一支手機，所以它有自己的 schema 號碼。
    hub 的裝置牆就是 `list --json` 加 `scan --json` 兩份資料合出來的。
+4. **兩份資料合得起來了。** 掃描碰不到 adb，拿不到 `DEVICE_SERIAL`，所以它改用
+   MAC 認人：第一次靠 IP 對上時把 MAC 記進 profile 的 `PHONE_MAC`，之後手機換
+   IP 也認得出來，而舊 IP 被別台機器拿走時不會誤認。對上 profile 的主機會把
+   `device_serial` 附在 `scan --json` 裡 —— 那就是 hub 合併兩份資料的主鍵。
+   這也是上面「MAC randomization」那條限制實際落地的地方。
 
 ## 還沒決定
 
@@ -101,7 +106,7 @@ hangar/
     ├── test_adb_race.sh  # adb server 競態、欄位對齊
     ├── test_multihost.sh # 第二台電腦（--existing）
     ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
-    ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測
+    ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測、識別合併
     └── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
 ```
 
@@ -137,11 +142,11 @@ hangar/
 | Suite | 內容 |
 |---|---|
 | `test_core.sh` | direct/relay 參數、`--hq`/`--lq` 覆寫、手機重開機提示、`unauthorized`、`offline` 自動重試、Tailscale 未連線、手機不在 tailnet、`status` 區分 direct/relay、`reset`、重複執行不殘留 scrcpy |
-| `test_multi.sh` | `list` / `use` / `forget`、`-p` 指定與前綴比對、名稱打錯、多台沒設預設、一台離線不影響另一台、`reset` 只作用在指定那台、`all` 同時開多台與部分失敗、視窗標題、setup 覆蓋提醒 |
+| `test_multi.sh` | `list` / `use` / `forget`、`-p` 指定與前綴比對、名稱打錯、多台沒設預設、一台離線不影響另一台、`reset` 只作用在指定那台、`all` 同時開多台與部分失敗、視窗標題、setup 覆蓋提醒、重跑 setup 不洗掉掃描記住的 MAC |
 | `test_adb_race.sh` | adb server 重啟競態的自動重試、本機 adb 問題與手機重開機的區分、setup 的 `start-server`、中文欄位對齊 |
 | `test_multihost.sh` | `setup --existing`（第二台電腦）、unauthorized 的說明、連不上時的提示方向、`--name` 別名 |
 | `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
-| `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單 |
+| `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡） |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。
