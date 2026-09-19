@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # runner 映像裡裝了好幾個 JDK，預設是哪一個會隨映像更新而變。AGP 8.2 的
       # 官方組合是 JDK 17，而 app/build.gradle.kts 也是編到 17 —— 明確指定，
@@ -76,7 +76,7 @@ jobs:
           fi
 
       - name: 留下 APK 供下載
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hangar-agent-debug-apk
           path: agent/app/build/outputs/apk/debug/*.apk
