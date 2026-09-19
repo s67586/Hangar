@@ -133,11 +133,17 @@ HANGAR_AGENT_URL=http://192.168.1.77:5599 HANGAR_AGENT_TOKEN=<token> \
 | 協定 | **過了** —— 同一份測試打真的 agent，25/25 |
 | 裝到手機上跑起來 | **過了** —— Pixel 4 / Android 13 |
 | `WRITE_SECURE_SETTINGS` | **拿得到** —— `pm grant` 之後 `granted=true` |
-| Gradle 真的產出 APK | **還沒驗過** |
+| Gradle 真的產出 APK | **過了** —— CI 上 `./gradlew assembleDebug` 一次就成功，812 KB 的 `app-debug.apk`，`aapt2` 認得 `com.hangar.agent` v0.1.0 |
 
 實機那一輪的 APK 是用 SDK 內建工具手動組的（`kotlinc` → `d8` → `aapt2 link`
-→ `apksigner`），因為那台機器上沒有完整的 gradle distribution。所以「程式跑得
-起來」是確定的，「`./gradlew assembleDebug` 通不通」還沒有答案。
+→ `apksigner`），因為那台機器上沒有完整的 gradle distribution。那條路證明的是
+「程式本身跑得起來」。
+
+`./gradlew assembleDebug` 現在也確認過了（CI 上一次就成功）。這兩條路不是同一件事
+重複驗兩次 —— **Gradle 會多跑一個 manifest merger，手動那條的 `aapt2 link` 根本
+不經過它**。所以真正新拿到的資訊是：`foregroundServiceType="specialUse"` 跟它底下
+那個 `<property>` 標籤（`PROPERTY_SPECIAL_USE_FGS_SUBTYPE`）過得了 merger。那是兩條
+路最可能分岔的地方，現在不用擔心了。
 
 實機上踩到的一件事已經修進程式裡了：**Android 12+ 不准 app 從背景啟動前景
 服務**。入伍廣播裡呼叫 `startForegroundService()` 會丟

@@ -295,14 +295,12 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | A1 | `WRITE_SECURE_SETTINGS` 能不能**寫** `Settings.Global.adb_wifi_enabled` | `adb shell settings put global adb_wifi_enabled 1`，看無線偵錯有沒有真的開；再用 agent（已授權）寫一次 | M3c 整個做不成，重開機後還是要人插 USB |
 | A2 | 打開無線偵錯後，**之前配對過的電腦**能不能免配對重連 | 配對一次 → 重開機 → agent 開無線偵錯 → 電腦端不做任何事，看 `adb devices` | 「重開機自動恢復」破功，要人讀配對碼 → M3c 價值大減 |
 | A3 | 無線偵錯的埠怎麼找 | `dns-sd -B _adb-tls-connect._tcp`（macOS）／`avahi-browse` | 找不到就等於連不上，A1 A2 都白做 |
-| A4 | **Gradle** 建得出 APK 嗎 | `cd agent && gradle wrapper --gradle-version 8.5 && ./gradlew assembleDebug` | 要修 AGP／Kotlin 版本組合 |
 
 > A1 的**前提**已經確認了：實機上 `pm grant` 之後 `WRITE_SECURE_SETTINGS: granted=true`，
 > 而且 agent 自己回報 `can.toggle_wifi_adb: true`（Android 13）。還沒確認的是「真的去寫
 > 那個值會發生什麼事」—— 那一步會動到裝置的安全設定，要有意識地做。
 >
-> A4 還沒答案：驗證那一輪是用 SDK 內建工具（kotlinc + d8 + aapt2 + apksigner）手動組出
-> APK 的，證明的是**程式本身跑得起來**，不是 Gradle 那條路通。
+> A4（Gradle 建得出 APK 嗎）已經有答案了，移到下面「已經確認過的」。
 
 ### B. 會痛的（繞得過，但要知道）
 
@@ -335,6 +333,7 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | **`WRITE_SECURE_SETTINGS` 拿得到嗎** | **拿得到**。`pm grant` 之後 `granted=true`，agent 自報 `can.toggle_adb: true` |
 | **兩份實作對得起來嗎**（C3） | **對得起來**。同一份協定測試打真的 Kotlin agent，25/25 全過 |
 | **adb 不通時還看得到電量嗎** | **看得到**。adb `disconnected` 而機型與電量照樣回得來，`battery.source` 標 `agent` —— 這是整支 agent 存在的理由，它成立了 |
+| **Gradle 建得出 APK 嗎**（A4） | **建得出來**。`./gradlew assembleDebug` 在 CI 上一次就過（AGP 8.2.2 / Gradle 8.5 / JDK 17），產出 `app-debug.apk` 812,398 bytes，`aapt2` 認得 `com.hangar.agent` v0.1.0 / compileSdk 34。現在每個 PR 都會建一次並留成可下載的 artifact，見 `.github/workflows/agent.yml` |
 
 實機那一輪還**沒**驗到的：手機真的重開機之後 agent 會不會自己回來（B1 那條的
 前半段）。測試時是用 `adb disconnect` 模擬「adb 不通」，那不等於重開機 ——
