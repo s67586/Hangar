@@ -36,7 +36,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | 沒開偵錯時看得到什麼 | 只有 IP / MAC / 廠商 | 完整裝置資訊 |
 | 電量 | 拿不到 | 常駐回報 |
 | 網頁切偵錯 | 只能關，開不回來 | 雙向 |
-| 重開機後 5555 消失 | 要人去插 USB | agent 自己重開 |
+| 重開機後 5555 消失 | 要人去插 USB | agent 自己把無線偵錯打開（Android 11+，**不是** 5555 —— 見下面的 M3 協定） |
 
 ## 已經確定的事
 
@@ -54,7 +54,9 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
-| M3 | agent app：授權、電量回報、mDNS 廣播、重開機後自動重開 5555 | |
+| M3a | agent 骨架：enroll（裝 APK、授權、寫序號與 token）、`/hello` 與 `/status`、`hangar` 這側接上 | |
+| M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | |
+| M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
 | M5 | 網頁投影串流；iOS 唯讀 | |
 
@@ -94,6 +96,166 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
    這也是上面「MAC randomization」那條限制實際落地的地方。認出來之後 profile
    指著舊 IP 的，`hangar scan --fix-ip` 會就地改好 —— 但掃描預設仍然是唯讀的，
    要寫設定檔得明講。
+
+## M3 協定：agent 跟另外兩邊怎麼講話
+
+寫程式之前先把這份定下來，因為 M3／M4 的每一次變動都會**同時**碰到三個元件
+（agent 廣播什麼、`hangar` 怎麼問、hub 怎麼顯示）。下面每一條都標了是「已經
+確定」還是「待實測」—— Android 這一側有幾個限制會直接改變協定的長相，猜錯的話
+是整段重寫。
+
+### 先講三個把設計逼成這樣的限制
+
+| 限制 | 後果 |
+|---|---|
+| **Android 10+ 的一般 app 拿不到硬體序號**（`Build.getSerial()` 要 `READ_PRIVILEGED_PHONE_STATE`） | 序號不能由 agent 自己去問系統，要在 **enroll 時從 adb 那一側寫進去** |
+| **Android 6+ 的一般 app 拿不到自己的 Wi-Fi MAC**（回傳 `02:00:00:00:00:00`） | MAC 仍然只能由 `hangar scan` 從 ARP 表學（就是現在 `PHONE_MAC` 那套），agent 不回報 MAC |
+| **`service.adb.tcp.port` 這個系統屬性只有 shell／root 設得動** | agent **開不回 5555**。它能做的是 Android 11+ 的無線偵錯（`Settings.Global.adb_wifi_enabled`），而那個埠是隨機的 |
+
+第三條很重要，因為它推翻了這份 ROADMAP 原本的假設。原本寫的是「重開機後 agent
+自己重開 5555」—— 那做不到。做得到的是「重開機後自己把無線偵錯打開」，而且埠是
+隨機的、要另外找。上面的表格與里程碑都已經照這個改過，下面的設計也照後者寫。
+
+### 誰問誰：一律由電腦端拉，agent 不主動推
+
+```
+hub ──讀 --json──> hangar ──HTTP──> agent（手機上）
+```
+
+agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價是 hub 與手機要能互通
+（跨網段就不行）—— 真的需要跨網段再加 push，現在不做。
+
+**hub 不直接跟 agent 講話。** M2b 立的規矩要維持：hub 對手機的所有知識都來自
+`hangar --json`，所以「怎麼問 agent」這件事歸 `hangar`，hub 只是多讀幾個欄位。
+
+### agent 的介面
+
+固定埠 **5599/tcp**，純 HTTP（不是 HTTPS，理由見下面的安全那段），路徑帶大版本：
+
+| | | |
+|---|---|---|
+| `GET /hangar/v1/hello` | 不需要 token | 只回「我是 hangar agent、schema 幾號、版本幾號」。給掃描用的 |
+| `GET /hangar/v1/status` | 要 token | 裝置資訊、電量、偵錯開關現在的狀態 |
+| `POST /hangar/v1/adb` | 要 token | 切偵錯（M4 才實作） |
+
+`status` 的形狀刻意跟 `hangar --json` 對齊，hub 合併時才不用翻譯：
+
+```json
+{
+  "schema": 1,
+  "agent":  { "version": "0.1.0", "uptime_s": 86400 },
+  "device_serial": "R58M12345AB",
+  "model": "Pixel 7 Pro",
+  "android": { "release": "14", "sdk": 34 },
+  "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5 },
+  "adb": { "enabled": true, "wifi_enabled": true, "wifi_port": 37219 },
+  "can": { "toggle_adb": true, "toggle_wifi_adb": true }
+}
+```
+
+- `device_serial` 是 enroll 時寫進去的那個，跟 `hangar` 從 `ro.serialno` 拿到的
+  **一定是同一個字串** —— 這是 hub 把 agent、`list`、`scan` 三份資料合成一張卡的主鍵。
+- `adb.wifi_port` 是無線偵錯當下的埠（隨機，重開機會變）。agent 讀得到就填，
+  讀不到填 `null`，讓電腦端退回用 mDNS 找。
+- `can` 是**能力宣告**：Android 10 的機器 `toggle_wifi_adb` 就是 `false`。介面一致、
+  能力不一致，比「同一個端點在不同機器上有不同行為」好除錯。
+- 沒有 `mac`、沒有 `authorized_hosts` —— 前者拿不到，後者是 `/data/misc/adb/adb_keys`，
+  一般 app 讀不到（見上面「幾個要記住的現實限制」）。
+
+### 入伍（enroll）：那唯一一次 USB
+
+```bash
+hangar setup --enroll [--apk agent.apk]
+```
+
+1. `adb install -r <APK>`
+2. `adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS`
+3. `DEVICE_SERIAL=$(adb shell getprop ro.serialno)` —— 這一步 `hangar setup` 現在就在做
+4. 電腦端產生一組隨機 token（32 bytes hex）
+5. 把序號與 token 交給 agent：
+   ```bash
+   adb shell am broadcast -n com.hangar.agent/.EnrollReceiver \
+     -a com.hangar.agent.ENROLL --es serial "$DEVICE_SERIAL" --es token "$TOKEN"
+   ```
+   指定 component（`-n`）是因為 Android 8+ 擋隱式廣播。
+6. 把 `AGENT_TOKEN` / `AGENT_PORT` 寫進 profile
+7. 驗證：打一次 `GET /hangar/v1/status`，拿得到東西才算成功
+
+**agent 自己不產生 token。** 產生的一方是電腦端，因為那時候 adb 通道已經是信任的；
+讓 agent 產生再由電腦來讀，多一個「誰先信任誰」的問題。
+
+### 找得到 agent：mDNS 是加速器，不是必要條件
+
+廣播 `_hangar-agent._tcp`，instance 名稱 `hangar-<序號後六碼>`，TXT：
+
+```
+v=1  serial=R58M12345AB  model=Pixel+7+Pro
+```
+
+**TXT 裡不放 token** —— mDNS 是整個區網都聽得到的明文廣播。
+
+但 mDNS 不能當唯一的路：AP 的 client isolation 會擋掉多播，各家 ROM 的
+`NsdManager` 穩定度也不一。所以 `hangar scan` 的規矩是：
+
+1. 有 `dns-sd`（macOS 內建）或 `avahi-browse`（Linux）就先問 mDNS —— 快，而且直接
+   給得出序號
+2. 沒有、或問不到，就退回現在這條路：ARP 表列出主機，然後對每台**多探一個 5599**
+
+第 2 條讓 mDNS 完全失效時功能只是變慢，不是不能用 —— 跟 OUI 資料庫查不到就寫 `?`
+是同一個態度：**少一個系統工具只該少一點資訊，不該整個功能不見**。
+
+### 安全：跟現在比是變好，但不是變安全
+
+| | 今天（`adb tcpip 5555`） | 有 agent 之後 |
+|---|---|---|
+| 誰連得到 | 同區網任何人，完整裝置控制權 | agent 端點要 token；5555 仍然是全開的（沒變） |
+| 傳輸 | 明文 | 明文 HTTP，token 會被同網段的人嗅到 |
+
+所以 agent **沒有讓區網變安全**，只是沒有再多開一個無認證的控制面。真正的解法是
+TLS 或只在 tailnet 上開放，那是之後要決定的事，先寫在「還沒決定」裡。
+
+M4 要關偵錯時還有一個更實際的風險：**偵錯關掉之後，agent 的 HTTP 端點是唯一
+回得去的路**。agent 掛了就要人拿著手機處理。所以切偵錯的介面要帶一個自動復原：
+
+```json
+POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
+```
+
+時間到就自己開回來。QA 測加固版是有限時間的事，這個代價划算。
+
+### 版本規矩
+
+- 路徑帶大版本（`/hangar/v1/`），不相容才動它
+- body 的 `schema` 是小版本：加欄位可以，改意思要往上加
+- **兩邊都必須忽略不認得的欄位** —— agent 跟 hub 的更新節奏本來就不會一致
+- `hangar` 的 `list --json` / `scan --json` 各自有自己的 schema 號碼，跟這份無關
+
+### agent 不做的事
+
+| | 為什麼 |
+|---|---|
+| 不碰 adb 授權金鑰 | `/data/misc/adb/adb_keys` 是 root／system 的（見上面的限制） |
+| 不代理 adb 流量 | build 還是電腦直連手機，agent 不在那條路上 |
+| 不在 Android 10 以下重開 TCP adb | 做不到，那種機器重開機後還是要人插 USB |
+| 不自己決定偵錯開或關 | 狀態由電腦端指派，agent 只執行與回報 |
+
+### 這份協定會改到現有的什麼
+
+| 元件 | 要動的地方 |
+|---|---|
+| `hangar` | `setup --enroll`；profile 多 `AGENT_TOKEN` / `AGENT_PORT`；`scan` 多探 5599 與 mDNS；`list --probe` 在 adb 不通時改問 agent 拿電量 |
+| hub | 只是多讀幾個欄位（`agent`、`adb.wifi_port`），M2b 的「hub 不自己碰手機」維持不變 |
+| README | 「profile 沒有任何祕密，直接抄過去也行」**不再成立** —— 有 token 之後那句要改掉 |
+
+### 待實測（寫程式前先確認，猜錯要重來）
+
+| | |
+|---|---|
+| `WRITE_SECURE_SETTINGS` 能不能寫 `Settings.Global.adb_wifi_enabled` | 這是 M3c 的全部基礎 |
+| 打開無線偵錯之後，**之前配對過的電腦**能不能免配對重連 | 不能的話「重開機自動恢復」就破功，要人讀配對碼 |
+| 把 `adb_enabled` 關掉時，無線偵錯會不會一起死 | 幾乎一定會，但要確認 M4 關掉之後 agent 端點還活著 |
+| `NsdManager` 在你手上那幾支機器 + AP 上的實際表現 | 決定 mDNS 是主要路徑還是純加速器 |
+| 前景服務在各家 ROM 的省電策略下活多久 | agent 被殺掉 = 那支手機失聯，這是整套的單點故障 |
 
 ## 待實測：讓 hub 當唯一被授權的那台電腦
 
@@ -239,6 +401,9 @@ RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——�
 
 hub 目前是唯讀的。要從網頁動手機（M4 的切偵錯、M5 的投影）就會有寫入端點，
 那時要決定的是認證怎麼做 —— 現在連「誰在看這頁」都不知道。
+
+agent 的端點目前定為明文 HTTP + token。要不要上 TLS、還是乾脆只在 tailnet 上
+開放，等 M3a 跑起來、知道實際的延遲與麻煩程度再決定。
 
 多人同時裝 APK 進同一支手機會互相蓋掉，目前沒有任何佔用／排隊機制。hub 要不要
 管「誰在用哪一支」也還沒決定。
