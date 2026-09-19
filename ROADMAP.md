@@ -128,6 +128,104 @@ adb devices            # 看到的是 hub 上那幾支手機
 
 實測結果出來之前，README 寫的仍然是「各台電腦直連手機」那條路。
 
+### 最小驗證步驟
+
+要三樣東西：hub（已經被這支手機授權過）、一支手機、**一台從來沒被這支手機授權過的
+電腦**（以下叫 RD 機）。手邊只有已授權過的電腦的話，把金鑰換掉就等於一台新的：
+
+```bash
+# RD 機上：把現有金鑰移開，adb 下次啟動會自己產生一把新的（測完記得換回來）
+mv ~/.android/adbkey     ~/.android/adbkey.bak
+mv ~/.android/adbkey.pub ~/.android/adbkey.pub.bak
+adb kill-server
+```
+
+**1. hub：確認基準狀態**
+
+```bash
+hangar status -p <手機>          # adb 要是 device，不是 unauthorized
+adb kill-server
+adb -L tcp:<hub 的 tailnet IP>:5037 nodaemon server &
+```
+
+**2. hub：確認真的只綁在 tailnet 位址上**
+
+```bash
+lsof -nP -iTCP:5037 -sTCP:LISTEN      # Linux 用 ss -ltn | grep 5037
+```
+
+> 期望：只看到 `100.x.y.z:5037`。出現 `*:5037` 或 `0.0.0.0:5037` 就是開在所有
+> 介面上 —— 那等於把所有手機的完整控制權放到區網上，必須先修掉再繼續。
+
+**3. RD 機：連過去，手機不該有任何反應**
+
+```bash
+export ADB_SERVER_SOCKET=tcp:<hub 的 tailnet IP>:5037
+adb devices
+```
+
+> 期望：列出手機而且狀態是 `device`。**同時盯著手機螢幕：不可以跳出「允許 USB
+> 偵錯」**。有跳出來就表示這條路沒有繞開授權，後面不用測了。
+
+**4. RD 機：真的裝一個 APK 上去**
+
+```bash
+export ANDROID_SERIAL=<手機 IP>:5555
+./gradlew installDebug        # 或 adb install app-debug.apk
+```
+
+> 期望：裝得進去。APK 是先傳到 hub、再由 hub 送進手機的，所以 RD 機跟手機之間
+> 不需要任何直接連線。
+
+**5. 反證：確認手機「仍然不信任」RD 機的金鑰**
+
+這步是整件事的重點——要證明第 3 步的成功不是因為 RD 機被偷偷授權了。
+
+```bash
+unset ADB_SERVER_SOCKET
+adb kill-server
+adb connect <手機 IP>:5555
+adb devices
+```
+
+> 期望：`unauthorized`（或連不上）。**手機這時候會跳出「允許 USB 偵錯」，不要按
+> 允許**，按取消。然後 `adb disconnect <手機 IP>:5555 && adb kill-server` 收拾掉。
+>
+> 拿得到 `adb shell` 的話可以再對一次帳：`adb shell cat /data/misc/adb/adb_keys | wc -l`
+> 在第 1 步與這一步的數字要一樣。讀不到（permission denied）是正常的，那就以上面
+> 的行為判斷為準。
+
+**6. Android Studio 認不認**（目前最不確定的一項）
+
+macOS 從終端機啟動才吃得到環境變數，用 Finder 點開的不算：
+
+```bash
+export ADB_SERVER_SOCKET=tcp:<hub 的 tailnet IP>:5037
+/Applications/Android\ Studio.app/Contents/MacOS/studio
+```
+
+> 期望：裝置選單裡看得到那支手機。看不到的話記下 Studio 版本 —— 結論可能是
+> 「Studio 不支援，開發者用 CLI build」，那也是個可以接受的結論，只是要寫下來。
+
+**7. 真正想買的東西：手機重開機之後**
+
+```bash
+# 手機重開機後，RD 機上：
+adb devices                      # 期望：手機不見了（5555 沒了，所有人一起斷）
+
+# hub 上：接 USB（或用 Android 11+ 的無線偵錯配對）重跑
+hangar setup <手機>
+
+# RD 機上：
+adb devices                      # 期望：手機回來了，而且 RD 機什麼都沒做
+```
+
+> 這一步證明的是「加人與修復都只發生在 hub 這一台」。注意修復本身仍然要有人
+> 碰手機（USB，或在手機上開無線偵錯讀配對碼）—— 那正是 agent app 要消掉的部分，
+> 不是這條路線能解決的。
+
+測完把每一步的實際結果補回這一節，然後才決定要不要把它寫進 README。
+
 ## 還沒決定
 
 後端用什麼寫、web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
