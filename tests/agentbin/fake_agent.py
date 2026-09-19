@@ -14,9 +14,25 @@
 
 import argparse
 import json
+import socketserver
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Server(ThreadingHTTPServer):
+    """跳過 server_bind 裡的反向 DNS。
+
+    HTTPServer.server_bind() 會呼叫 socket.getfqdn()，那是一次反向 DNS 查詢。
+    在反向解析不通或很慢的機器上（GitHub 的 macOS runner 就是這樣）它會一路卡到
+    DNS 逾時，而啟動訊息是在它之後才印 —— 看起來就像服務起不來。server_name
+    這個欄位我們從來沒用過，所以直接跳過它。
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 
 SCHEMA = 1
 VERSION = "0.1.0-fake"
@@ -92,7 +108,7 @@ def main():
     cfg = ap.parse_args()
 
     Handler.cfg = cfg
-    httpd = ThreadingHTTPServer(("127.0.0.1", cfg.port), Handler)
+    httpd = Server(("127.0.0.1", cfg.port), Handler)
     print("fake agent: http://127.0.0.1:%d/" % httpd.socket.getsockname()[1], flush=True)
     try:
         httpd.serve_forever()
