@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 1
+API_SCHEMA = 2
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -93,6 +93,11 @@ def _state_of(dev):
         return "ready"
     if adb == "unauthorized":
         return "unauthorized"
+    agent = dev.get("agent") or {}
+    if agent.get("reachable"):
+        # adb 進不去，但手機裡的 agent 答得出話 —— 看得到、管不動。
+        # 這正是 agent 存在的理由，值得跟「整台失聯」分開顯示。
+        return "agent_only"
     if dev.get("reachability") in ("offline", "notfound"):
         return "offline"
     return "no_adb"
@@ -125,6 +130,8 @@ def merge(list_data, scan_data):
             "android": d.get("android"),
             "battery": _battery(d.get("battery")),
             "mirroring": bool(d.get("scrcpy_pids")),
+            # agent：null = 沒入伍過；reachable=false = 入伍過但現在叫不動
+            "agent": d.get("agent"),
             # 區網那半邊的欄位，等下面掃描結果對上了再補
             "mac": None, "vendor": None, "mac_randomized": None,
             "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
@@ -153,7 +160,7 @@ def merge(list_data, scan_data):
                 "mirroring": False,
                 "mac": None, "vendor": None, "mac_randomized": None,
                 "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
-                "sources": [], "errors": [],
+                "agent": None, "sources": [], "errors": [],
             }
             devices.append(entry)
             by_profile[prof] = entry
@@ -172,6 +179,10 @@ def merge(list_data, scan_data):
                 "mac_randomized": h.get("mac_randomized"),
                 "adb_port": h.get("adb_port"), "lan_ip": h.get("ip"),
                 "profile_ip_stale": False,
+                # 掃到一支 agent 卻沒有對應的 profile：那台裝過 agent 但這台
+                # hub 沒有它的 token。看得到、問不出細節。
+                "agent": ({"reachable": True, "version": (h.get("agent") or {}).get("version"),
+                           "enrolled": None} if h.get("agent") else None),
                 "sources": ["scan"], "errors": [],
             })
             continue
@@ -181,12 +192,19 @@ def merge(list_data, scan_data):
         entry["adb_port"] = h.get("adb_port")
         entry["lan_ip"] = h.get("ip")
         entry["profile_ip_stale"] = bool(h.get("profile_ip_stale"))
+        if h.get("agent") and not (entry.get("agent") or {}).get("reachable"):
+            # list 那邊沒問到（沒 token 或沒帶 --probe），但掃描看到它在聽
+            entry["agent"] = {"reachable": True,
+                              "version": (h.get("agent") or {}).get("version"),
+                              "enrolled": (entry.get("agent") or {}).get("enrolled")}
+            if entry["state"] in ("no_adb", "offline"):
+                entry["state"] = "agent_only"
         if "scan" not in entry["sources"]:
             entry["sources"].append("scan")
 
     # 排序：要注意的排前面（電量低 > 設定過的 > 掃到的），同類再按名稱／IP
     order = {"unauthorized": 0, "no_adb": 1, "offline": 2, "unknown": 3,
-             "ready": 4, "unmanaged": 5}
+             "agent_only": 4, "ready": 5, "unmanaged": 6}
 
     def sort_key(d):
         low = 0 if (d.get("battery") or {}).get("low") else 1

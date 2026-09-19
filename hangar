@@ -17,6 +17,8 @@ set -uo pipefail
 
 VERSION="1.2.0"
 ADB_PORT=5555
+# 手機端 agent 聽的埠（見 ROADMAP 的「M3 協定」）
+AGENT_PORT_DEFAULT=5599
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hangar"
 PROFILE_DIR="$CONFIG_DIR/profiles"
 DEFAULT_FILE="$CONFIG_DIR/default"
@@ -35,6 +37,8 @@ TS_JSON=""
 TRANSPORT=""
 DEVICE_SERIAL=""
 PHONE_MAC=""
+AGENT_TOKEN=""
+AGENT_PORT=""
 
 # --json 時 stdout 只能有 JSON，給人看的訊息一律改走 stderr
 JSON_MODE=0
@@ -155,12 +159,12 @@ require_deps() {
 #     都會帶一份），沒有就老實說廠商不知道
 #   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
 
-SCAN_SCHEMA=3
+SCAN_SCHEMA=4
 SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
 case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
 SCAN_SUBNET=""        # 要掃的 /24 前三段，例如 192.168.1
 SCAN_SELF_IP=""       # 這台電腦自己的 IP，結果裡要排掉
-SCAN_HOSTS=""         # 一行一台："ip|mac|廠商|隨機MAC(0/1)|adb(open/closed/unknown)"
+SCAN_HOSTS=""         # 一行一台："ip|mac|廠商|隨機MAC(0/1)|adb|agent 版本(空=沒有)"
 SCAN_ERRORS=""        # 一行一筆的「code|給人看的訊息」，格式與 PROBE_ERRORS 相同
 SCAN_MATCHES=""       # 對回 profile 的結果："ip|profile|靠什麼對上的(mac/ip)"
 SCAN_LEARNED=""       # 這次新記住 MAC 的："profile|mac"
@@ -353,6 +357,21 @@ scan_vendor() { # <正規化過的 mac> → 廠商名稱；查不到或沒有資
     | sed -E 's/^[^[:space:]]+[[:space:]]+//' | cut -f1 | head -1
 }
 
+# scan_agent_at <ip> → agent 的版本字串；沒有 agent 就印空字串。
+#
+# 先用 nc 探埠再用 curl 問，不是多此一舉：一個 /24 上大多數東西根本沒有 agent，
+# 讓 curl 對每一台等到逾時的話，掃描會從幾秒變成幾分鐘。nc 探不通就直接跳過。
+scan_agent_at() {
+  command -v nc >/dev/null 2>&1 || return 0
+  agent_have_curl || return 0
+  run_timeout 3 nc -z -w 1 "$1" "$AGENT_PORT_DEFAULT" >/dev/null 2>&1 || return 0
+  local body
+  body="$(agent_hello "$1")" || return 0
+  local v; v="$(agent_field "$body" '.version')"
+  # 答得出話但 jq 沒裝（或欄位缺了）時，至少要讓上層知道「這裡有一支 agent」
+  printf '%s' "${v:-?}"
+}
+
 scan_adb_open() { # <ip> → open / closed / unknown
   command -v nc >/dev/null 2>&1 || { printf 'unknown'; return 0; }
   if run_timeout 3 nc -z -w 1 "$1" "$ADB_PORT" >/dev/null 2>&1
@@ -373,7 +392,7 @@ scan_run() {
   scan_prepare "$want" || return 1
   [ "$do_sweep" -eq 1 ] && scan_sweep
 
-  local ip mac vendor rnd adb
+  local ip mac vendor rnd adb agent
   while read -r ip mac; do
     [ -n "$ip" ] || continue
     case "$ip" in "${SCAN_SUBNET}."*) : ;; *) continue ;; esac
@@ -386,8 +405,12 @@ scan_run() {
     vendor=""
     [ "$rnd" -eq 0 ] && vendor="$(scan_vendor "$mac")"
     adb="unknown"
-    [ "$do_probe" -eq 1 ] && adb="$(scan_adb_open "$ip")"
-    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}"$'\n'
+    agent=""
+    if [ "$do_probe" -eq 1 ]; then
+      adb="$(scan_adb_open "$ip")"
+      agent="$(scan_agent_at "$ip")"
+    fi
+    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}|${agent}"$'\n'
   done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
 
   scan_match_profiles
@@ -594,8 +617,8 @@ lan_path()       { printf 'direct ?'; }  # 同區網一律視為直連
 lan_resolve_ip() { printf '%s' "$1"; }   # 沒有節點名的概念，IP 就是 IP
 lan_list_candidates() { # 用區網掃描的結果當候選清單
   scan_run "" 1 1 || return 0
-  local n=0 ip mac vendor rnd adb label os
-  while IFS='|' read -r ip mac vendor rnd adb; do
+  local n=0 ip mac vendor rnd adb agent label os
+  while IFS='|' read -r ip mac vendor rnd adb agent; do
     [ -n "$ip" ] || continue
     n=$(( n + 1 ))
     # 名稱欄：區網上沒有「節點名」這種東西。已經設定過的就用 profile 名稱
@@ -605,8 +628,8 @@ lan_list_candidates() { # 用區網掃描的結果當候選清單
     elif [ "$rnd" -eq 1 ];   then label="隨機 MAC"
     elif [ -n "$vendor" ];   then label="$vendor"
     else                          label="$mac"; fi
-    # OS 欄：5555 開著代表「這台是已經可以 adb 進去的 Android」；其餘一律不知道
-    if [ "$adb" = "open" ]; then os="android"; else os="?"; fi
+    # OS 欄：5555 開著、或有 agent 在回應，都代表「這台是 Android」；其餘不知道
+    if [ "$adb" = "open" ] || [ -n "$agent" ]; then os="android"; else os="?"; fi
     printf '%s|%s|%s|%s|%s\n' "$n" "$label" "$ip" "$os" "online"
   done <<< "$SCAN_HOSTS"
 }
@@ -780,6 +803,118 @@ transport_list_candidates() {
   esac
 }
 
+# ----------------------------------------------------------------- agent ----
+#
+# 手機端 agent 的客戶端。協定寫在 ROADMAP 的「M3 協定」那一節，那份是準的。
+#
+# 為什麼要有這一層：沒開偵錯的手機 adb 完全碰不到，但 agent 住在手機裡，它答得出
+# 機型與電量。agent 回報的 device_serial 跟 adb 的 ro.serialno 是同一個字串 ——
+# 那是把 agent、list、scan 三份資料合成同一台的主鍵。
+#
+# hub 不直接跟 agent 講話（M2b 立的規矩），所以「怎麼問 agent」全部收在這裡。
+
+# curl 不是硬相依：沒有它就只是問不到 agent，其他功能照常。跟 OUI 資料庫查不到
+# 就寫「?」是同一個態度 —— 少一個系統工具只該少一點資訊。
+agent_have_curl() { command -v curl >/dev/null 2>&1; }
+
+agent_port_of() { # profile 沒寫就用預設
+  local p="${1:-}"
+  case "$p" in ''|*[!0-9]*) printf '%s' "$AGENT_PORT_DEFAULT" ;; *) printf '%s' "$p" ;; esac
+}
+
+# agent_get <url> [token] — 成功時把 body 印到 stdout；連不到或非 2xx 就 return 1
+agent_get() {
+  local url="$1" token="${2:-}" out rc
+  agent_have_curl || return 1
+  if [ -n "$token" ]; then
+    out="$(curl -fsS -m 5 -H "Authorization: Bearer ${token}" "$url" 2>/dev/null)"; rc=$?
+  else
+    out="$(curl -fsS -m 5 "$url" 2>/dev/null)"; rc=$?
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+# agent_hello <ip> [port] — 不需要 token。掃描靠它認出「這是一支 agent」。
+agent_hello() {
+  agent_get "http://${1}:$(agent_port_of "${2:-}")/hangar/v1/hello"
+}
+
+# agent_status <ip> <port> <token>
+agent_status() {
+  [ -n "${3:-}" ] || return 1
+  agent_get "http://${1}:$(agent_port_of "${2:-}")/hangar/v1/status" "$3"
+}
+
+# agent_field <json> <jq 路徑> — 取不到就印空字串（jq 沒裝也是空字串）
+agent_field() {
+  command -v jq >/dev/null 2>&1 || return 0
+  printf '%s' "$1" | jq -r "${2} // empty" 2>/dev/null
+}
+
+# 產一組 token。openssl 不在的話退回 /dev/urandom —— 兩條路都只用系統本來就有的東西。
+agent_gen_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  else
+    LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64; echo
+  fi
+}
+
+# APK 要從哪裡找。--apk 指定的優先，其次是這個 repo 裡 build 出來的那份。
+agent_find_apk() {
+  [ -n "${1:-}" ] && { [ -f "$1" ] && printf '%s' "$1" && return 0; return 1; }
+  local here f
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for f in "$here"/agent/app/build/outputs/apk/release/*.apk \
+           "$here"/agent/app/build/outputs/apk/debug/*.apk; do
+    [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+
+# 這台手機的 agent 答不答得出話。結果放進全域變數，人類輸出與 --json 共用。
+AGENT_REACHABLE=0     # 0/1
+AGENT_VERSION=""
+AGENT_ENROLLED=""     # true / false / 空（問不到）
+AGENT_SOURCE=""       # 機型與電量是誰給的：adb / agent / 空
+
+agent_reset() { AGENT_REACHABLE=0; AGENT_VERSION=""; AGENT_ENROLLED=""; AGENT_SOURCE=""; }
+
+# agent_ping <ip> [port] — 這支手機上有 agent 在聽嗎。便宜，不需要 token。
+agent_ping() {
+  local body
+  [ -n "${1:-}" ] || return 1
+  body="$(agent_hello "$1" "${2:-}")" || return 1
+  AGENT_REACHABLE=1
+  AGENT_VERSION="$(agent_field "$body" '.version')"
+  AGENT_ENROLLED="$(agent_field "$body" '.enrolled | tostring')"
+  return 0
+}
+
+# agent_probe <ip> <port> <token> — 問 agent 拿裝置資訊，補進 DEV_* / BATTERY_*。
+# adb 拿得到的時候不該叫這個：adb 那份比較完整（序號、SDK 都有）。
+agent_probe() {
+  local ip="$1" port="${2:-}" token="${3:-}" body
+  agent_ping "$ip" "$port" || return 1
+
+  # 沒有 token 就只能停在「看得到它」。這是入伍前的正常狀態，不是錯誤。
+  [ -n "$token" ] || return 0
+  body="$(agent_status "$ip" "$port" "$token")" || return 0
+
+  local v
+  v="$(agent_field "$body" '.model')";           [ -n "$v" ] && DEV_MODEL="$v"
+  v="$(agent_field "$body" '.android.release')"; [ -n "$v" ] && DEV_RELEASE="$v"
+  v="$(agent_field "$body" '.android.sdk')";     [ -n "$v" ] && DEV_SDK="$v"
+  v="$(agent_field "$body" '.device_serial')";   [ -n "$v" ] && DEV_SERIALNO="$v"
+  v="$(agent_field "$body" '.battery.level')";   [ -n "$v" ] && BATTERY_LEVEL="$v"
+  v="$(agent_field "$body" '.battery.status')";  [ -n "$v" ] && BATTERY_STATUS="$v"
+  v="$(agent_field "$body" '.battery.temperature_c')"; [ -n "$v" ] && BATTERY_TEMP="$v"
+  AGENT_SOURCE="agent"
+  return 0
+}
+
 # -------------------------------------------------------------- profiles ----
 
 sanitize_name() {
@@ -944,6 +1079,7 @@ resolve_profile() {
 # list 這種要一次列很多支的指令用這個：一支設定壞掉不該讓整張表都不見。
 load_profile_soft() {
   PHONE_HOST=""; PHONE_IP=""; TRANSPORT=""; DEVICE_SERIAL=""; PHONE_MAC=""
+  AGENT_TOKEN=""; AGENT_PORT=""
   # shellcheck disable=SC1090
   . "$(profile_path "$1")" 2>/dev/null || return 1
   # TRANSPORT / DEVICE_SERIAL / PHONE_MAC 是後來才加的欄位。舊 profile 沒有這幾行，
@@ -951,6 +1087,8 @@ load_profile_soft() {
   TRANSPORT="${TRANSPORT:-tailscale}"
   DEVICE_SERIAL="${DEVICE_SERIAL:-}"
   PHONE_MAC="${PHONE_MAC:-}"
+  AGENT_TOKEN="${AGENT_TOKEN:-}"
+  AGENT_PORT="${AGENT_PORT:-}"
   PROFILE="$1"
   SERIAL="${PHONE_IP}:${ADB_PORT}"
   [ -n "$PHONE_IP" ]
@@ -961,7 +1099,7 @@ load_profile() { # <name>
   load_profile_soft "$1" || die "$(profile_path "$1") 缺少 PHONE_IP，請重跑 hangar setup"
 }
 
-save_profile() { # [--quiet] — 使用目前的 $PROFILE / $PHONE_HOST / $PHONE_IP / $TRANSPORT / $DEVICE_SERIAL / $PHONE_MAC
+save_profile() { # [--quiet] — 把目前的 $PROFILE / $PHONE_* / $TRANSPORT / $DEVICE_SERIAL / $AGENT_* 寫出去
   local quiet=0; [ "${1:-}" = "--quiet" ] && quiet=1
   mkdir -p "$PROFILE_DIR"
   cat > "$(profile_path "$PROFILE")" <<EOF
@@ -974,6 +1112,10 @@ TRANSPORT="${TRANSPORT:-tailscale}"
 DEVICE_SERIAL="${DEVICE_SERIAL:-}"
 # 區網 MAC —— 由 hangar scan 第一次用 IP 對上時記起來，之後手機換 IP 也認得出來
 PHONE_MAC="${PHONE_MAC:-}"
+# 手機端 agent 的 token 與埠（hangar setup --enroll 寫入）
+# 注意：有了 token 之後這個檔案就有祕密了，不要隨手複製給別人
+AGENT_TOKEN="${AGENT_TOKEN:-}"
+AGENT_PORT="${AGENT_PORT:-}"
 EOF
   chmod 600 "$(profile_path "$PROFILE")"
   [ "$quiet" -eq 1 ] || ok "設定已寫入 $(profile_path "$PROFILE")"
@@ -1784,9 +1926,21 @@ probe_adb() { # <deep 0/1> <try_connect 0/1>
       fi ;;
   esac
 
-  if [ "$deep" -eq 1 ] && [ "$PROBE_ADB" = "device" ]; then
-    adb_device_info "$SERIAL"
-    adb_battery "$SERIAL" || true
+  if [ "$deep" -eq 1 ]; then
+    agent_reset
+    if [ "$PROBE_ADB" = "device" ]; then
+      adb_device_info "$SERIAL"
+      adb_battery "$SERIAL" || true
+      AGENT_SOURCE="adb"
+      # 入伍過的手機順手確認 agent 還活著。agent 死掉而 adb 還通，是「現在沒事、
+      # 但下次重開機就會失聯」的預警 —— 那是會想提早知道的事。
+      [ -n "${AGENT_TOKEN:-}" ] && agent_ping "$PHONE_IP" "$AGENT_PORT" >/dev/null 2>&1
+    elif [ -n "${AGENT_TOKEN:-}" ]; then
+      # adb 碰不到，但 agent 住在手機裡 —— 這正是整支 agent 存在的理由。
+      # 注意不看 PROBE_REACH：那一欄量的是 5555 通不通，而手機重開機之後
+      # 5555 本來就不通，agent 卻還在。
+      agent_probe "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" >/dev/null 2>&1 || true
+    fi
   fi
   return 0
 }
@@ -1797,7 +1951,7 @@ scrcpy_pids_for() { pgrep -f "scrcpy .*${1}" 2>/dev/null | tr '\n' ' '; }
 #
 # 這是之後 web 後端讀 hangar 的介面，schema 有變動就要把 schema 號碼往上加。
 
-JSON_SCHEMA=1
+JSON_SCHEMA=2
 
 # device_json <is_default 0/1> — 依目前的 probe 結果組出一個 device 物件
 device_json() {
@@ -1826,6 +1980,11 @@ device_json() {
     --arg     blevel    "$BATTERY_LEVEL" \
     --arg     bstatus   "$BATTERY_STATUS" \
     --arg     btemp     "$BATTERY_TEMP" \
+    --arg     bsource   "$AGENT_SOURCE" \
+    --argjson areach    "$AGENT_REACHABLE" \
+    --arg     aver      "$AGENT_VERSION" \
+    --arg     aenrolled "$AGENT_ENROLLED" \
+    --arg     atoken    "${AGENT_TOKEN:-}" \
     --argjson errors    "$errs" \
     --argjson pids      "$pids" '
     def s: if . == "" then null else . end;
@@ -1848,7 +2007,18 @@ device_json() {
       battery:       (if $blevel == "" then null
                       else { level:         ($blevel | n),
                              status:        ($bstatus | s),
-                             temperature_c: ($btemp | n) } end),
+                             temperature_c: ($btemp | n),
+                             # 電量是誰量的：adb 進去問的，還是手機裡的 agent 回報的
+                             source:        ($bsource | s) } end),
+      # 入伍過（profile 有 token）或現在答得出話的才有這個物件，否則是 null。
+      # reachable=false 而 token 還在 = agent 掛了，那是 hub 要標紅的事。
+      agent:         (if $areach == 1 then
+                        { reachable: true, version: ($aver | s),
+                          enrolled: (if $aenrolled == "" then null
+                                     else $aenrolled == "true" end) }
+                      elif $atoken != "" then
+                        { reachable: false, version: null, enrolled: null }
+                      else null end),
       scrcpy_pids:   $pids,
       errors:        $errors
     }'
@@ -2087,6 +2257,112 @@ cmd_forget() {
 
 # ---------------------------------------------------------------- reset -----
 
+# --------------------------------------------------------------- enroll -----
+#
+# 入伍：那唯一一次 USB。步驟與理由見 ROADMAP 的「M3 協定」。
+#
+# 為什麼是獨立指令而不是 `setup --enroll`：已經設定好的手機也要能補裝 agent，
+# 而 setup 是「從零建立一支 profile」的流程，兩件事的前提不一樣。
+
+cmd_enroll() {
+  local want="" apk_arg="" port="$AGENT_PORT_DEFAULT"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p)      want="${2:-}"; shift 2 ;;
+      --apk)   apk_arg="${2:-}"; shift 2 ;;
+      --port)  port="${2:-}"; shift 2 ;;
+      *) die "enroll 不認得參數：$1" ;;
+    esac
+  done
+
+  migrate_legacy
+  resolve_profile "$want"
+  load_profile "$PROFILE"
+
+  command -v adb >/dev/null 2>&1 || { err "找不到 adb"; hint "brew install --cask android-platform-tools"; exit 1; }
+  agent_have_curl || { err "找不到 curl（驗證入伍結果需要它）"; exit 1; }
+
+  local apk
+  apk="$(agent_find_apk "$apk_arg")" || {
+    err "找不到 agent 的 APK"
+    hint "先 build：cd agent && ./gradlew assembleDebug"
+    hint "或直接指定：hangar enroll --apk /path/to/app-debug.apk"
+    exit 1; }
+  info "APK：$apk"
+
+  # 入伍要 adb，而且只有這一次。之後 agent 自己住在手機裡，不再需要。
+  if [ "$(adb_state "$SERIAL")" != "device" ]; then
+    info "adb connect $SERIAL"
+    adb_connect "$SERIAL" >/dev/null 2>&1 || true
+    wait_for_device "$SERIAL" 8 >/dev/null 2>&1 || true
+  fi
+  local st; st="$(adb_state "$SERIAL")"
+  [ "$st" = "device" ] || {
+    err "adb 連不上這支手機（目前：${st:-沒有連線}）"
+    hint "入伍需要 adb 通得到 —— 插 USB 或先讓它回到可以 adb 的狀態"
+    exit 1; }
+
+  echo
+  info "1/4 安裝 agent"
+  local out
+  out="$(run_timeout 120 adb -s "$SERIAL" install -r "$apk" 2>&1)" || {
+    printf '%s\n' "$out"; die "安裝失敗"; }
+  printf '%s' "$out" | grep -qi 'success' || { printf '%s\n' "$out"; die "安裝失敗"; }
+  ok "安裝完成"
+
+  info "2/4 授予 WRITE_SECURE_SETTINGS"
+  # 這一步就是整套的破口：一次性授予，重開機後仍然有效。失敗不致命 ——
+  # 沒有它 agent 照樣回報電量，只是之後切不了偵錯（M4）。
+  out="$(run_timeout 20 adb -s "$SERIAL" shell pm grant com.hangar.agent \
+          android.permission.WRITE_SECURE_SETTINGS 2>&1)" || true
+  if [ -n "$out" ]; then
+    warn "授權沒成功：$out"
+    hint "agent 仍然可以回報電量與裝置資訊，但之後切不了偵錯"
+  else
+    ok "已授予"
+  fi
+
+  info "3/4 交出裝置序號與 token"
+  local serial_now
+  serial_now="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+  [ -n "$serial_now" ] && DEVICE_SERIAL="$serial_now"
+  [ -n "$DEVICE_SERIAL" ] || die "拿不到裝置序號，沒有序號就沒有穩定的識別碼"
+
+  local token; token="$(agent_gen_token)"
+  [ -n "$token" ] || die "產不出 token"
+  out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
+          -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.ENROLL \
+          --es serial "$DEVICE_SERIAL" --es token "$token" 2>&1)"
+  if printf '%s' "$out" | grep -q 'already_enrolled'; then
+    err "這支手機已經入伍過了"
+    hint "一台手機只入伍一次。要重來的話先清掉它的狀態："
+    hint "  adb -s $SERIAL shell pm clear com.hangar.agent"
+    exit 1
+  fi
+  printf '%s' "$out" | grep -q 'data="enrolled"' || {
+    printf '%s\n' "$out"
+    die "agent 沒有回報入伍成功（它有在跑嗎？手機上打開一次 Hangar Agent 再試）"; }
+  AGENT_TOKEN="$token"
+  AGENT_PORT="$port"
+  save_profile --quiet
+  ok "序號 $DEVICE_SERIAL，token 已寫進 $(profile_path "$PROFILE")"
+
+  info "4/4 驗證：直接問 agent"
+  agent_reset
+  if agent_probe "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN"; then
+    ok "agent ${AGENT_VERSION:-} 回應正常"
+    [ -n "$DEV_MODEL" ]     && kv "機型" "$DEV_MODEL"
+    [ -n "$BATTERY_LEVEL" ] && kv "電量" "$(battery_human)"
+    echo
+    ok "入伍完成。這支手機之後不開偵錯也看得到機型與電量。"
+  else
+    echo
+    warn "profile 寫好了，但現在問不到 agent（${PHONE_IP}:${AGENT_PORT}）"
+    hint "手機與這台電腦要在同一個區網；也可能是 agent 還沒起來"
+    hint "在手機上打開一次 Hangar Agent，然後：hangar status -p $PROFILE"
+  fi
+}
+
 cmd_reset() {
   local want=""
   while [ $# -gt 0 ]; do
@@ -2149,6 +2425,8 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
   hangar scan --fix-ip            順便把「認得出是同一支手機、但 profile 指著
                                    舊 IP」的那幾支修好
   hangar scan --json              同上，輸出 JSON
+  hangar enroll [-p 手機] [--apk <檔>]
+                                   在這支手機上裝 agent（那唯一一次 USB）
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
@@ -2242,11 +2520,11 @@ cmd_scan() {
   [ "$do_fix" -eq 1 ] && scan_fix_stale_ips
 
   if [ "$JSON_MODE" -eq 1 ]; then
-    local errs objs="" ip mac vendor rnd adb m prof kind dser stale fixed
+    local errs objs="" ip mac vendor rnd adb agent m prof kind dser stale fixed
     errs="$(printf '%s' "$SCAN_ERRORS" | jq -R -s -c \
       '[split("\n")[] | select(length > 0) | split("|")
         | { code: .[0], message: (.[1:] | join("|")) }]')"
-    while IFS='|' read -r ip mac vendor rnd adb; do
+    while IFS='|' read -r ip mac vendor rnd adb agent; do
       [ -n "$ip" ] || continue
       m="$(scan_match_for_ip "$ip")" || m=""
       prof="${m%%|*}"; kind="${m##*|}"; dser=""; stale=0; fixed=0
@@ -2261,7 +2539,7 @@ cmd_scan() {
         --arg ip "$ip" --arg mac "$mac" --arg vendor "$vendor" \
         --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" \
         --arg kind "$kind" --arg dser "$dser" --argjson stale "$stale" \
-        --argjson fixed "$fixed" '
+        --argjson fixed "$fixed" --arg agent "$agent" '
         def s: if . == "" then null else . end;
         { ip:               $ip,
           mac:              ($mac | s),
@@ -2272,7 +2550,11 @@ cmd_scan() {
           matched_by:       ($kind | s),
           device_serial:    ($dser | s),
           profile_ip_stale: ($stale == 1),
-          profile_ip_fixed: ($fixed == 1) }')"$'\n'
+          profile_ip_fixed: ($fixed == 1),
+          # 有沒有 agent 住在這台機器裡。--no-probe 時一律 null（沒去問）
+          agent:            (if $agent == "" then null
+                             else { version: (if $agent == "?" then null
+                                              else $agent end) } end) }')"$'\n'
     done <<< "$SCAN_HOSTS"
     printf '%s' "$objs" | jq -s \
       --argjson schema "$SCAN_SCHEMA" \
@@ -2304,13 +2586,14 @@ cmd_scan() {
 
   # 廠商放最後一欄：OUI 資料庫裡的名稱長短差很多（「Hon Hai Precision Ind. Co.,
   # Ltd.」這種），擺在中間會把後面的欄位推歪。長度不固定的東西就放尾巴。
-  printf '\n  %s %s %s %s %s\n' \
+  printf '\n  %s %s %s %s %s %s\n' \
     "$(pad "IP" 17)" "$(pad "MAC" 19)" "$(pad "adb" 8)" \
-    "$(pad "已設定" 12)" "廠商"
-  printf '  %s\n' "$(printf '─%.0s' $(seq 1 60))"
+    "$(pad "agent" 7)" "$(pad "已設定" 12)" "廠商"
+  printf '  %s\n' "$(printf '─%.0s' $(seq 1 68))"
 
-  local ip mac vendor rnd adb prof v_txt v_col a_txt a_col p_txt
-  while IFS='|' read -r ip mac vendor rnd adb; do
+  local ip mac vendor rnd adb agent prof v_txt v_col a_txt a_col p_txt g_txt g_col
+  local agent_n=0
+  while IFS='|' read -r ip mac vendor rnd adb agent; do
     [ -n "$ip" ] || continue
 
     if [ "$rnd" -eq 1 ]; then
@@ -2327,14 +2610,21 @@ cmd_scan() {
       *)      a_txt="?";      a_col="$C_DIM" ;;
     esac
 
+    if [ -n "$agent" ]; then
+      g_txt="有"; g_col="$C_GRN"; agent_n=$(( agent_n + 1 ))
+    else
+      g_txt="-";  g_col="$C_DIM"
+    fi
+
     prof="$(scan_match_for_ip "$ip")" || prof=""
     prof="${prof%%|*}"
     if [ -n "$prof" ]; then p_txt="$prof"; else p_txt="-"; fi
 
     # 顏色碼放在補齊過的內容外面，才不會被算進欄寬
-    printf '  %s %s %s%s%s %s %s%s%s\n' \
+    printf '  %s %s %s%s%s %s%s%s %s %s%s%s\n' \
       "$(pad "$ip" 17)" "$(pad "$mac" 19)" \
       "$a_col" "$(pad "$a_txt" 8)" "$C_0" \
+      "$g_col" "$(pad "$g_txt" 7)" "$C_0" \
       "$(pad "$p_txt" 12)" \
       "$v_col" "$v_txt" "$C_0"
   done <<< "$SCAN_HOSTS"
@@ -2342,8 +2632,13 @@ cmd_scan() {
   echo
   printf '  %s共 %s 台，其中 %s 台的 %s 是開著的（可以 adb 進去）%s\n' \
     "$C_DIM" "$total" "$open_n" "$ADB_PORT" "$C_0"
-  printf '  %s沒開偵錯的裝置只看得到 IP / MAC —— 機型與電量要等手機端 agent app%s\n' \
-    "$C_DIM" "$C_0"
+  if [ "$agent_n" -gt 0 ]; then
+    printf '  %s其中 %s 台裝了 agent，那幾台不開偵錯也看得到機型與電量%s\n' \
+      "$C_DIM" "$agent_n" "$C_0"
+  else
+    printf '  %s沒開偵錯的裝置只看得到 IP / MAC —— 機型與電量要等手機端 agent app%s\n' \
+      "$C_DIM" "$C_0"
+  fi
   if [ "$rnd_any" -eq 1 ]; then
     printf '  %s隨機 MAC 的裝置不能只靠 MAC 認人：使用者「忘記網路」再連就會換一組%s\n' \
       "$C_DIM" "$C_0"
@@ -2384,6 +2679,7 @@ main() {
     reset)           shift; cmd_reset "$@" ;;
     list|ls)         shift; cmd_list "$@" ;;
     scan)            shift; cmd_scan "$@" ;;
+    enroll)          shift; cmd_enroll "$@" ;;
     use)             shift; cmd_use "${1:-}" ;;
     forget|rm)       shift; cmd_forget "${1:-}" ;;
     all)             shift; cmd_all "$@" ;;

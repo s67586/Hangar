@@ -44,7 +44,7 @@ assert "沒有手機時 devices 是空陣列" "0" "$(q '.devices | length' "$out
 echo "=== J2. schema 與必要欄位 ==="
 two_phones
 out="$("$PM" list --json 2>/dev/null)"
-assert "有 schema 版本"      "1"      "$(q '.schema' "$out")"
+assert "有 schema 版本"      "2"      "$(q '.schema' "$out")"
 assert "列出兩支"            "2"      "$(q '.devices | length' "$out")"
 assert "profile 名稱"        "work"   "$(q '.devices[] | select(.profile=="work") | .profile' "$out")"
 assert "adb serial"          "$P1:5555" "$(q '.devices[] | select(.profile=="work") | .adb_serial' "$out")"

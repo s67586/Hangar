@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+# 假的 curl。hangar 只用它跟手機上的 agent 講話（GET + Bearer token）。
+#
+#   $MOCK_STATE/agent_<ip>_<port>.json  → 有這個檔就回它的內容，否則當連不上
+#   $MOCK_STATE/agent_token             → 有這個檔時，/status 要 token 對得上
+#
+# 存在的理由是「測試不准碰網路」：真的 curl 會對那個 IP 發連線，
+# 在測試機上不是慢就是打到不該打的地方。
+#
+S="$MOCK_STATE"
+url=""; token=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -H) case "$2" in Authorization:*) token="${2#*Bearer }" ;; esac; shift 2 ;;
+    -*) shift ;;
+    http*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "curl $url" >> "$S/curl_log"
+
+rest="${url#http://}"; hostport="${rest%%/*}"; path="/${rest#*/}"
+ip="${hostport%%:*}"; port="${hostport##*:}"
+f="$S/agent_${ip}_${port}.json"
+[ -f "$f" ] || exit 7          # 7 = couldn't connect，跟真的 curl 一致
+
+case "$path" in
+  */hangar/v1/hello)
+    enrolled=true
+    [ -f "$S/agent_not_enrolled" ] && enrolled=false
+    printf '{"schema":1,"agent":"hangar-agent","version":"0.1.0-mock","enrolled":%s}\n' "$enrolled"
+    ;;
+  */hangar/v1/status)
+    want="$(cat "$S/agent_token" 2>/dev/null || true)"
+    if [ -n "$want" ] && [ "$token" != "$want" ]; then
+      echo "curl: (22) The requested URL returned error: 401" >&2
+      exit 22
+    fi
+    cat "$f"
+    ;;
+  *) exit 22 ;;
+esac

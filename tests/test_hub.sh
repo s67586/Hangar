@@ -47,7 +47,8 @@ JSON
   { "ip": "192.168.1.90", "mac": "de:ad:be:ef:00:01", "vendor": null,
     "mac_randomized": true, "adb_port": "closed", "profile": null,
     "matched_by": null, "device_serial": null,
-    "profile_ip_stale": false, "profile_ip_fixed": false }
+    "profile_ip_stale": false, "profile_ip_fixed": false,
+    "agent": { "version": "0.1.0" } }
 ], "errors": [] }
 JSON
 }
@@ -98,7 +99,7 @@ echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
 assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "1" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "2" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 echo "=== H2. 兩份資料合成一張裝置牆 ==="
@@ -247,6 +248,46 @@ assert "閘道器是沒設定過的那種"    "unmanaged" \
   "$(q '[y["state"] for y in d["devices"] if y["ip"]=="192.168.1.1"][0]' "$out")"
 assert "沒有整頁級的錯誤"          "0" "$(q 'len(d["errors"])' "$out")"
 kill "$(cat "$REAL_STATE/pid")" 2>/dev/null
+
+echo "=== H10. agent 的資料要上牆 ==="
+# adb 進不去但 agent 還在，是 agent 存在的全部理由 —— 那要跟「整台失聯」分開顯示
+lan_env
+cat > "$MOCK_STATE/list_json" <<'JSON'
+{ "schema": 2, "devices": [
+  { "profile": "work", "default": true, "transport": "lan", "host": "",
+    "ip": "192.168.1.77", "adb_serial": "192.168.1.77:5555",
+    "device_serial": "R58M12345AB", "reachability": "offline",
+    "adb_state": "disconnected", "path": null, "model": "Pixel 7 Pro",
+    "android": { "release": "14", "sdk": 34 },
+    "battery": { "level": 42, "status": "discharging", "temperature_c": 29.0,
+                 "source": "agent" },
+    "agent": { "reachable": true, "version": "0.1.0", "enrolled": true },
+    "scrcpy_pids": [], "errors": [] },
+  { "profile": "dead", "default": false, "transport": "lan", "host": "",
+    "ip": "192.168.1.88", "adb_serial": "192.168.1.88:5555",
+    "device_serial": "", "reachability": "offline", "adb_state": "disconnected",
+    "path": null, "model": null, "android": null, "battery": null,
+    "agent": { "reachable": false, "version": null, "enrolled": null },
+    "scrcpy_pids": [], "errors": [] }
+] }
+JSON
+hub_start || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+out="$(get_devices)"
+assert "adb 不通但 agent 在 → agent_only" "agent_only" \
+  "$(q '[y["state"] for y in d["devices"] if y["name"]=="work"][0]' "$out")"
+assert "電量是 agent 給的"      "42" \
+  "$(q '[y["battery"]["level"] for y in d["devices"] if y["name"]=="work"][0]' "$out")"
+assert "而且說得出來源"         "agent" \
+  "$(q '[y["battery"]["source"] for y in d["devices"] if y["name"]=="work"][0]' "$out")"
+# 入伍過但 agent 叫不動：現在看不出事，但下次重開機就失聯，要標得出來
+assert "agent 死掉看得出來"     "False" \
+  "$(q '[y["agent"]["reachable"] for y in d["devices"] if y["name"]=="dead"][0]' "$out")"
+assert "那台不算 agent_only"    "offline" \
+  "$(q '[y["state"] for y in d["devices"] if y["name"]=="dead"][0]' "$out")"
+# 掃描看到一支 agent，但這台 hub 沒有它的 profile
+assert "陌生的 agent 也標得出來" "True" \
+  "$(q 'str(any((y.get("agent") or {}).get("reachable") for y in d["devices"] if y["name"] is None))' "$out")"
+hub_stop
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

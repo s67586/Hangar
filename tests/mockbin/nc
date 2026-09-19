@@ -1,19 +1,33 @@
 #!/usr/bin/env bash
 #
-# 假的 nc。lan backend 用 `nc -z -w 2 <ip> <port>` 測 5555 通不通，
-# 測試不該真的對外連線。
+# 假的 nc。lan backend 用 `nc -z -w 2 <ip> <port>` 測埠通不通，
+# 掃描也用它探 5555 與 agent 的 5599。測試不該真的對外連線。
 #
-#   $MOCK_STATE/nc_open_ips  → 一行一個 IP，只有列在裡面的才算通（掃描用）
-#   $MOCK_STATE/nc_result    → ok（預設）＝一律通；其他值＝一律不通
+#   $MOCK_STATE/nc_open_ips  → 一行一筆，只有列到的才算通：
+#                                192.168.1.77        ＝ 那台的 5555 通
+#                                192.168.1.77:5599   ＝ 那台的 5599 通
+#   $MOCK_STATE/nc_result    → 沒有 nc_open_ips 時：ok（預設）＝一律通
+#
+# 埠號要看：nc 不分埠的話，掃描會以為每台開著 5555 的機器也開著 5599，
+# 然後真的對那個位址發 curl —— 測試就變成在打外面的網路了。
 #
 S="$MOCK_STATE"
 echo "nc $*" >> "$S/nc_log"
+
+ip=""; port=""
+for a in "$@"; do
+  case "$a" in
+    [0-9]*.[0-9]*.[0-9]*.[0-9]*) ip="$a" ;;
+    [0-9]*) [ -n "$ip" ] && port="$a" ;;
+  esac
+done
+
 if [ -f "$S/nc_open_ips" ]; then
-  for a in "$@"; do
-    case "$a" in
-      [0-9]*.[0-9]*.[0-9]*.[0-9]*) grep -qxF "$a" "$S/nc_open_ips" && exit 0 || exit 1 ;;
-    esac
-  done
+  [ -n "$ip" ] || exit 1
+  # 明確寫了 ip:port 的優先
+  grep -qxF "${ip}:${port}" "$S/nc_open_ips" && exit 0
+  # 只寫 IP 的沿用舊語意：那是指 5555
+  [ "$port" = "5555" ] && grep -qxF "$ip" "$S/nc_open_ips" && exit 0
   exit 1
 fi
 [ "$(cat "$S/nc_result" 2>/dev/null || echo ok)" = "ok" ]

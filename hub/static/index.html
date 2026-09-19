@@ -39,6 +39,9 @@
   .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
   .s-ready { color: var(--ok); } .s-offline { color: var(--idle); }
   .s-unauthorized, .s-no_adb, .s-unknown { color: var(--warn); } .s-unmanaged { color: var(--idle); }
+  .s-agent_only { color: var(--ok); }
+  .tag { font-size: 11.5px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--dim); }
+  .tag.dead { color: var(--bad); border-color: var(--bad); }
   .rows { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; }
   .rows dt { color: var(--dim); } .rows dd { margin: 0; overflow-wrap: anywhere; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
@@ -70,6 +73,7 @@
     <code>ready</code> 可以 adb 進去（build／投影都行）｜
     <code>no_adb</code> 連得到但 adb 不是 device，多半是手機重開機把 5555 弄丟了｜
     <code>unauthorized</code> 這台 hub 還沒被手機授權｜
+    <code>agent_only</code> adb 進不去，但手機裡的 agent 還答得出話（看得到、管不動）｜
     <code>offline</code> 手機不在線上｜
     <code>unknown</code> 只從掃描看到它，<code>hangar list</code> 那邊沒資料（那次多半掛了）｜
     <code>unmanaged</code> 掃到但沒設定過 —— 沒開偵錯的手機只看得到 IP 與 MAC，
@@ -82,6 +86,7 @@
 const STATE_ZH = {
   ready: "ready", no_adb: "no_adb", unauthorized: "unauthorized",
   offline: "offline", unmanaged: "unmanaged", unknown: "unknown",
+  agent_only: "agent_only",
 };
 
 function esc(s) {
@@ -118,16 +123,25 @@ function card(d) {
   rows += row("序號", d.device_serial, "mono");
   rows += row("連線方式", d.transport);
   rows += row("5555", d.adb_port === "open" ? "開著" : d.adb_port === "closed" ? "關著" : null);
+  if (d.agent) rows += row("agent", d.agent.reachable
+    ? (d.agent.version || "有回應") : "沒有回應");
 
   let batt = "";
   if (b && typeof b.level === "number") {
     batt = `<div class="batt ${low ? "low" : ""}">
       <span>${b.level}%</span><span class="bar"><i style="width:${b.level}%"></i></span>
-      <span class="meta">${esc(b.status || "")}</span>${low ? "<span>要充電了</span>" : ""}
+      <span class="meta">${esc(b.status || "")}</span>${
+        b.source === "agent" ? '<span class="tag">agent 回報</span>' : ""
+      }${low ? "<span>要充電了</span>" : ""}
     </div>`;
   }
 
   const notes = [];
+  // 入伍過但 agent 叫不動 = 現在沒事也看不出來，但下次重開機就會失聯
+  if (d.agent && d.agent.reachable === false)
+    notes.push("入伍過，但 agent 現在沒有回應 —— 這支手機重開機後會失聯");
+  if (d.state === "agent_only")
+    notes.push("adb 進不去，這些資料是手機裡的 agent 回報的");
   if (d.profile_ip_stale) notes.push("profile 指著舊 IP（hangar scan --fix-ip 可以修）");
   if (d.mirroring) notes.push("投影中");
   for (const e of d.errors || []) if (e.message) notes.push(e.message);
@@ -160,6 +174,7 @@ async function tick() {
   const lowN = ds.filter(d => d.battery && d.battery.low).length;
   document.getElementById("counts").innerHTML =
     `共 <b>${ds.length}</b> 台：<b>${n("ready")}</b> 可以用、` +
+    `<b>${ds.filter(d => d.agent && d.agent.reachable).length}</b> 有 agent、` +
     `<b>${ds.filter(d => d.name).length}</b> 已設定、<b>${n("unmanaged")}</b> 只看得到` +
     (lowN ? `｜<b>${lowN}</b> 台要充電` : "");
 

@@ -54,7 +54,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
-| M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上 | app 那半邊**已完成**；`hangar setup --enroll` 還沒 |
+| M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成**（都還沒在實機上跑過，見下面的待確認清單） |
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | |
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
@@ -165,8 +165,12 @@ agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價
 ### 入伍（enroll）：那唯一一次 USB
 
 ```bash
-hangar setup --enroll [--apk agent.apk]
+hangar enroll [-p 手機] [--apk agent.apk]
 ```
+
+> 這份協定原本寫的是 `hangar setup --enroll`，實作時改成獨立指令：已經設定好的
+> 手機也要能補裝 agent，而 `setup` 是「從零建立一支 profile」的流程，兩件事的
+> 前提不一樣。
 
 1. `adb install -r <APK>`
 2. `adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS`
@@ -239,23 +243,60 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | 不在 Android 10 以下重開 TCP adb | 做不到，那種機器重開機後還是要人插 USB |
 | 不自己決定偵錯開或關 | 狀態由電腦端指派，agent 只執行與回報 |
 
-### 這份協定會改到現有的什麼
+### 這份協定已經改了現有的什麼（M3a）
 
-| 元件 | 要動的地方 |
+| 元件 | 動到的地方 | schema |
+|---|---|---|
+| `hangar` | `hangar enroll`；`agent_*` 這一層；profile 多 `AGENT_TOKEN` / `AGENT_PORT`；`scan` 多探 5599；`list --probe` 在 adb 不通時改問 agent | `list` 1 → 2、`scan` 3 → 4 |
+| hub | 多讀 `agent` 與 `battery.source`，多一個 `agent_only` 狀態。**沒有**直接跟 agent 講話，M2b 的規矩維持 | `/api/devices` 1 → 2 |
+| README | 「profile 沒有任何祕密」那句已經改掉 —— 入伍過的 profile 有 token |  |
+
+還沒做的：mDNS（M3b）、`adb.wifi_port`（M3c，agent 目前一律回 `null`）。
+
+## 待確認清單
+
+這份是「還沒有人在真實世界裡看過」的東西的總表。有實機之後照著跑，把結果補回來。
+分成三級：**擋路**的做不出來就要改設計，**會痛**的是體驗差但繞得過，**想知道**的
+只是還沒量過。
+
+### A. 擋路的（猜錯要改設計）
+
+| # | 要確認什麼 | 怎麼確認 | 猜錯的話 |
+|---|---|---|---|
+| A1 | `WRITE_SECURE_SETTINGS` 能不能寫 `Settings.Global.adb_wifi_enabled` | `adb shell settings put global adb_wifi_enabled 1`，看無線偵錯有沒有真的開；再用 agent（已授權）寫一次 | M3c 整個做不成，重開機後還是要人插 USB |
+| A2 | 打開無線偵錯後，**之前配對過的電腦**能不能免配對重連 | 配對一次 → 重開機 → agent 開無線偵錯 → 電腦端不做任何事，看 `adb devices` | 「重開機自動恢復」破功，要人讀配對碼 → M3c 價值大減 |
+| A3 | 無線偵錯的埠怎麼找 | `dns-sd -B _adb-tls-connect._tcp`（macOS）／`avahi-browse` | 找不到就等於連不上，A1 A2 都白做 |
+| A4 | Gradle 建得出 APK 嗎 | `cd agent && gradle wrapper --gradle-version 8.5 && ./gradlew assembleDebug` | 要修 AGP／Kotlin 版本組合 |
+
+### B. 會痛的（繞得過，但要知道）
+
+| # | 要確認什麼 | 怎麼確認 | 影響 |
+|---|---|---|---|
+| B1 | 前景服務在各家 ROM 的省電策略下活多久 | 裝上去放 24／72 小時，中間不碰手機，看 `/hello` 還答不答得出來 | **整套的單點故障**：agent 被殺 = 那支手機失聯 |
+| B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 影響 M4 的復原路徑設計 |
+| B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完後用 `dns-sd -B _hangar-agent._tcp` 看得到嗎 | 看不到就退回「探 5599」那條路，只是慢 |
+| B4 | AP 有沒有開 client isolation | 兩支手機互 ping；或電腦 ping 手機 | 有的話整個區網掃描與 agent 都不通，得改走 Tailscale |
+| B5 | 一個 /24 掃完要多久（真實網路，不是 mock） | `time hangar scan` | 太久的話 hub 的 `--scan-interval` 要往上調 |
+
+### C. 想知道的（還沒量過）
+
+| # | 要確認什麼 | 怎麼確認 |
+|---|---|---|
+| C1 | agent 對電池的影響 | 裝了 agent 的手機放一天，比較耗電曲線 |
+| C2 | `hangar enroll` 在實機上走得完嗎 | 真的跑一次，四個步驟都要 ok |
+| C3 | Kotlin 那支與 Python 參考實作對不對得起來 | `HANGAR_AGENT_URL=http://<手機>:5599 HANGAR_AGENT_TOKEN=<token> tests/test_agent_protocol.sh` |
+| C4 | 加固 app 實際擋什麼 | 實測 protocol 另存於專案外部 |
+| C5 | hub 當 adb server 那條路可不可行 | 見下面那一節的最小驗證步驟 |
+| C6 | iOS 那條線（`libimobiledevice`）拿得到什麼 | 還沒開始 |
+
+### 已經確認過的（不用再問）
+
+| | 結論 |
 |---|---|
-| `hangar` | `setup --enroll`；profile 多 `AGENT_TOKEN` / `AGENT_PORT`；`scan` 多探 5599 與 mDNS；`list --probe` 在 adb 不通時改問 agent 拿電量 |
-| hub | 只是多讀幾個欄位（`agent`、`adb.wifi_port`），M2b 的「hub 不自己碰手機」維持不變 |
-| README | 「profile 沒有任何祕密，直接抄過去也行」**不再成立** —— 有 token 之後那句要改掉 |
-
-### 待實測（寫程式前先確認，猜錯要重來）
-
-| | |
-|---|---|
-| `WRITE_SECURE_SETTINGS` 能不能寫 `Settings.Global.adb_wifi_enabled` | 這是 M3c 的全部基礎 |
-| 打開無線偵錯之後，**之前配對過的電腦**能不能免配對重連 | 不能的話「重開機自動恢復」就破功，要人讀配對碼 |
-| 把 `adb_enabled` 關掉時，無線偵錯會不會一起死 | 幾乎一定會，但要確認 M4 關掉之後 agent 端點還活著 |
-| `NsdManager` 在你手上那幾支機器 + AP 上的實際表現 | 決定 mDNS 是主要路徑還是純加速器 |
-| 前景服務在各家 ROM 的省電策略下活多久 | agent 被殺掉 = 那支手機失聯，這是整套的單點故障 |
+| Kotlin 編譯得過嗎 | 過（`kotlinc` 對著 `android.jar`，7 個檔） |
+| manifest 合法嗎 | 過（`aapt2 link`） |
+| 協定兩份實作對得起來嗎 | 對得起來（但兩份都是在電腦上跑的，見 C3） |
+| adb 授權能不能自動化 | **不能**。見上面「幾個要記住的現實限制」 |
 
 ## 待實測：讓 hub 當唯一被授權的那台電腦
 
@@ -440,6 +481,7 @@ hangar/
     ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測、識別合併、--fix-ip
     ├── test_hub.sh       # hub：合併邏輯、HTTP 端點、唯讀保證
     ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
+    ├── test_agent_client.sh     # 電腦這一側：enroll、改問 agent、掃描探 5599
     ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
     ├── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
     └── agentbin/         # 假的 agent（M3 協定的 Python 參考實作）
@@ -450,6 +492,7 @@ hangar/
 | 層 | 內容 |
 |---|---|
 | 輸出 | `info` / `ok` / `warn` / `err` / `kv` / 中文欄寬對齊 |
+| agent | `agent_*` —— 怎麼跟手機裡的 agent 講話（HTTP + token），`curl` 不在就安靜降級 |
 | scan | `scan_*` —— ARP 層級的「這個網段上有哪些裝置」，不分已設定與否；`cmd_scan` 和 lan backend 的候選清單共用它 |
 | transport | `transport_*` —— 「怎麼連到這支手機」全部收在這後面，底下有 `ts_*` 和 `lan_*` 兩個 backend |
 | profile | `.conf` 的讀寫、預設值、舊格式遷移 |
@@ -502,6 +545,7 @@ hangar 那邊，不是在 hub 裡另外接一條路。
 | `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡）、`--fix-ip` 只改認得出來的那幾支且不碰 tailscale profile |
 | `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳 |
 | `test_agent_protocol.sh` | `/hello` 不需要 token 也不吐序號、`/status` 要 token、status 的每個欄位型別（電量是 0-100 整數、充電狀態用小寫那一套、`wifi_enabled` 可以是 null 但不能用 false 混充、拿不到的東西回 null 不塞假值、協定裡根本沒有 MAC 這一欄）、501 與 404 要分得出來、沒入伍是 409 不是 401。**帶 `HANGAR_AGENT_URL` 就直接打真的手機** |
+| `test_agent_client.sh` | `hangar enroll` 的四個步驟與三種失敗（沒 APK、已入伍過、安裝失敗）、每次入伍都是新 token、廣播帶的序號跟 profile 一致、adb 通時用 adb 的資料、**adb 不通時改問 agent 拿電量與機型**、入伍過但 agent 死掉看得出來、掃描只對探得到 5599 的發 HTTP、缺 `curl` 時安靜降級但入伍要明講 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。

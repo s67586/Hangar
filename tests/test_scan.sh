@@ -43,7 +43,7 @@ out="$("$PM" scan --json 2>/dev/null)"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
   && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
-assert "有 schema 版本"      "3"                "$(q '.schema' "$out")"
+assert "有 schema 版本"      "4"                "$(q '.schema' "$out")"
 assert "掃的網段寫在結果裡"  "192.168.1.0/24"   "$(q '.subnet' "$out")"
 assert "hosts 是陣列"        "array"            "$(q '.hosts | type' "$out")"
 assert "errors 是空陣列"     "0"                "$(q '.errors | length' "$out")"
@@ -369,7 +369,7 @@ assert "修好了就不再是 stale"       "false" \
 assert "而且說得出這支被修過"       "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_fixed' "$out")"
 assert "MAC 沒被動到"               "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
-assert "改檔案不影響 JSON 純淨度"   "3" "$(q '.schema' "$out")"
+assert "改檔案不影響 JSON 純淨度"   "4" "$(q '.schema' "$out")"
 # 只改該改的那一行，其他欄位不能被洗掉
 assert "TRANSPORT 還在"             "lan"  "$(pfield work TRANSPORT)"
 

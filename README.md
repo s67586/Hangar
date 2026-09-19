@@ -180,6 +180,7 @@ hangar forget work      # 刪掉該手機的設定
 hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
 hangar scan             # 掃描區網，列出看得到的裝置
+hangar enroll           # 在這支手機上裝 agent（那唯一一次 USB）
 ```
 
 ```bash
@@ -463,7 +464,13 @@ PHONE_IP="100.x.y.z"           # Tailscale IP
 TRANSPORT="tailscale"          # 連線方式（tailscale / lan）
 DEVICE_SERIAL="1A2B3C4D"       # 硬體序號，跨 IP / 跨連線方式都不變
 PHONE_MAC="a4:03:e7:01:02:03"  # 區網 MAC，由 hangar scan 記下來（見上面的區網掃描）
+AGENT_TOKEN="…64 個十六進位字元…"  # 手機端 agent 的 token，由 hangar enroll 寫入
+AGENT_PORT="5599"              # agent 聽的埠
 ```
+
+> **有 `AGENT_TOKEN` 的 profile 是有祕密的檔案。** 那組 token 等於「可以問這支
+> 手機的狀態、之後還能切它的偵錯開關」。檔案權限是 600，不要隨手貼給別人，也
+> 不要丟進版控。沒入伍過的手機沒有這一行，那種 profile 仍然只是幾行純文字。
 
 前兩行以外都是可選的。舊版只有兩行的 profile 照樣能用，讀不到時
 `TRANSPORT` 當作 `tailscale`、`DEVICE_SERIAL` 與 `PHONE_MAC` 當作空的，
@@ -536,13 +543,18 @@ hangar setup --existing pixel-4
 
 ### 也可以直接複製設定檔
 
-profile 就是幾行純文字、沒有任何祕密（IP、序號、MAC，沒有金鑰），直接抄過去也行：
+**沒入伍過的** profile 就是幾行純文字、沒有祕密（IP、序號、MAC，沒有金鑰），
+直接抄過去也行：
 
 ```bash
 scp ~/.config/hangar/profiles/pixel-4.conf 另一台:~/.config/hangar/profiles/
 ```
 
 一樣要在手機上授權那台電腦。
+
+入伍過的手機（profile 裡有 `AGENT_TOKEN`）抄過去等於把 token 也給了對方 ——
+那組 token 可以問這支手機的狀態、之後還能切偵錯。要給就是有意識地給，
+不要因為「只是一個設定檔」就順手 `scp`。
 
 ### ACL 要記得加新電腦
 
@@ -610,6 +622,79 @@ Android Studio 走的是它自己啟動的 adb server，要它看到這支手機
 
 ---
 
+## 手機端 agent
+
+`hangar scan` 看得到區網上有哪些裝置，但**沒開偵錯的手機 adb 完全碰不到** ——
+拿得到 IP、MAC、廠商，拿不到機型，更拿不到電量。唯一的破口是在手機裡放一支
+常駐的 app：它自己回報，不需要 adb。
+
+程式在 [`agent/`](agent/)，協定寫在 [ROADMAP](ROADMAP.md) 的「M3 協定」。
+
+### 入伍：那唯一一次 USB
+
+```bash
+cd agent && ./gradlew assembleDebug     # 先 build 出 APK
+cd .. && hangar enroll -p work          # 手機插 USB（或 adb 現在通得到）
+```
+
+`hangar enroll` 做四件事：裝 APK、授予 `WRITE_SECURE_SETTINGS`、把裝置序號與
+一組隨機 token 交給 agent、再直接問一次 agent 確認活著。成功之後 token 寫進
+profile，之後就不需要 USB 了。
+
+```
+==> 1/4 安裝 agent
+ ok  安裝完成
+==> 2/4 授予 WRITE_SECURE_SETTINGS
+ ok  已授予
+==> 3/4 交出裝置序號與 token
+ ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
+==> 4/4 驗證：直接問 agent
+ ok  agent 0.1.0 回應正常
+     機型  Pixel 7 Pro
+     電量  78%  放電中  27.5°C
+```
+
+`--apk` 可以指定別的檔案；不給的話會找這個 repo 裡 build 出來的那份。
+
+**一台手機只入伍一次。** 已經入伍過的會直接拒絕，要重來得先
+`adb shell pm clear com.hangar.agent` —— 那本來就需要 adb。理由見
+[agent/README.md](agent/README.md)。
+
+### 入伍之後有什麼不一樣
+
+| | 沒有 agent | 有 agent |
+|---|---|---|
+| 手機重開機後（5555 沒了） | `list` 只剩「連不上」 | 機型、電量照樣看得到 |
+| 沒開偵錯時 | 只有 IP / MAC / 廠商 | 完整裝置資訊 |
+| 電量 | 要 adb 進得去才拿得到 | agent 直接回報 |
+
+`hangar list --json --probe` 的 `battery.source` 會告訴你這筆電量是誰量的
+（`adb` 還是 `agent`），`agent` 物件則說得出 agent 在不在：
+
+```json
+{ "battery": { "level": 42, "status": "discharging", "source": "agent" },
+  "agent":   { "reachable": true, "version": "0.1.0", "enrolled": true } }
+```
+
+`agent.reachable` 是 `false` 而 profile 又有 token，意思是**這支手機入伍過但
+agent 現在叫不動** —— 現在可能還沒事（adb 還通），但下次重開機就會失聯。
+裝置牆會把這件事標出來。
+
+`hangar scan` 也會順手探每台的 5599：探得到就在 `agent` 欄標「有」。它先用
+`nc` 測埠、只對有回應的發 HTTP —— 一個 /24 上大多數東西沒有 agent，每台都等
+逾時的話掃描會從幾秒變成幾分鐘。
+
+### 限制
+
+- **需要 `curl`**（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。
+- **agent 拿不到自己的 MAC**（Android 6+ 對一般 app 回傳假的），所以 MAC 仍然
+  只能由 `hangar scan` 從 ARP 表學。
+- **agent 也拿不到硬體序號**（Android 10+ 要特權權限），所以序號是入伍時由電腦
+  這一側寫進去的 —— 兩邊因此一定是同一個字串。
+- **切偵錯還沒做**（M4）。現在 `POST /hangar/v1/adb` 一律回 501。
+
+---
+
 ## hub（裝置牆網頁）
 
 一台常駐機器跑 `hub/hangar_hub.py`，定期問 hangar 兩件事，然後把結果合成一頁
@@ -661,6 +746,66 @@ hangar scan --json           區網上看得到的所有東西：IP、MAC、廠�
 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 `hangar scan --fix-ip`。
 
 從網頁「切偵錯」「投影」那些要等 M3／M4／M5，見 [ROADMAP](ROADMAP.md)。
+
+### 換一台 hub
+
+hub 本身是**無狀態的** —— 它把看到的東西放在記憶體裡，重開就重新問一次 hangar。
+所以「搬 hub」實際上搬的是三樣東西，而且只有一樣會痛。
+
+| 要搬的 | 怎麼搬 | 痛不痛 |
+|---|---|---|
+| `~/.config/hangar/`（profiles、預設值） | `scp -r` 或 `rsync` | 不痛 |
+| 常駐設定（launchd plist／systemd unit） | 照上面重寫一份 | 不痛 |
+| **手機對這台電腦的 adb 授權** | 見下面 | **會痛** |
+
+#### 會痛的那一樣
+
+adb 的授權綁在每台電腦自己的金鑰（`~/.android/adbkey`）上。新的 hub 是一把新
+金鑰，所有手機都會把它當陌生人 —— 每一支都要有人在手機螢幕上按一次「一律允許」。
+十支手機就是十次。
+
+**agent 那條路不受影響**：`AGENT_TOKEN` 在 profile 裡，profile 搬過去，新 hub
+就問得到入伍過的手機。所以入伍過的手機在搬 hub 時是「電量與機型照樣看得到，
+只是 adb 進不去」。這也是 agent 在這件事上的實際價值。
+
+#### 如果是「汰換」而不是「多一台」
+
+舊機器要退役的話，把金鑰一起搬過去是合理的 —— 你搬的是同一個身分，不是複製
+一份出來：
+
+```bash
+# 在新機器上
+scp 舊hub:~/.android/adbkey     ~/.android/
+scp 舊hub:~/.android/adbkey.pub ~/.android/
+adb kill-server
+
+# 確認新機器接手了
+hangar list
+
+# 然後把舊機器上的那把砍掉 —— 這一步不做，你就是把完整裝置控制權複製了一份
+ssh 舊hub 'rm -f ~/.android/adbkey ~/.android/adbkey.pub && adb kill-server'
+```
+
+> 這跟前面「**不要把 `adbkey` 複製到別台電腦**」不衝突：那條講的是同時存在的
+> 多台電腦（複製＝多一份完整控制權）。汰換是搬移，前提是**舊的那份要刪掉**。
+> 做不到「確定刪掉」的話，就老老實實一支一支按。
+
+#### 搬完檢查這幾件事
+
+```bash
+hangar list                      # 每一支的狀態都對嗎
+hangar scan --fix-ip             # 新機器可能在不同網段，順便把換過的 IP 修對
+curl -s localhost:8787/healthz   # hub 起來了嗎
+curl -s localhost:8787/api/devices | jq '.errors'   # 有沒有藏著的錯誤
+```
+
+還有三件容易忘的：
+
+- **Tailscale**：新機器要加進 tailnet，而且 ACL 的 `src` 要有它（打 `tag:devbox`
+  的話就不用改 ACL）。
+- **網址變了**：有人把舊 hub 的位址加了書籤的話要通知。
+- **`~/.config/hangar/` 現在可能有祕密**：入伍過的手機 profile 裡有 `AGENT_TOKEN`。
+  用 `scp`／`rsync` 搬沒問題（走加密通道），但別丟進共用雲端硬碟。
 
 ### 讓它開機就自己跑
 
