@@ -57,11 +57,19 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
 | M5 | 網頁投影串流；iOS 唯讀 | |
 
-## 兩個要記住的現實限制
+## 幾個要記住的現實限制
 
 - **MAC randomization**：Android 10+ / iOS 14+ 對每個 SSID 使用隨機但穩定的 MAC。
   同一個 SSID 下可以拿它當識別碼，但使用者「忘記網路再重連」就會換一個。
   所以裝置識別不能只靠 MAC，要能跟 `DEVICE_SERIAL` 合併。
+- **adb 授權是綁在「每台電腦的金鑰」上的，而且 agent app 解不掉**：手機信任哪些
+  電腦，存在 `/data/misc/adb/adb_keys`，那是 root／system 的檔案。agent app 拿到的
+  `WRITE_SECURE_SETTINGS` 只能寫 `Settings.Secure` / `Settings.Global`，碰不到它；
+  而那個「允許 USB 偵錯」對話框是 SystemUI 的，一般 app 點不到（Android 特地對這個
+  對話框做過防疊加／防自動點擊的保護，那本來就是要擋自動化的安全設計）。
+  Android 11+ 的無線偵錯配對碼一樣要人在裝置上操作。
+  **結論：只要那台電腦用自己的金鑰直連手機，第一次就一定要有人在手機上按允許。**
+  這件事 agent app 幫不上忙 —— 下面「hub 當 adb server」那條路才是繞開它的方式。
 - **iOS 做不到對等**：Developer Mode（iOS 16+）必須人在裝置上開啟並重開機，
   無法遠端切換；電量與裝置資訊要靠 `libimobiledevice`，而且得先在 hub 上 USB 配對過。
   iOS 這條線現實的目標是「看得到、知道電量」，不是「管得動」。
@@ -86,10 +94,47 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
    指著舊 IP 的，`hangar scan --fix-ip` 會就地改好 —— 但掃描預設仍然是唯讀的，
    要寫設定檔得明講。
 
+## 待實測：讓 hub 當唯一被授權的那台電腦
+
+上面那條限制的實際痛點是**加人**：每多一個 RD，就要有人拿著手機按一次「一律允許」，
+而且那台電腦從此握有一把等同完整裝置控制權的金鑰。
+
+繞開的方式是不要讓 RD 的電腦直連手機，改成連 hub 的 adb server —— adb 的 client
+與 server 本來就可以分在兩台機器上：
+
+```bash
+# hub 上（綁在 tailnet 位址，不要開在所有介面）
+adb -L tcp:100.x.y.z:5037 nodaemon server
+```
+```bash
+# RD 的電腦上
+export ADB_SERVER_SOCKET=tcp:100.x.y.z:5037
+adb devices            # 看到的是 hub 上那幾支手機
+./gradlew installDebug # APK 傳到 hub，再由 hub 裝進手機
+```
+
+這樣手機從頭到尾只看過 hub 那一把金鑰：新人加入不用碰手機，離職也不必擔心他的
+筆電上還留著一把。agent app 在這條路上的角色也更清楚了 —— 它要保住的是
+**hub 這唯一一條已授權的連線**（重開機後把 5555 開回來）。
+
+要先確認的事：
+
+| | |
+|---|---|
+| `ADB_SERVER_SOCKET` 對 adb CLI 與 Gradle | 文件行為，但沒實測過 |
+| Android Studio 認不認 | **不確定**。它管自己的 adb server，可能要另外設定，或乾脆讓開發者用 CLI build |
+| 安全 | `adb server` 的 5037 **沒有任何認證**，連得到就等於掌握所有手機。一定要綁 tailnet 位址 + ACL，絕不能開在辦公室區網上 |
+| 多人同時操作 | 全部擠在 hub 的同一個 adb server 上，負載與互相干擾都還沒試過 |
+
+實測結果出來之前，README 寫的仍然是「各台電腦直連手機」那條路。
+
 ## 還沒決定
 
-後端用什麼寫、web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限——
-這些都還開放。
+後端用什麼寫、web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
+RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——這些都還開放。
+
+多人同時裝 APK 進同一支手機會互相蓋掉，目前沒有任何佔用／排隊機制。hub 要不要
+管「誰在用哪一支」也還沒決定。
 
 ---
 
