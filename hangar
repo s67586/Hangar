@@ -94,11 +94,27 @@ die()  { err "$*"; exit 1; }
 # --------------------------------------------------------------- helpers ----
 
 # run_timeout <secs> <cmd...> — 可攜式 timeout（macOS 沒有 coreutils timeout）
+#
+# 看門狗那個子 shell 裡要自己收掉 sleep。原本只有 `kill -TERM "$wd"`，但 $wd 是
+# 子 shell 的 pid，不是 sleep 的 —— 子 shell 被殺掉之後，它底下那個 sleep 變成
+# 孤兒，繼續睡到時間到。指令很快就結束時看不出來（看門狗還沒 fork 出 sleep 就被
+# 殺了），但只要指令跑了一下下就會留一個。一輪區網掃描是 254 個 ping，孤兒就是
+# 用幾十個在累積的（CI 的 log 尾巴一整排 "Terminate orphan process: (sleep)"）。
+#
+# 所以改成讓子 shell 接住 TERM，自己把 sleep 收乾淨再退。
+# trap 裡一定要先確認 sp 非空：kill -TERM 0 不是「什麼都不殺」，而是送給整個
+# process group —— 那會把呼叫者自己殺掉。
 run_timeout() {
   local secs="$1"; shift
   "$@" &
   local pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  (
+    sp=""
+    trap '[ -n "$sp" ] && kill -TERM "$sp" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & sp=$!
+    wait "$sp" 2>/dev/null
+    kill -TERM "$pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
   local wd=$!
   wait "$pid"; local rc=$?
   kill -TERM "$wd" 2>/dev/null
