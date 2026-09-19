@@ -50,6 +50,8 @@ jobs:
             echo "這個 runner 映像沒有 Android SDK（ANDROID_HOME／ANDROID_SDK_ROOT 都不指向目錄）"
             exit 1; }
           echo "Android SDK: $sdk"
+          # 兩個變數哪個有值會隨映像變，後面的步驟只認這一個解析好的路徑
+          echo "ANDROID_SDK=$sdk" >> "$GITHUB_ENV"
 
       - name: 建 debug APK
         working-directory: agent
@@ -60,11 +62,18 @@ jobs:
       - name: 確認真的產出 APK
         working-directory: agent
         run: |
-          apk="$(find app/build/outputs/apk/debug -name '*.apk' | head -1)"
+          apk="$(find app/build/outputs/apk -name '*.apk' 2>/dev/null | head -1)"
           [ -n "$apk" ] || { echo "build 說成功，但找不到 APK"; exit 1; }
           ls -l "$apk"
-          "$ANDROID_HOME"/build-tools/*/aapt2 dump badging "$apk" 2>/dev/null \
-            | grep -E "^package|^application-label" || true
+          # build-tools 底下可能有好幾個版本，glob 會展開成多個路徑（第二個之後
+          # 會被當成 aapt2 的參數），所以明確挑一個最新的。
+          aapt2="$(find "$ANDROID_SDK/build-tools" -maxdepth 2 -name aapt2 -type f \
+                   2>/dev/null | sort -V | tail -1)"
+          if [ -n "$aapt2" ]; then
+            "$aapt2" dump badging "$apk" | grep -E '^package|^application-label' || true
+          else
+            echo "（找不到 aapt2，跳過 APK 內容檢查）"
+          fi
 
       - name: 留下 APK 供下載
         uses: actions/upload-artifact@v4
