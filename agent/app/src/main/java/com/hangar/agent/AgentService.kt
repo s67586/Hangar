@@ -44,18 +44,28 @@ class AgentService : Service() {
     }
 
     private var server: HttpServer? = null
+    private var mdns: MdnsBroadcast? = null
 
     override fun onCreate() {
         super.onCreate()
         startedAt = System.currentTimeMillis()
         startForeground(NOTIFICATION_ID, notification())
         server = HttpServer(this).also { it.start() }
+        mdns = MdnsBroadcast(this).also { it.start() }
     }
 
     // 被系統殺掉之後要自己回來
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 入伍是在服務已經在跑的時候發生的（EnrollReceiver 寫完資料才把服務叫起來，
+        // 而這時 onCreate 不會再跑一次）。廣播的內容跟著入伍狀態變 —— 未入伍時沒有
+        // 序號可以放 —— 所以這裡重登記一次，讓 mDNS 上的資料跟實際狀態一致。
+        mdns?.refresh()
+        return START_STICKY
+    }
 
     override fun onDestroy() {
+        mdns?.stop()
+        mdns = null
         server?.stop()
         server = null
         super.onDestroy()

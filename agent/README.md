@@ -55,6 +55,23 @@ Android Studio 會自己寫；用指令列的話：
 echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
 ```
 
+## mDNS 廣播
+
+服務起來之後會用 `NsdManager` 廣播 `_hangar-agent._tcp`，讓 `hangar scan` 不必對
+整個網段逐台探 5599 就找得到這支手機。TXT 裡放 `v` / `serial` / `model` ——
+**沒有也不可以有 token**，那是整個區網都聽得到的明文廣播。
+
+這只是加速器：電腦端問不到就自己退回探埠，所以廣播失敗時整套功能只是變慢。
+也因此 `MdnsBroadcast` 裡所有的錯誤都只記 log，不會影響 HTTP 服務本身。
+
+入伍會改變廣播內容（未入伍時沒有序號可放，名稱退回 `hangar-agent`），而入伍時
+服務通常已經在跑了 —— 所以 `onStartCommand` 會重登記一次。
+
+> **還沒在實機上看過。** Kotlin 這一側是 CI 編出來的，`NsdManager` 在真的手機 +
+> 真的 AP 上表現如何是 ROADMAP 待確認清單的 B3。驗法：手機裝上之後在同區網的
+> 電腦跑 `dns-sd -B _hangar-agent._tcp`（macOS）或
+> `avahi-browse -rt _hangar-agent._tcp`（Linux）。
+
 ## 裝到手機上（`hangar enroll` 幫你做完的那幾步）
 
 平常用 `hangar enroll -p <手機>` 就好。下面是它實際做的事，出問題時用得上：

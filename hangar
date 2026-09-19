@@ -94,11 +94,27 @@ die()  { err "$*"; exit 1; }
 # --------------------------------------------------------------- helpers ----
 
 # run_timeout <secs> <cmd...> — 可攜式 timeout（macOS 沒有 coreutils timeout）
+#
+# 看門狗那個子 shell 裡要自己收掉 sleep。原本只有 `kill -TERM "$wd"`，但 $wd 是
+# 子 shell 的 pid，不是 sleep 的 —— 子 shell 被殺掉之後，它底下那個 sleep 變成
+# 孤兒，繼續睡到時間到。指令很快就結束時看不出來（看門狗還沒 fork 出 sleep 就被
+# 殺了），但只要指令跑了一下下就會留一個。一輪區網掃描是 254 個 ping，孤兒就是
+# 用幾十個在累積的（CI 的 log 尾巴一整排 "Terminate orphan process: (sleep)"）。
+#
+# 所以改成讓子 shell 接住 TERM，自己把 sleep 收乾淨再退。
+# trap 裡一定要先確認 sp 非空：kill -TERM 0 不是「什麼都不殺」，而是送給整個
+# process group —— 那會把呼叫者自己殺掉。
 run_timeout() {
   local secs="$1"; shift
   "$@" &
   local pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  (
+    sp=""
+    trap '[ -n "$sp" ] && kill -TERM "$sp" 2>/dev/null; exit 0' TERM
+    sleep "$secs" & sp=$!
+    wait "$sp" 2>/dev/null
+    kill -TERM "$pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
   local wd=$!
   wait "$pid"; local rc=$?
   kill -TERM "$wd" 2>/dev/null
@@ -159,7 +175,7 @@ require_deps() {
 #     都會帶一份），沒有就老實說廠商不知道
 #   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
 
-SCAN_SCHEMA=5
+SCAN_SCHEMA=6
 SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
 case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
 SCAN_SUBNET=""        # 要掃的 /24 前三段，例如 192.168.1
@@ -177,6 +193,7 @@ scan_add_error() { SCAN_ERRORS="${SCAN_ERRORS}${1}|${2}"$'\n'; }
 
 scan_reset() {
   SCAN_HOSTS=""; SCAN_ERRORS=""; SCAN_SUBNET=""; SCAN_SELF_IP=""
+  SCAN_MDNS=""; SCAN_MDNS_TOOL=""
   SCAN_MATCHES=""; SCAN_LEARNED=""; SCAN_STALE=""; SCAN_FIXED=""
   SCAN_IFACE=""; SCAN_GATEWAY=""
 }
@@ -437,14 +454,115 @@ scan_vendor() { # <正規化過的 mac> → 廠商名稱；查不到或沒有資
     | sed -E 's/^[^[:space:]]+[[:space:]]+//' | cut -f1 | head -1
 }
 
+# ---- mDNS：讓 agent 自己報名 -------------------------------------------------
+#
+# 這是加速器，不是必要條件。ROADMAP「找得到 agent」那節定的規矩：
+#
+#   1. 有 dns-sd（macOS 內建）或 avahi-browse（Linux）就先問 mDNS —— 一次多播就
+#      知道哪幾台有 agent，而且 TXT 裡直接給得出序號
+#   2. 沒有工具、或問不到，就退回逐台探 5599
+#
+# 第 2 條讓 mDNS 完全失效時只是變慢，不是不能用 —— AP 開了 client isolation 會擋掉
+# 多播，各家 ROM 的 NsdManager 穩定度也不一，不能把它當唯一的路。跟 OUI 查不到就
+# 寫 `?` 是同一個態度：少一個系統工具只該少一點資訊，不該整個功能不見。
+#
+# TXT 裡沒有 token，而且**不可以**有 —— mDNS 是整個區網都聽得到的明文廣播。
+
+MDNS_SERVICE="_hangar-agent._tcp"
+SCAN_MDNS=""        # 一行一台："ip|serial|model"
+SCAN_MDNS_TOOL=""   # avahi / dns-sd / 空（這台機器上沒有工具）
+
+scan_mdns_tool() {
+  command -v avahi-browse >/dev/null 2>&1 && { printf 'avahi';  return 0; }
+  command -v dns-sd       >/dev/null 2>&1 && { printf 'dns-sd'; return 0; }
+  return 1
+}
+
+# TXT 的值長這樣：v=1 serial=R58M12345AB model=Pixel+7+Pro
+# 兩種工具印出來的引號習慣不同，所以先把引號去掉再抓。model 裡的 + 是空白。
+scan_mdns_txt_get() { # <txt 整串> <鍵>
+  printf '%s' "$1" | tr -d '"' | tr ' ' '\n' \
+    | sed -nE "s/^$2=(.*)$/\1/p" | head -1 | tr '+' ' '
+}
+
+# avahi-browse：-r 解析、-p 機器可讀、-t 問完一輪就結束（不加 -t 它會一直聽下去）
+#
+#   =;eth0;IPv4;hangar-2345AB;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "serial=..." 
+#
+# 開頭是 = 的才是解析完成的紀錄；+ 開頭的只是「看到有這個服務」，還沒有位址。
+scan_mdns_avahi() {
+  local kind iface proto name type domain host ip port txt
+  while IFS=';' read -r kind iface proto name type domain host ip port txt; do
+    [ "$kind" = "=" ] || continue
+    [ "$proto" = "IPv4" ] || continue
+    [ -n "$ip" ] || continue
+    printf '%s|%s|%s\n' "$ip" \
+      "$(scan_mdns_txt_get "$txt" serial)" "$(scan_mdns_txt_get "$txt" model)"
+    # avahi-browse 有 -t，會自己結束；逾時只是保險
+  done < <(run_timeout 6 avahi-browse -rpt "$MDNS_SERVICE" 2>/dev/null)
+}
+
+# dns-sd（macOS 內建）要兩步，因為它給的是主機名不是位址，而且它不會自己結束
+# —— 兩次呼叫都得靠 run_timeout 砍掉。
+#
+#   dns-sd -Z <type> local.   → SRV（拿主機名）與 TXT（拿序號機型），用實例名對起來
+#   dns-sd -G v4 <host>       → 主機名 → IPv4
+scan_mdns_dnssd() {
+  local dump inst host txt line
+  # dns-sd 不會自己結束，一定是被 run_timeout 砍掉的 —— 所以離開碼一定非 0，
+  # 不可以拿它當「失敗」。要看的是它在被砍之前印了什麼。
+  # 逾時也不能設太長：這是每次掃描都要付的固定成本（掃描本身的 ping sweep 約 5 秒）。
+  dump="$(run_timeout 3 dns-sd -Z "$MDNS_SERVICE" local. 2>/dev/null)"
+  [ -n "$dump" ] || return 0
+  # 先把每個實例的主機名收起來
+  while read -r line; do
+    inst="${line%% *}"
+    host="$(printf '%s' "$line" | awk '{for(i=1;i<=NF;i++) if($i=="SRV") print $(i+4)}' | head -1)"
+    host="${host%.}"
+    [ -n "$inst" ] && [ -n "$host" ] || continue
+    txt="$(printf '%s' "$dump" | grep -F "$inst" | grep -F ' TXT ' | head -1)"
+    local ip
+    ip="$(run_timeout 2 dns-sd -G v4 "$host" 2>/dev/null \
+          | awk '$2=="Add" {for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {print $i; exit}}' \
+          | head -1)"
+    [ -n "$ip" ] || continue
+    printf '%s|%s|%s\n' "$ip" \
+      "$(scan_mdns_txt_get "$txt" serial)" "$(scan_mdns_txt_get "$txt" model)"
+  done < <(printf '%s\n' "$dump" | grep -F ' SRV ')
+}
+
+scan_mdns_collect() {
+  SCAN_MDNS=""
+  SCAN_MDNS_TOOL="$(scan_mdns_tool)" || { SCAN_MDNS_TOOL=""; return 0; }
+  case "$SCAN_MDNS_TOOL" in
+    avahi)  SCAN_MDNS="$(scan_mdns_avahi)" ;;
+    dns-sd) SCAN_MDNS="$(scan_mdns_dnssd)" ;;
+  esac
+  return 0
+}
+
+# scan_mdns_for <ip> → "serial|model"；這個 IP 沒有在 mDNS 上報名就 return 1
+scan_mdns_for() {
+  local ip serial model
+  while IFS='|' read -r ip serial model; do
+    [ -n "$ip" ] || continue
+    [ "$ip" = "$1" ] || continue
+    printf '%s|%s' "$serial" "$model"
+    return 0
+  done <<< "$SCAN_MDNS"
+  return 1
+}
+
 # scan_agent_at <ip> → agent 的版本字串；沒有 agent 就印空字串。
 #
 # 先用 nc 探埠再用 curl 問，不是多此一舉：一個 /24 上大多數東西根本沒有 agent，
 # 讓 curl 對每一台等到逾時的話，掃描會從幾秒變成幾分鐘。nc 探不通就直接跳過。
-scan_agent_at() {
-  command -v nc >/dev/null 2>&1 || return 0
+scan_agent_at() { # <ip> [1 = 已經知道有 agent，不用先探埠]
   agent_have_curl || return 0
-  run_timeout 3 nc -z -w 1 "$1" "$AGENT_PORT_DEFAULT" >/dev/null 2>&1 || return 0
+  if [ "${2:-0}" -ne 1 ]; then
+    command -v nc >/dev/null 2>&1 || return 0
+    run_timeout 3 nc -z -w 1 "$1" "$AGENT_PORT_DEFAULT" >/dev/null 2>&1 || return 0
+  fi
   local body
   body="$(agent_hello "$1")" || return 0
   local v; v="$(agent_field "$body" '.version')"
@@ -471,6 +589,9 @@ scan_run() {
   fi
   scan_prepare "$want" || return 1
   scan_find_gateway
+  # 先問 mDNS：一次多播就知道哪幾台有 agent，省下對 254 台各探一次 5599。
+  # 沒有工具或問不到都沒關係，下面會退回逐台探。
+  [ "$do_probe" -eq 1 ] && scan_mdns_collect
   [ "$do_sweep" -eq 1 ] && scan_sweep
 
   local ip mac vendor rnd adb agent
@@ -489,7 +610,14 @@ scan_run() {
     agent=""
     if [ "$do_probe" -eq 1 ]; then
       adb="$(scan_adb_open "$ip")"
-      agent="$(scan_agent_at "$ip")"
+      # mDNS 已經報過名的就不用再探一次埠，直接問版本
+      if scan_mdns_for "$ip" >/dev/null; then
+        agent="$(scan_agent_at "$ip" 1)"
+        # 答不出話也還是要標成有 agent —— mDNS 說它在，只是 curl 沒裝或它剛好沒回
+        [ -n "$agent" ] || agent="?"
+      else
+        agent="$(scan_agent_at "$ip")"
+      fi
     fi
     SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}|${agent}"$'\n'
   done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
@@ -2672,6 +2800,7 @@ cmd_scan() {
 
   if [ "$JSON_MODE" -eq 1 ]; then
     local errs objs="" ip mac vendor rnd adb agent m prof kind dser stale fixed
+    local mrec mser mmodel aby
     errs="$(printf '%s' "$SCAN_ERRORS" | jq -R -s -c \
       '[split("\n")[] | select(length > 0) | split("|")
         | { code: .[0], message: (.[1:] | join("|")) }]')"
@@ -2686,11 +2815,21 @@ cmd_scan() {
         case $'\n'"$SCAN_STALE" in *$'\n'"${prof}|"*) stale=1 ;; esac
         case $'\n'"$SCAN_FIXED" in *$'\n'"${prof}|"*) fixed=1 ;; esac
       fi
+      # mDNS 的 TXT 直接給得出序號與機型。這是 M3b 真正的價值：這台電腦上沒有
+      # profile 的手機（例如別台電腦設定的）也拿得到主鍵，hub 才合得起來。
+      mser=""; mmodel=""; aby=""
+      if mrec="$(scan_mdns_for "$ip")"; then
+        mser="${mrec%%|*}"; mmodel="${mrec#*|}"; aby="mdns"
+        [ -n "$dser" ] || dser="$mser"
+      elif [ -n "$agent" ]; then
+        aby="probe"
+      fi
       objs="${objs}$(jq -n \
         --arg ip "$ip" --arg mac "$mac" --arg vendor "$vendor" \
         --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" \
         --arg kind "$kind" --arg dser "$dser" --argjson stale "$stale" \
         --argjson fixed "$fixed" --arg agent "$agent" \
+        --arg mmodel "$mmodel" --arg aby "$aby" \
         --argjson isgw "$( [ -n "$SCAN_GATEWAY" ] && [ "$ip" = "$SCAN_GATEWAY" ] && echo 1 || echo 0 )" '
         def s: if . == "" then null else . end;
         { ip:               $ip,
@@ -2703,10 +2842,14 @@ cmd_scan() {
           device_serial:    ($dser | s),
           profile_ip_stale: ($stale == 1),
           profile_ip_fixed: ($fixed == 1),
-          # 有沒有 agent 住在這台機器裡。--no-probe 時一律 null（沒去問）
+          # 有沒有 agent 住在這台機器裡。--no-probe 時一律 null（沒去問）。
+          # discovered_by 說的是怎麼發現它的：mdns（agent 自己報名）或 probe
+          # （逐台探 5599）。model 只有 mDNS 那條路給得出來。
           agent:            (if $agent == "" then null
                              else { version: (if $agent == "?" then null
-                                              else $agent end) } end),
+                                              else $agent end),
+                                    model:        ($mmodel | s),
+                                    discovered_by: ($aby | s) } end),
           # 這個網段的閘道器。標出來是因為它每次都會出現，而且絕對不是測試機
           is_gateway:       ($isgw == 1) }')"$'\n'
     done <<< "$SCAN_HOSTS"
@@ -2794,6 +2937,12 @@ cmd_scan() {
   if [ "$agent_n" -gt 0 ]; then
     printf '  %s其中 %s 台裝了 agent，那幾台不開偵錯也看得到機型與電量%s\n' \
       "$C_DIM" "$agent_n" "$C_0"
+    # mDNS 找到的那幾台連序號都有（TXT 裡帶著），不用對上 profile 就認得出是誰
+    local mdns_n; mdns_n="$(printf '%s' "$SCAN_MDNS" | grep -c . || true)"
+    if [ "${mdns_n:-0}" -gt 0 ]; then
+      printf '  %s其中 %s 台是 agent 自己用 mDNS 報名的（連序號都有，不用對 profile）%s\n' \
+        "$C_DIM" "$mdns_n" "$C_0"
+    fi
   else
     printf '  %s沒開偵錯的裝置只看得到 IP / MAC —— 機型與電量要等手機端 agent app%s\n' \
       "$C_DIM" "$C_0"
@@ -2810,6 +2959,10 @@ cmd_scan() {
   done <<< "$SCAN_LEARNED"
   scan_oui_db >/dev/null || printf '  %s廠商查不到是因為這台機器上沒有 OUI 資料庫（裝 nmap 或 arp-scan 就有）%s\n' \
     "$C_DIM" "$C_0"
+  if [ "$do_probe" -eq 1 ] && [ -z "$SCAN_MDNS_TOOL" ]; then
+    printf '  %s這台機器沒有 dns-sd 或 avahi-browse，所以是逐台探 %s 找 agent —— 慢一點而已%s\n' \
+      "$C_DIM" "$AGENT_PORT_DEFAULT" "$C_0"
+  fi
   echo
 
   # 認得出是同一支手機，但 profile 指著舊位址 —— 投影還是會連到錯的地方，

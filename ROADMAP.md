@@ -59,7 +59,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
 | M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成，而且在 Pixel 4 / Android 13 上實機驗過** |
-| M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | |
+| M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | **已完成**（電腦端兩條路都有測試；手機端的 `NsdManager` 廣播還沒在實機上看過 —— 見待確認清單 B3）|
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M3d | 響鈴：牆上按一下，那支手機響給你聽 —— 用來**識別**，不是用來找失聯的機器。只依賴 M3a，不卡 M3b／M3c | 做法已定（見「[響鈴](#響鈴在一排手機裡認出是哪一支)」），還沒寫 |
 | M3e | 反向識別：入伍時把 profile 名字也寫進手機，agent 那頁大字顯示。**協定不動**，最小的一條 | 做法已定（見「[反向識別](#反向識別m3e入伍時多寫一個名字)」），還沒寫 |
@@ -260,13 +260,24 @@ hangar enroll [-p 手機] [--apk agent.apk]
 
 ### 找得到 agent：mDNS 是加速器，不是必要條件
 
+> **已實作（M3b）**：手機端在 `agent/…/MdnsBroadcast.kt`，電腦端在 `hangar` 的
+> `scan_mdns_*`。下面這份規格就是兩邊實際照著做的東西。
+
 廣播 `_hangar-agent._tcp`，instance 名稱 `hangar-<序號後六碼>`，TXT：
 
 ```
 v=1  serial=R58M12345AB  model=Pixel+7+Pro
 ```
 
-**TXT 裡不放 token** —— mDNS 是整個區網都聽得到的明文廣播。
+**TXT 裡不放 token** —— mDNS 是整個區網都聽得到的明文廣播。序號放得進去，是因為
+電腦端本來就要靠它認人，而且光知道序號並不能拿來存取那支 agent。
+
+機型裡的空白編成 `+`（`Pixel 7 Pro` → `Pixel+7+Pro`）。TXT 在 `avahi-browse` 與
+`dns-sd` 的輸出裡是用空白分隔的一串 `鍵=值`，值裡直接放空白會把電腦端的解析拆壞。
+兩邊的實作要一起看：手機端 `Build.MODEL.replace(' ', '+')`，電腦端 `scan_mdns_txt_get`。
+
+還沒入伍的 agent 沒有序號可放 —— 那時仍然廣播（「這裡有一支還沒入伍的 agent」本身
+就是有用的資訊），instance 名稱退回 `hangar-agent`，TXT 裡就沒有 `serial` 那一項。
 
 但 mDNS 不能當唯一的路：AP 的 client isolation 會擋掉多播，各家 ROM 的
 `NsdManager` 穩定度也不一。所以 `hangar scan` 的規矩是：
@@ -509,7 +520,7 @@ exported 廣播，那是同一支手機上任何 app 都發得出來的攻擊面
 |---|---|---|---|
 | B1 | 前景服務在各家 ROM 的省電策略下活多久；以及手機重開機後它自己回不回得來 | 裝上去放 24／72 小時，中間不碰手機，看 `/hello` 還答不答得出來；然後重開機再看一次 | **整套的單點故障**：agent 被殺 = 那支手機失聯 |
 | B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 影響 M4 的復原路徑設計 |
-| B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完後用 `dns-sd -B _hangar-agent._tcp` 看得到嗎 | 看不到就退回「探 5599」那條路，只是慢 |
+| B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完了，現在測得動：手機裝上新版 agent 後，在同區網的電腦跑 `dns-sd -B _hangar-agent._tcp`（macOS）或 `avahi-browse -rt _hangar-agent._tcp`（Linux）看得到嗎；再用 `hangar scan --json` 確認那台的 `agent.discovered_by` 是 `mdns` | 看不到就退回「探 5599」，只是慢。**電腦端已經自動處理這個退路**，不用改設定 |
 | B4 | AP 有沒有開 client isolation | 兩支手機互 ping；或電腦 ping 手機 | 有的話整個區網掃描與 agent 都不通，得改走 Tailscale |
 | B5 | 一個 /24 掃完要多久（真實網路，不是 mock） | `time hangar scan` | 太久的話 hub 的 `--scan-interval` 要往上調 |
 | B6 | 手機被調成靜音／開著勿擾時，alarm stream 還響不響（各家 ROM 不一） | 手動設成靜音與各級 DND，各按一次響鈴 | 不響的話響鈴要去動系統音量，那就多一個「會回不去的狀態」（見 C8） |
@@ -853,7 +864,7 @@ hangar/
 │   └── make_manual.py    # README → docs/manual.html 的轉換器
 ├── agent/                # 手機端 app（Kotlin，零外部相依，連 AndroidX 都沒有）
 │   ├── README.md         # 怎麼蓋、怎麼手動入伍、驗證到什麼程度
-│   └── app/src/main/     # HttpServer / Status / Enrollment / AgentService …
+│   └── app/src/main/     # HttpServer / Status / Enrollment / AgentService / MdnsBroadcast …
 ├── hub/
 │   ├── hangar_hub.py     # 常駐服務：輪詢 hangar --json、合併、開 HTTP
 │   └── static/
@@ -873,7 +884,8 @@ hangar/
     ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
     ├── test_agent_client.sh     # 電腦這一側：enroll、改問 agent、掃描探 5599
     ├── test_manual.sh    # 手冊：Markdown 有沒有轉乾淨、內容有沒有掉、印記可不可決定
-    ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
+    ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / curl / arp / ip / ping
+    │                     #   / route / avahi-browse / dns-sd
     ├── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
     ├── helperbin/        # 假的 hangar + scrcpy（會真的 exec，helper 靠那個判斷起來了）
     └── agentbin/         # 假的 agent（M3 協定的 Python 參考實作）
@@ -885,7 +897,7 @@ hangar/
 |---|---|
 | 輸出 | `info` / `ok` / `warn` / `err` / `kv` / 中文欄寬對齊 |
 | agent | `agent_*` —— 怎麼跟手機裡的 agent 講話（HTTP + token），`curl` 不在就安靜降級 |
-| scan | `scan_*` —— ARP 層級的「這個網段上有哪些裝置」，不分已設定與否；`cmd_scan` 和 lan backend 的候選清單共用它 |
+| scan | `scan_*` —— ARP 層級的「這個網段上有哪些裝置」，不分已設定與否；`cmd_scan` 和 lan backend 的候選清單共用它。`scan_mdns_*` 是它底下的一小層：先問 mDNS，問不到就退回逐台探埠 |
 | transport | `transport_*` —— 「怎麼連到這支手機」全部收在這後面，底下有 `ts_*` 和 `lan_*` 兩個 backend |
 | profile | `.conf` 的讀寫、預設值、舊格式遷移 |
 | adb | 連線重試、狀態判讀、裝置資訊、電量 |
@@ -962,7 +974,7 @@ CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是�
 | `test_adb_race.sh` | adb server 重啟競態的自動重試、本機 adb 問題與手機重開機的區分、setup 的 `start-server`、中文欄位對齊 |
 | `test_multihost.sh` | `setup --existing`（第二台電腦）、unauthorized 的說明、連不上時的提示方向、`--name` 別名 |
 | `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
-| `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡）、`--fix-ip` 只改認得出來的那幾支且不碰 tailscale profile |
+| `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡）、`--fix-ip` 只改認得出來的那幾支且不碰 tailscale profile、mDNS 兩條路（`avahi-browse` 與 `dns-sd`）都找得到 agent 且拿得到序號與機型、沒有 mDNS 工具時退回探 5599 仍然找得到、未解析的 `+` 紀錄不算數、profile 的序號優先於 mDNS 的、`--no-probe` 連 mDNS 都不問 |
 | `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳、`POST /api/refresh` 的節流（剛問過回 429 並說還要等幾秒）、`GET /api/refresh` 是 404、不認得的 `what` 回 400 |
 | `test_agent_protocol.sh` | `/hello` 不需要 token 也不吐序號、`/status` 要 token、status 的每個欄位型別（電量是 0-100 整數、充電狀態用小寫那一套、`wifi_enabled` 可以是 null 但不能用 false 混充、拿不到的東西回 null 不塞假值、協定裡根本沒有 MAC 這一欄）、501 與 404 要分得出來、沒入伍是 409 不是 401。**帶 `HANGAR_AGENT_URL` 就直接打真的手機** |
 | `test_manual.sh` | `tools/make_manual.py`：Markdown 轉乾淨了沒（讀者不該看到 `**這樣**` 或一整列 `| --- |`）、區段與表格有沒有整段掉、README 裡的錨點連結在手冊裡對不對得上、同一份 README 跑兩次印記要一模一樣（`--check` 才有意義） |

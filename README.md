@@ -252,6 +252,12 @@ hangar scan --json
   其中 2 台裝了 agent，那幾台不開偵錯也看得到機型與電量
 ```
 
+找 agent 有兩條路。有 `dns-sd`（macOS 內建）或 `avahi-browse`（Linux）就先問
+mDNS —— agent 會自己廣播 `_hangar-agent._tcp`，一次多播就知道哪幾台有，而且它的
+TXT 裡直接帶著**序號與機型**，那台手機就算沒在這台電腦上設定過也認得出是誰。
+問不到、或這台機器兩個工具都沒有，就退回逐台探 5599：慢一點，但功能不會不見。
+AP 開了 client isolation 會擋掉多播，所以 mDNS 不能當唯一的路。
+
 它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 `arp -an`
 （沒有 `arp` 就用 `ip neigh`），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播
 與多播位址（`ff:ff:…`、mDNS 的 `01:00:5e:…`）會濾掉 —— 那些背後沒有一台機器。
@@ -473,7 +479,8 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "device_serial": "R58M12345AB",
       "profile_ip_stale": false,
       "profile_ip_fixed": false,
-      "agent": { "version": "0.1.0" },
+      "agent": { "version": "0.1.0", "model": "Pixel 7 Pro",
+                 "discovered_by": "mdns" },
       "is_gateway": false
     }
   ],
@@ -482,7 +489,14 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 ```
 
 `agent` 在那台有 agent 在聽 5599 時才不是 `null`，`is_gateway` 是「這台是這個
-網段的閘道器」。`adb_port` 是 `open` / `closed` / `unknown`（`--no-probe` 或這台
+網段的閘道器」。`agent.discovered_by` 說的是怎麼找到它的：
+
+| | |
+|---|---|
+| `mdns` | agent 自己用 mDNS 報名的。這條路連 `model` 與序號都拿得到 |
+| `probe` | 逐台探 5599 探出來的。只拿得到版本，`model` 是 `null` |
+
+`adb_port` 是 `open` / `closed` / `unknown`（`--no-probe` 或這台
 機器沒有 `nc`）。
 `profile` 對不上任何已設定的手機時是 `null`，`matched_by` 與 `device_serial`
 也跟著是 `null`。`subnet` 是實際掃過的範圍。

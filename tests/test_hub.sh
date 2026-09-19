@@ -39,7 +39,7 @@ hub_env() {
 ] }
 JSON
   cat > "$MOCK_STATE/scan_json" <<'JSON'
-{ "schema": 5, "subnet": "192.168.1.0/24", "hosts": [
+{ "schema": 6, "subnet": "192.168.1.0/24", "hosts": [
   { "ip": "192.168.1.1", "mac": "3c:37:86:aa:bb:cc", "vendor": "Netgear",
     "mac_randomized": false, "adb_port": "closed", "profile": null,
     "matched_by": null, "device_serial": null,

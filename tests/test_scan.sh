@@ -43,7 +43,7 @@ out="$("$PM" scan --json 2>/dev/null)"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
   && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
-assert "有 schema 版本"      "5"                "$(q '.schema' "$out")"
+assert "有 schema 版本"      "6"                "$(q '.schema' "$out")"
 assert "掃的網段寫在結果裡"  "192.168.1.0/24"   "$(q '.subnet' "$out")"
 assert "hosts 是陣列"        "array"            "$(q '.hosts | type' "$out")"
 assert "errors 是空陣列"     "0"                "$(q '.errors | length' "$out")"
@@ -369,7 +369,7 @@ assert "修好了就不再是 stale"       "false" \
 assert "而且說得出這支被修過"       "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_fixed' "$out")"
 assert "MAC 沒被動到"               "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
-assert "改檔案不影響 JSON 純淨度"   "5" "$(q '.schema' "$out")"
+assert "改檔案不影響 JSON 純淨度"   "6" "$(q '.schema' "$out")"
 # 只改該改的那一行，其他欄位不能被洗掉
 assert "TRANSPORT 還在"             "lan"  "$(pfield work TRANSPORT)"
 
@@ -447,7 +447,7 @@ echo "=== S16. 閘道器要標出來（它每次都會出現，而且絕對不�
 lan_env
 printf '192.168.1.1\n' > "$MOCK_STATE/gateway_ip"
 out="$("$PM" scan --json 2>/dev/null)"
-assert "schema 往上加了"   "5" "$(q '.schema' "$out")"
+assert "schema 往上加了"   "6" "$(q '.schema' "$out")"
 assert "閘道器標出來了"     "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.1") | .is_gateway' "$out")"
 assert "別台不可以被標成閘道器" "false" \
@@ -470,6 +470,139 @@ printf '10.0.0.1\n' > "$MOCK_STATE/gateway_ip"
 out="$("$PM" scan --json 2>/dev/null)"
 assert "別的網段的閘道不算" "0" \
   "$(q '[.hosts[] | select(.is_gateway)] | length' "$out")"
+
+echo "=== S17. mDNS：agent 自己報名，找不到就退回逐台探 5599 ==="
+# mDNS 是加速器不是必要條件。這一節要鎖住兩件事：報得到名時省下探埠而且直接拿到
+# 序號；完全沒有 mDNS 時行為跟以前一模一樣（只是慢）。
+mdns_env() {
+  lan_env
+  # 192.168.1.77 上有一支 agent。nc 的 mock 是分埠的（只寫 IP 只代表 5555 通），
+  # 所以 agent 的 5599 要另外標一筆，不然退回探埠那條路會探不到。
+  printf '192.168.1.77\n192.168.1.77:5599\n' > "$MOCK_STATE/nc_open_ips"
+  echo '{"schema":1}' > "$MOCK_STATE/agent_192.168.1.77_5599.json"
+}
+
+# --- avahi-browse 那條路（Linux）---
+mdns_env
+cat > "$MOCK_STATE/mdns_avahi" <<'AV'
++;en0;IPv4;hangar-2345AB;_hangar-agent._tcp;local
+=;en0;IPv4;hangar-2345AB;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "serial=R58M12345AB" "model=Pixel+7+Pro"
+AV
+out="$("$PM" scan --json --no-ping 2>/dev/null)"
+assert "schema 往上加了"        "6" "$(q '.schema' "$out")"
+assert "mDNS 那台認得出有 agent" "0.1.0-mock" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
+assert "說得出是怎麼發現的"      "mdns" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.discovered_by' "$out")"
+# TXT 直接給序號 —— 這台電腦上沒有這支手機的 profile，照樣拿得到主鍵
+assert "沒有 profile 也拿得到序號" "R58M12345AB" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .device_serial' "$out")"
+assert "機型的 + 要還原成空白"   "Pixel 7 Pro" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.model' "$out")"
+# mDNS 已經說它有 agent 了，就不該再對它探一次埠（省下來的正是這個）
+nocheck "不再對它白探 5599" "192.168.1.77 5599" "$(cat "$MOCK_STATE/nc_log" 2>/dev/null)"
+check   "別台還是照探"       "192.168.1.90 5599" "$(cat "$MOCK_STATE/nc_log" 2>/dev/null)"
+
+# --- dns-sd 那條路（macOS）---
+# 做一份沒有 avahi-browse 的 PATH，逼它走另一條
+mdns_env
+NOAV="$MOCK_STATE/noavahi"; rm -rf "$NOAV"; mkdir -p "$NOAV"
+for d in "$SP/mockbin" /usr/bin /bin /usr/sbin /sbin; do
+  [ -d "$d" ] || continue
+  for f in "$d"/*; do
+    b="$(basename "$f")"
+    [ "$b" = "avahi-browse" ] && continue
+    [ -e "$NOAV/$b" ] || ln -s "$f" "$NOAV/$b" 2>/dev/null
+  done
+done
+[ ! -e "$NOAV/avahi-browse" ] && [ -e "$NOAV/dns-sd" ] \
+  && { echo "  PASS  測試前提：這份 PATH 只有 dns-sd"; PASS=$((PASS+1)); }
+cat > "$MOCK_STATE/mdns_dnssd_z" <<'DZ'
+_hangar-agent._tcp                              PTR     hangar-2345AB._hangar-agent._tcp
+hangar-2345AB._hangar-agent._tcp                SRV     0 0 5599 phone.local. ; Replace with unicast FQDN
+hangar-2345AB._hangar-agent._tcp                TXT     "v=1" "serial=R58M12345AB" "model=Pixel+7+Pro"
+DZ
+printf 'phone.local 192.168.1.77\n' > "$MOCK_STATE/mdns_hosts"
+out="$(PATH="$NOAV" "$PM" scan --json --no-ping 2>/dev/null)"
+assert "dns-sd 也找得到"     "mdns" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.discovered_by' "$out")"
+assert "序號一樣拿得到"      "R58M12345AB" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .device_serial' "$out")"
+assert "機型一樣拿得到"      "Pixel 7 Pro" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.model' "$out")"
+# 真的 dns-sd 不會自己結束，是被 run_timeout 砍掉的 —— 離開碼一定非 0。
+# 拿它當「失敗」的話這條路永遠無效，所以這裡要確認它真的被呼叫且結果有用上。
+check "真的有去問 dns-sd" "_hangar-agent._tcp" "$(cat "$MOCK_STATE/dnssd_log" 2>/dev/null)"
+
+# --- 完全沒有 mDNS 工具：退回逐台探，功能還在只是慢 ---
+mdns_env
+NOMD="$MOCK_STATE/nomdns"; rm -rf "$NOMD"; mkdir -p "$NOMD"
+for d in "$SP/mockbin" /usr/bin /bin /usr/sbin /sbin; do
+  [ -d "$d" ] || continue
+  for f in "$d"/*; do
+    b="$(basename "$f")"
+    { [ "$b" = "avahi-browse" ] || [ "$b" = "dns-sd" ]; } && continue
+    [ -e "$NOMD/$b" ] || ln -s "$f" "$NOMD/$b" 2>/dev/null
+  done
+done
+[ ! -e "$NOMD/avahi-browse" ] && [ ! -e "$NOMD/dns-sd" ] \
+  && { echo "  PASS  測試前提：這份 PATH 兩個 mDNS 工具都沒有"; PASS=$((PASS+1)); }
+out="$(PATH="$NOMD" "$PM" scan --json --no-ping 2>/dev/null)"
+assert "沒有 mDNS 也找得到 agent" "0.1.0-mock" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
+assert "這時說得出是探出來的"     "probe" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.discovered_by' "$out")"
+assert "探出來的沒有機型"         "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.model' "$out")"
+assert "也沒有序號（探埠問不到）" "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .device_serial' "$out")"
+
+# --- 還沒入伍的 agent：TXT 裡沒有序號，但仍然要看得到它 ---
+mdns_env
+cat > "$MOCK_STATE/mdns_avahi" <<'AV'
+=;en0;IPv4;hangar-agent;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "model=Pixel+7+Pro"
+AV
+out="$("$PM" scan --json --no-ping 2>/dev/null)"
+assert "沒序號也還是看得到 agent" "mdns" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.discovered_by' "$out")"
+assert "序號是 null 不是空字串"   "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .device_serial' "$out")"
+assert "機型照樣拿得到"           "Pixel 7 Pro" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.model' "$out")"
+
+# --- 沒解析完成的紀錄（+ 開頭）沒有位址，不可以當成 mDNS 找到了 ---
+# avahi-browse 的 + 行只代表「看到有這個服務」，還沒解析出 IP。把它當成找到的話
+# 會拿不到位址卻以為拿到了。正確的行為是退回探埠 —— 功能還在，只是慢。
+mdns_env
+cat > "$MOCK_STATE/mdns_avahi" <<'AV'
++;en0;IPv4;hangar-2345AB;_hangar-agent._tcp;local
+AV
+out="$("$PM" scan --json --no-ping 2>/dev/null)"
+assert "+ 那行不算 mDNS 找到" "probe" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.discovered_by' "$out")"
+assert "所以也沒有 mDNS 才有的機型" "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.model' "$out")"
+
+# --- profile 有序號時以 profile 為準（那是 adb 拿到的，最可信）---
+mdns_env
+printf 'PHONE_HOST=""\nPHONE_IP="192.168.1.77"\nTRANSPORT="lan"\nDEVICE_SERIAL="FROMADB123"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+cat > "$MOCK_STATE/mdns_avahi" <<'AV'
+=;en0;IPv4;hangar-2345AB;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "serial=R58M12345AB" "model=Pixel+7+Pro"
+AV
+out="$("$PM" scan --json --no-ping 2>/dev/null)"
+assert "profile 的序號優先" "FROMADB123" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .device_serial' "$out")"
+
+# --- --no-probe 時完全不碰 mDNS（那個旗標的意思就是「不要去問任何東西」）---
+mdns_env
+cat > "$MOCK_STATE/mdns_avahi" <<'AV'
+=;en0;IPv4;hangar-2345AB;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "serial=R58M12345AB"
+AV
+out="$("$PM" scan --json --no-ping --no-probe 2>/dev/null)"
+assert "--no-probe 不問 mDNS" "0" "$(lines "$MOCK_STATE/avahi_log")"
+assert "--no-probe 的 agent 是 null" "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent' "$out")"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

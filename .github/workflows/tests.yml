@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # jq 是 hangar 的硬相依。zh_TW.UTF-8 是選配但值得裝：test_scan.sh 有一節
       # 專門驗中文訊息在那個 locale 底下不會炸，locale 不存在的話它只能跳過。
@@ -78,7 +78,7 @@ jobs:
           [ -z "$missing" ] || { echo "這個映像缺:$missing"; exit 1; }
           echo "相依齊全"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 這條腿故意不裝 zh_TW.UTF-8：要有一邊看得到「locale 不存在時會不會好好
       # 跳過、而不是把 setlocale 警告當成產品壞了」。
@@ -90,7 +90,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 確認 jq 在
         run: command -v jq || brew install jq

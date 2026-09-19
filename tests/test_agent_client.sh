@@ -131,7 +131,7 @@ assert "沒入伍的是 null"     "null" "$(q '.devices[0].agent' "$out")"
 echo "=== C6. scan 探得到 agent ==="
 env_one
 out="$("$PM" scan --json 2>/dev/null)"
-assert "schema 往上加了"     "5" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "6" "$(q '.schema' "$out")"
 assert "有 agent 的標出版本" "0.1.0-mock" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
 : > "$MOCK_STATE/curl_log"        # 上一次掃描寫過了，要先清掉才問得出這一題
