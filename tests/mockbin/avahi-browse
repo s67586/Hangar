@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#
+# 假的 avahi-browse。掃描層用 `avahi-browse -rpt _hangar-agent._tcp` 問 mDNS，
+# 回應由 $MOCK_STATE/mdns_avahi 決定（直接照 -p 的機器可讀格式寫）。
+# 沒有那個檔就當成區網上沒有 agent 報名。
+S="$MOCK_STATE"
+echo "avahi-browse $*" >> "$S/avahi_log"
+[ -f "$S/mdns_avahi" ] && cat "$S/mdns_avahi"
+exit 0

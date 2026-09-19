@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 7a73242f2966</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 c0741a91963c</span><span class="fact">hangar v1.2.0</span></div>
 </header>
 
 <div class="cols">
@@ -237,6 +237,7 @@ hangar scan --json</pre></div>
 
   共 3 台，其中 1 台的 5555 是開著的（可以 adb 進去）
   其中 2 台裝了 agent，那幾台不開偵錯也看得到機型與電量</pre></div>
+<p>找 agent 有兩條路。有 <code>dns-sd</code>（macOS 內建）或 <code>avahi-browse</code>（Linux）就先問 mDNS —— agent 會自己廣播 <code>_hangar-agent._tcp</code>，一次多播就知道哪幾台有，而且它的 TXT 裡直接帶著<strong>序號與機型</strong>，那台手機就算沒在這台電腦上設定過也認得出是誰。 問不到、或這台機器兩個工具都沒有，就退回逐台探 5599：慢一點，但功能不會不見。 AP 開了 client isolation 會擋掉多播，所以 mDNS 不能當唯一的路。</p>
 <p>它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 <code>arp -an</code> （沒有 <code>arp</code> 就用 <code>ip neigh</code>），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播 與多播位址（<code>ff:ff:…</code>、mDNS 的 <code>01:00:5e:…</code>）會濾掉 —— 那些背後沒有一台機器。</p>
 <p><code>身分</code> 那一欄回答的是「這台對我們來說是什麼」：已經設定過的手機叫什麼名字、 是不是這個網段的<strong>閘道器</strong>、還是完全不認識（<code>-</code>）。閘道器每次掃描都會出現而且 絕對不是測試機，標出來才不用每次重新想一次「192.168.1.1 是什麼」。</p>
 <div class="note"><p>閘道位址是問<strong>掃描用的那張介面</strong>拿到的（macOS 問 DHCP 給的 router，Linux 問 那張介面的預設路由），不是問「預設路由的 gateway」—— 跑 Tailscale 的機器上 預設路由是點對點通道，根本沒有閘道那一欄。問不到就不標，不會亂猜一台。</p></div>
@@ -323,13 +324,16 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
       &quot;device_serial&quot;: &quot;R58M12345AB&quot;,
       &quot;profile_ip_stale&quot;: false,
       &quot;profile_ip_fixed&quot;: false,
-      &quot;agent&quot;: { &quot;version&quot;: &quot;0.1.0&quot; },
+      &quot;agent&quot;: { &quot;version&quot;: &quot;0.1.0&quot;, &quot;model&quot;: &quot;Pixel 7 Pro&quot;,
+                 &quot;discovered_by&quot;: &quot;mdns&quot; },
       &quot;is_gateway&quot;: false
     }
   ],
   &quot;errors&quot;: []
 }</pre></div>
-<p><code>agent</code> 在那台有 agent 在聽 5599 時才不是 <code>null</code>，<code>is_gateway</code> 是「這台是這個 網段的閘道器」。<code>adb_port</code> 是 <code>open</code> / <code>closed</code> / <code>unknown</code>（<code>--no-probe</code> 或這台 機器沒有 <code>nc</code>）。 <code>profile</code> 對不上任何已設定的手機時是 <code>null</code>，<code>matched_by</code> 與 <code>device_serial</code> 也跟著是 <code>null</code>。<code>subnet</code> 是實際掃過的範圍。</p>
+<p><code>agent</code> 在那台有 agent 在聽 5599 時才不是 <code>null</code>，<code>is_gateway</code> 是「這台是這個 網段的閘道器」。<code>agent.discovered_by</code> 說的是怎麼找到它的：</p>
+<div class="tw"><table><tr><td class="wrap"><code>mdns</code></td><td class="wrap">agent 自己用 mDNS 報名的。這條路連 <code>model</code> 與序號都拿得到</td></tr><tr><td class="wrap"><code>probe</code></td><td class="wrap">逐台探 5599 探出來的。只拿得到版本，<code>model</code> 是 <code>null</code></td></tr></table></div>
+<p><code>adb_port</code> 是 <code>open</code> / <code>closed</code> / <code>unknown</code>（<code>--no-probe</code> 或這台 機器沒有 <code>nc</code>）。 <code>profile</code> 對不上任何已設定的手機時是 <code>null</code>，<code>matched_by</code> 與 <code>device_serial</code> 也跟著是 <code>null</code>。<code>subnet</code> 是實際掃過的範圍。</p>
 <p><code>matched_by</code> 是「這台是靠什麼認出來的」：<code>mac</code>（可信）或 <code>ip</code>（第一次，還沒記過 MAC）。<code>device_serial</code> 來自對上的那個 profile，是跨 IP、跨連線方式都不變的主鍵。 <code>profile_ip_stale</code> 為 <code>true</code> 表示 MAC 認得出是同一支手機，但那個 profile 的 <code>PHONE_IP</code> 已經是舊的了 —— 投影會連到錯的地方。加上 <code>--fix-ip</code> 的話這種會被 就地改好，那一台的 <code>profile_ip_fixed</code> 會是 <code>true</code>、<code>profile_ip_stale</code> 回到 <code>false</code>。<strong>要注意 <code>--fix-ip</code> 會寫設定檔</strong>，所以固定輪詢 <code>scan --json</code> 的程式 （例如之後的 hub）別無條件帶著它跑。 scan 自己的 error code：</p>
 <div class="tw"><table><tr><th>code</th><th>意思</th></tr><tr><td class="wrap"><code>scan_unavailable</code></td><td class="wrap">這台電腦上缺工具（讀不到 ARP 表）</td></tr><tr><td class="wrap"><code>subnet_unknown</code></td><td class="wrap">測不出預設路由的網段，要用 <code>--subnet</code> 指定</td></tr><tr><td class="wrap"><code>subnet_too_big</code></td><td class="wrap">偵測到的網段比 <code>/24</code> 大，掃不動</td></tr><tr><td class="wrap"><code>subnet_invalid</code></td><td class="wrap"><code>--subnet</code> 給的值看不懂</td></tr></table></div>
 <p>「缺工具」跟「區網上沒東西」分成兩件事報，跟 <code>transport_unavailable</code> 是同一個 道理：前者要修的是這台電腦，後者才該去看裝置。</p>
@@ -555,7 +559,7 @@ WantedBy=default.target</pre></div>
 <p>按下去之後 helper 會等到其中一件事發生才回話：</p>
 <div class="tw"><table><tr><th>發生的事</th><th>牆上顯示</th></tr><tr><td class="wrap">process 變成 scrcpy 了</td><td class="wrap"><code>投影視窗開了（你的電腦名）</code></td></tr><tr><td class="wrap"><code>hangar</code> 中途失敗</td><td class="wrap">它自己的錯誤與提示，例如 <code>手機不在線上 —— 去看看它有沒有開機</code></td></tr><tr><td class="wrap">等超過 <code>--grace</code>（預設 30 秒）</td><td class="wrap"><code>還在跑，但等了 30 秒沒看到 scrcpy 接手</code></td></tr></table></div>
 <p>「真的起來了」判斷的是 <code>hangar</code> 最後那一步 <code>exec scrcpy</code> 把 process 換掉 —— 不是解析任何訊息文字，也不是「叫過了就算成功」。</p>
-<div class="note"><p>卡片上的「這支手機的畫面正開在 &lt;hub 的機器名&gt; 上」講的是 <strong>hub 那一台電腦</strong>，不是你 （hub 剛好就是你這台時會多寫一句「你這台電腦」）。 同事在自己電腦上按的投影，牆上看不到 —— 那個欄位是 <code>hangar list</code> 在 hub 上 <code>pgrep</code> 出來的。誰在用哪一支還沒有任何佔用機制，三個人同時按同一支會各投各的。</p></div>
+<div class="note"><p>卡片上的「這支手機的畫面正開在 &lt;hub 的機器名&gt; 上」講的是 <strong>hub 那一台電腦</strong>， 不是你（hub 剛好就是你這台時會多寫一句「你這台電腦」）。 同事在自己電腦上按的投影，牆上看不到 —— 那個欄位是 <code>hangar list</code> 在 hub 上 <code>pgrep</code> 出來的。誰在用哪一支還沒有任何佔用機制，三個人同時按同一支會各投各的。</p></div>
 <h3 id="三道鎖">三道鎖</h3>
 <p>「網頁叫得動本機程式」本來就是要小心的事：</p>
 <div class="tw"><table><tr><td class="wrap">只綁 <code>127.0.0.1</code></td><td class="wrap">別台電腦連不到。<strong>沒有 <code>--bind</code> 可以改</strong></td></tr><tr><td class="wrap">Origin 白名單</td><td class="wrap">只有 <code>--hub</code> 給的那些網址上的頁面叫得動。Origin 是瀏覽器自己填的，頁面上的 JS 偽造不了</td></tr><tr><td class="wrap">token</td><td class="wrap">擋掉這台電腦上其他不是從那頁來的呼叫。放在 <code>~/.config/hangar/helper.token</code>（0600），換一把用 <code>--new-token</code></td></tr></table></div>
@@ -723,7 +727,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 7a73242f2966</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 c0741a91963c</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>

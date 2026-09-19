@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#
+# 假的 dns-sd（macOS 內建）。掃描層分兩步用它：
+#
+#   dns-sd -Z <type> local.   → SRV 與 TXT（$MOCK_STATE/mdns_dnssd_z）
+#   dns-sd -G v4 <host>       → 主機名換 IPv4（$MOCK_STATE/mdns_hosts，一行「主機名 IP」）
+#
+# 真的 dns-sd 不會自己結束，是被 run_timeout 砍掉的。這個 mock 直接結束就好 ——
+# 要驗的是「被砍掉之前印的東西有沒有被好好讀走」，那條路徑兩種情況都一樣。
+S="$MOCK_STATE"
+echo "dns-sd $*" >> "$S/dnssd_log"
+case "$1" in
+  -Z)
+    [ -f "$S/mdns_dnssd_z" ] && cat "$S/mdns_dnssd_z"
+    ;;
+  -G)
+    host="$3"
+    if [ -f "$S/mdns_hosts" ]; then
+      ip="$(awk -v h="$host" '$1==h {print $2; exit}' "$S/mdns_hosts")"
+      if [ -n "$ip" ]; then
+        echo "Timestamp     A/R Flags if Hostname          Address         TTL"
+        echo "11:22:33.444  Add     2  5 ${host}.      ${ip}     120"
+      fi
+    fi
+    ;;
+esac
+exit 0
