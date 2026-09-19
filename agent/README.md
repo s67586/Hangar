@@ -26,13 +26,27 @@ cd agent
 ./gradlew assembleDebug      # 產物在 app/build/outputs/apk/debug/
 ```
 
-**wrapper 沒有進版控**（`gradle-wrapper.jar` 是二進位檔）。第一次要自己生一份：
+**wrapper 進版控了**（`gradlew`、`gradlew.bat`、`gradle/wrapper/`）。這推翻了這份
+文件原本寫的「wrapper 不進版控，因為 `gradle-wrapper.jar` 是二進位檔」—— 換成
+現在這樣的理由：
 
-```bash
-gradle wrapper --gradle-version 8.5 --distribution-type bin
-```
+- **CI 需要它。** 不進版控的話，CI 得先自己裝一套 gradle 再 `gradle wrapper`，
+  於是「用哪個 Gradle 版本蓋的」由 runner 映像當下裝了什麼決定，跟本機不一樣。
+  wrapper 的存在意義就是消掉這個差異，不進版控等於白放。
+- **代價很小。** 那個 jar 是 43 KB，而且只有換 Gradle 版本時才會動。
+- Gradle 官方本來也是建議整份 wrapper 一起進版控的。
 
-沒有 `gradle` 指令的話，用 Android Studio 開 `agent/` 這個資料夾，它會自己補上。
+所以現在 clone 下來就能直接 `./gradlew`，不需要先裝 gradle。指定的版本寫在
+`gradle/wrapper/gradle-wrapper.properties`（目前 8.5，搭 AGP 8.2.2）。
+
+> 還沒做：`distributionSha256Sum`。有它才擋得住「下載回來的發佈檔被換掉」。
+> 要補的話在有網路的機器上跑
+> `curl -sSL https://services.gradle.org/distributions/gradle-8.5-bin.zip.sha256`
+> 再把值填進 `gradle-wrapper.properties`。
+
+**`./gradlew assembleDebug` 通不通由 CI 回答** —— 見 `.github/workflows/agent.yml`，
+每個 PR 與每次進 `main` 都會建一次，並把 APK 留成可下載的 artifact。要讓一支新
+手機入伍時，可以直接去那裡抓，不必先在自己機器上裝好整套 Android 工具鏈。
 
 需要 JDK 17 與 Android SDK（compileSdk 34）。`local.properties` 也不進版控，
 Android Studio 會自己寫；用指令列的話：
