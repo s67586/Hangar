@@ -1,0 +1,83 @@
+# 建手機端 agent 的 debug APK。
+#
+# 為什麼要有這條：agent 的驗證那一輪是用 SDK 內建工具（kotlinc + d8 + aapt2 +
+# apksigner）手動組出 APK 的，證明的是程式本身跑得起來，不是 Gradle 那條路通
+# —— 那是 ROADMAP 待確認清單裡的 A4。現在讓 CI 每次回答它，而不是等某個人在
+# 某台機器上手動組一次。
+#
+# 附帶好處：每一輪都留下一個可下載的 APK，要讓一支新手機入伍
+# （hangar enroll --apk ...）不必先在自己機器上裝好整套 Android 工具鏈。
+#
+# 跟 tests.yml 分開是因為這是不同的關注點：它需要 Android SDK 與 JDK，時間也長
+# 得多。分開之後哪一邊紅了一眼就知道。
+
+name: agent
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: agent-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  apk:
+    name: debug APK（Gradle）
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # runner 映像裡裝了好幾個 JDK，預設是哪一個會隨映像更新而變。AGP 8.2 的
+      # 官方組合是 JDK 17，而 app/build.gradle.kts 也是編到 17 —— 明確指定，
+      # 不要賭映像當下的預設值。
+      - name: 固定用 JDK 17
+        run: |
+          [ -n "${JAVA_HOME_17_X64:-}" ] || {
+            echo "這個 runner 映像沒有 JDK 17（JAVA_HOME_17_X64 沒設）"; exit 1; }
+          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
+
+      # Android SDK 是 ubuntu-latest 映像預裝的，這一步只是把「前提不成立」跟
+      # 「build 真的壞了」分開。哪天映像不再預裝，訊息要講得出是這件事。
+      - name: 確認前提（JDK 17 與 Android SDK）
+        run: |
+          java -version
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          [ -n "$sdk" ] && [ -d "$sdk" ] || {
+            echo "這個 runner 映像沒有 Android SDK（ANDROID_HOME／ANDROID_SDK_ROOT 都不指向目錄）"
+            exit 1; }
+          echo "Android SDK: $sdk"
+          # 兩個變數哪個有值會隨映像變，後面的步驟只認這一個解析好的路徑
+          echo "ANDROID_SDK=$sdk" >> "$GITHUB_ENV"
+
+      - name: 建 debug APK
+        working-directory: agent
+        run: ./gradlew --no-daemon assembleDebug
+
+      # Gradle 說成功但沒吐出檔案的情況是有的（設定寫錯、產物跑到別的路徑）。
+      # 「有一個真的 APK」要自己確認過，不能只信 BUILD SUCCESSFUL。
+      - name: 確認真的產出 APK
+        working-directory: agent
+        run: |
+          apk="$(find app/build/outputs/apk -name '*.apk' 2>/dev/null | head -1)"
+          [ -n "$apk" ] || { echo "build 說成功，但找不到 APK"; exit 1; }
+          ls -l "$apk"
+          # build-tools 底下可能有好幾個版本，glob 會展開成多個路徑（第二個之後
+          # 會被當成 aapt2 的參數），所以明確挑一個最新的。
+          aapt2="$(find "$ANDROID_SDK/build-tools" -maxdepth 2 -name aapt2 -type f \
+                   2>/dev/null | sort -V | tail -1)"
+          if [ -n "$aapt2" ]; then
+            "$aapt2" dump badging "$apk" | grep -E '^package|^application-label' || true
+          else
+            echo "（找不到 aapt2，跳過 APK 內容檢查）"
+          fi
+
+      - name: 留下 APK 供下載
+        uses: actions/upload-artifact@v4
+        with:
+          name: hangar-agent-debug-apk
+          path: agent/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

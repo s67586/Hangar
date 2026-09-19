@@ -114,8 +114,15 @@ assert "token 不對也是 401" "401" "$(code "$r")"
 r="$(req GET "$URL/healthz" "$ORIGIN" "$TOKEN")"
 assert "對的 token 進得去" "200" "$(code "$r")"
 assert "說得出這台電腦看得到幾支" "2" "$(q 'len(d["profiles"])' "$(body "$r")")"
-# 這把鑰匙等於「可以在這台電腦上開視窗」，同機的其他使用者不該讀得到
-assert "鑰匙檔是 0600" "600" "$(stat -f '%OLp' "$MOCK_STATE/token" 2>/dev/null || stat -c '%a' "$MOCK_STATE/token")"
+# 這把鑰匙等於「可以在這台電腦上開視窗」，同機的其他使用者不該讀得到。
+#
+# GNU 先問、BSD 當 fallback，順序不能顛倒：BSD 的 -f 是格式字串，GNU 的 -f 是
+# --file-system（不吃格式）。反過來寫的話 GNU 會把 '%OLp' 當成另一個檔案，對它
+# 報錯（離開碼非 0，所以 fallback 真的會跑）但對真正的檔案照樣把檔案系統資訊印
+# 到 stdout —— 於是捕捉到的是那一大段加上後面的 600，斷言永遠不成立。BSD 沒有
+# -c，會乾淨地失敗，所以這個順序兩邊都對。
+assert "鑰匙檔是 0600" "600" \
+  "$(stat -c '%a' "$MOCK_STATE/token" 2>/dev/null || stat -f '%OLp' "$MOCK_STATE/token")"
 
 echo "=== L3. Origin 白名單 ==="
 r="$(req GET "$URL/healthz" "http://evil.example" "$TOKEN")"

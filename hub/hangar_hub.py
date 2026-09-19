@@ -28,11 +28,27 @@ import errno
 import json
 import os
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Server(ThreadingHTTPServer):
+    """跳過 server_bind 裡的反向 DNS。
+
+    HTTPServer.server_bind() 會呼叫 socket.getfqdn()，那是一次反向 DNS 查詢。
+    在反向解析不通或很慢的機器上（GitHub 的 macOS runner 就是這樣）它會一路卡到
+    DNS 逾時，而啟動訊息是在它之後才印 —— 看起來就像服務起不來。server_name
+    這個欄位我們從來沒用過，所以直接跳過它。
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -473,7 +489,7 @@ def main(argv=None):
 
     Handler.state = state
     try:
-        httpd = ThreadingHTTPServer((args.bind, args.port), Handler)
+        httpd = Server((args.bind, args.port), Handler)
     except OSError as e:
         # 「埠被佔住」是最常發生的一種：多半是自己上一個 hub 還活著。
         # 這種事丟一整串 traceback 出來沒有幫到任何人 —— 它看起來像程式壞了，

@@ -425,13 +425,23 @@ unset MOCK_ROUTE_IF
 echo "=== S15. 中文訊息在 zh_TW.UTF-8 底下不可以炸 ==="
 # bash 在那個 locale 會把 "$pfx，" 的中文位元組算進變數名字裡，配上 set -u
 # 就是 unbound variable —— 整個指令死掉，而且錯誤訊息本身是亂碼。
-lan_env
-echo "2: en0    inet 172.16.3.9/16 brd 172.16.255.255 scope global en0" > "$MOCK_STATE/ip_addr"
-out="$(LC_ALL=zh_TW.UTF-8 "$PM" scan --json 2>&1)"
-assert "該報的錯照樣報"   "subnet_too_big" "$(q '.errors[0].code' "$out")"
-nocheck "不可以 unbound"  "unbound variable" "$out"
-out="$(LC_ALL=zh_TW.UTF-8 "$PM" scan 2>&1)"
-nocheck "人類模式也一樣"  "unbound variable" "$out"
+#
+# 這一節要那個 locale 真的裝在這台機器上。沒有的話 bash 只印一行 setlocale 警告
+# 然後退回 C，情境根本重現不了；更糟的是那行警告會混進下面 2>&1 抓的輸出裡，把
+# JSON 弄壞 —— 看起來像產品吐不出 JSON，其實是 locale 不存在。多數 Linux 只有
+# C.utf8，所以這裡先找，找不到就跳過。
+ZHTW="$(locale -a 2>/dev/null | grep -im1 -E '^zh_TW\.(UTF-8|utf8)$')"
+if [ -z "$ZHTW" ]; then
+  echo "  SKIP  這台機器沒有 zh_TW.UTF-8，中文 locale 那一節重現不了"
+else
+  lan_env
+  echo "2: en0    inet 172.16.3.9/16 brd 172.16.255.255 scope global en0" > "$MOCK_STATE/ip_addr"
+  out="$(LC_ALL="$ZHTW" "$PM" scan --json 2>&1)"
+  assert "該報的錯照樣報"   "subnet_too_big" "$(q '.errors[0].code' "$out")"
+  nocheck "不可以 unbound"  "unbound variable" "$out"
+  out="$(LC_ALL="$ZHTW" "$PM" scan 2>&1)"
+  nocheck "人類模式也一樣"  "unbound variable" "$out"
+fi
 
 echo "=== S16. 閘道器要標出來（它每次都會出現，而且絕對不是測試機）==="
 lan_env

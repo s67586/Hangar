@@ -36,6 +36,7 @@ import os
 import re
 import secrets
 import socket
+import socketserver
 import stat
 import subprocess
 import sys
@@ -43,6 +44,21 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Server(ThreadingHTTPServer):
+    """跳過 server_bind 裡的反向 DNS。
+
+    HTTPServer.server_bind() 會呼叫 socket.getfqdn()，那是一次反向 DNS 查詢。
+    在反向解析不通或很慢的機器上（GitHub 的 macOS runner 就是這樣）它會一路卡到
+    DNS 逾時，而啟動訊息是在它之後才印 —— 看起來就像服務起不來。server_name
+    這個欄位我們從來沒用過，所以直接跳過它。
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -475,7 +491,7 @@ def main(argv=None):
     try:
         # 只綁 127.0.0.1，而且沒有參數可以改。這一支會在這台電腦上開程式，
         # 沒有任何理由讓別台機器連得到它。
-        httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+        httpd = Server(("127.0.0.1", args.port), Handler)
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
             print("127.0.0.1:%d 已經有人在用了" % args.port, file=sys.stderr)

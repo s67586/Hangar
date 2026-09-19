@@ -335,14 +335,12 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | A1 | `WRITE_SECURE_SETTINGS` 能不能**寫** `Settings.Global.adb_wifi_enabled` | `adb shell settings put global adb_wifi_enabled 1`，看無線偵錯有沒有真的開；再用 agent（已授權）寫一次 | M3c 整個做不成，重開機後還是要人插 USB |
 | A2 | 打開無線偵錯後，**之前配對過的電腦**能不能免配對重連 | 配對一次 → 重開機 → agent 開無線偵錯 → 電腦端不做任何事，看 `adb devices` | 「重開機自動恢復」破功，要人讀配對碼 → M3c 價值大減 |
 | A3 | 無線偵錯的埠怎麼找 | `dns-sd -B _adb-tls-connect._tcp`（macOS）／`avahi-browse` | 找不到就等於連不上，A1 A2 都白做 |
-| A4 | **Gradle** 建得出 APK 嗎 | `cd agent && gradle wrapper --gradle-version 8.5 && ./gradlew assembleDebug` | 要修 AGP／Kotlin 版本組合 |
 
 > A1 的**前提**已經確認了：實機上 `pm grant` 之後 `WRITE_SECURE_SETTINGS: granted=true`，
 > 而且 agent 自己回報 `can.toggle_wifi_adb: true`（Android 13）。還沒確認的是「真的去寫
 > 那個值會發生什麼事」—— 那一步會動到裝置的安全設定，要有意識地做。
 >
-> A4 還沒答案：驗證那一輪是用 SDK 內建工具（kotlinc + d8 + aapt2 + apksigner）手動組出
-> APK 的，證明的是**程式本身跑得起來**，不是 Gradle 那條路通。
+> A4（Gradle 建得出 APK 嗎）已經有答案了，移到下面「已經確認過的」。
 
 ### B. 會痛的（繞得過，但要知道）
 
@@ -378,6 +376,7 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | **`WRITE_SECURE_SETTINGS` 拿得到嗎** | **拿得到**。`pm grant` 之後 `granted=true`，agent 自報 `can.toggle_adb: true` |
 | **兩份實作對得起來嗎**（C3） | **對得起來**。同一份協定測試打真的 Kotlin agent，25/25 全過 |
 | **adb 不通時還看得到電量嗎** | **看得到**。adb `disconnected` 而機型與電量照樣回得來，`battery.source` 標 `agent` —— 這是整支 agent 存在的理由，它成立了 |
+| **Gradle 建得出 APK 嗎**（A4） | **建得出來**。`./gradlew assembleDebug` 在 CI 上一次就過（AGP 8.2.2 / Gradle 8.5 / JDK 17），產出 `app-debug.apk` 812,398 bytes，`aapt2` 認得 `com.hangar.agent` v0.1.0 / compileSdk 34。現在每個 PR 都會建一次並留成可下載的 artifact，見 `.github/workflows/agent.yml` |
 
 實機那一輪還**沒**驗到的：手機真的重開機之後 agent 會不會自己回來（B1 那條的
 前半段）。測試時是用 `adb disconnect` 模擬「adb 不通」，那不等於重開機 ——
@@ -756,6 +755,34 @@ hangar 那邊，不是在 hub 裡另外接一條路。
 所以整份測試比以前久一點。它的最後一節刻意接**真正的** `hangar`（配 mockbin）
 而不是假的 —— 手寫的 JSON 擋得住 hub 自己的迴歸，擋不住「hangar 改了欄位、hub
 沒跟上」。
+
+有幾項的情境綁在機器本身，重現不了就印 `SKIP` 而不是假裝通過：
+
+| SKIP 的東西 | 什麼時候 | 為什麼不能硬跑 |
+|---|---|---|
+| hub 綁 1024 以下埠的權限錯誤 | 以 root 執行時（CI 的容器常是 root） | root 綁得上 80 埠，hub 會正常起來然後一直跑，那個 `$(...)` 永遠等不到它結束 —— 結果是整套測試卡死到逾時，連後面的 suite 都跑不到 |
+| 中文訊息在 `zh_TW.UTF-8` 底下不炸 | 機器上沒裝那個 locale（多數 Linux 只有 `C.utf8`） | bash 只會印一行 setlocale 警告然後退回 C；那行警告還會混進 `2>&1` 的輸出把 JSON 弄壞，看起來像產品壞了 |
+
+CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是這樣被發現的：
+
+| 腿 | 跑什麼 | 抓得到什麼 |
+|---|---|---|
+| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（575 項），不是 SKIP |
+| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（569 項）|
+| `macos` | `macos-latest` | 修 Linux 的時候不要把開發機那邊弄壞 |
+
+三條腿都設 `timeout-minutes`。預設是 6 小時，而這個專案已經有過「卡住而不是失敗」
+的測試 —— 逾時要短到一看就知道是壞了。
+
+平台差異已經咬過四次了：`wc -m` 要的 locale 不一定存在、`stat -f` 在 GNU 上是
+`--file-system`（拿格式字串當檔名，會半成功）、1024 以下的埠在 root 底下綁得上、
+`HTTPServer.server_bind()` 會做一次反向 DNS（`socket.getfqdn()`），在反向解析不通
+的機器上卡到逾時 —— 啟動訊息是在它之後才印，所以看起來像服務起不來。前三個在測試
+裡，第四個在 hub 與 helper 自己身上，是 macOS 那條 CI 腿上線第一天抓到的。
+
+兩個從這裡學到的習慣：判斷平台的探測要讓失敗的那條乾淨地失敗，
+`A 2>/dev/null || B` 的順序才靠得住；開伺服器的東西不要相信 stdlib 的預設行為會
+只做你以為的那件事。
 
 涵蓋範圍：
 

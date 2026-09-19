@@ -26,13 +26,27 @@ cd agent
 ./gradlew assembleDebug      # 產物在 app/build/outputs/apk/debug/
 ```
 
-**wrapper 沒有進版控**（`gradle-wrapper.jar` 是二進位檔）。第一次要自己生一份：
+**wrapper 進版控了**（`gradlew`、`gradlew.bat`、`gradle/wrapper/`）。這推翻了這份
+文件原本寫的「wrapper 不進版控，因為 `gradle-wrapper.jar` 是二進位檔」—— 換成
+現在這樣的理由：
 
-```bash
-gradle wrapper --gradle-version 8.5 --distribution-type bin
-```
+- **CI 需要它。** 不進版控的話，CI 得先自己裝一套 gradle 再 `gradle wrapper`，
+  於是「用哪個 Gradle 版本蓋的」由 runner 映像當下裝了什麼決定，跟本機不一樣。
+  wrapper 的存在意義就是消掉這個差異，不進版控等於白放。
+- **代價很小。** 那個 jar 是 43 KB，而且只有換 Gradle 版本時才會動。
+- Gradle 官方本來也是建議整份 wrapper 一起進版控的。
 
-沒有 `gradle` 指令的話，用 Android Studio 開 `agent/` 這個資料夾，它會自己補上。
+所以現在 clone 下來就能直接 `./gradlew`，不需要先裝 gradle。指定的版本寫在
+`gradle/wrapper/gradle-wrapper.properties`（目前 8.5，搭 AGP 8.2.2）。
+
+> 還沒做：`distributionSha256Sum`。有它才擋得住「下載回來的發佈檔被換掉」。
+> 要補的話在有網路的機器上跑
+> `curl -sSL https://services.gradle.org/distributions/gradle-8.5-bin.zip.sha256`
+> 再把值填進 `gradle-wrapper.properties`。
+
+**`./gradlew assembleDebug` 通不通由 CI 回答** —— 見 `.github/workflows/agent.yml`，
+每個 PR 與每次進 `main` 都會建一次，並把 APK 留成可下載的 artifact。要讓一支新
+手機入伍時，可以直接去那裡抓，不必先在自己機器上裝好整套 Android 工具鏈。
 
 需要 JDK 17 與 Android SDK（compileSdk 34）。`local.properties` 也不進版控，
 Android Studio 會自己寫；用指令列的話：
@@ -119,11 +133,17 @@ HANGAR_AGENT_URL=http://192.168.1.77:5599 HANGAR_AGENT_TOKEN=<token> \
 | 協定 | **過了** —— 同一份測試打真的 agent，25/25 |
 | 裝到手機上跑起來 | **過了** —— Pixel 4 / Android 13 |
 | `WRITE_SECURE_SETTINGS` | **拿得到** —— `pm grant` 之後 `granted=true` |
-| Gradle 真的產出 APK | **還沒驗過** |
+| Gradle 真的產出 APK | **過了** —— CI 上 `./gradlew assembleDebug` 一次就成功，812 KB 的 `app-debug.apk`，`aapt2` 認得 `com.hangar.agent` v0.1.0 |
 
 實機那一輪的 APK 是用 SDK 內建工具手動組的（`kotlinc` → `d8` → `aapt2 link`
-→ `apksigner`），因為那台機器上沒有完整的 gradle distribution。所以「程式跑得
-起來」是確定的，「`./gradlew assembleDebug` 通不通」還沒有答案。
+→ `apksigner`），因為那台機器上沒有完整的 gradle distribution。那條路證明的是
+「程式本身跑得起來」。
+
+`./gradlew assembleDebug` 現在也確認過了（CI 上一次就成功）。這兩條路不是同一件事
+重複驗兩次 —— **Gradle 會多跑一個 manifest merger，手動那條的 `aapt2 link` 根本
+不經過它**。所以真正新拿到的資訊是：`foregroundServiceType="specialUse"` 跟它底下
+那個 `<property>` 標籤（`PROPERTY_SPECIAL_USE_FGS_SUBTYPE`）過得了 merger。那是兩條
+路最可能分岔的地方，現在不用擔心了。
 
 實機上踩到的一件事已經修進程式裡了：**Android 12+ 不准 app 從背景啟動前景
 服務**。入伍廣播裡呼叫 `startForegroundService()` 會丟
