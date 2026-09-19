@@ -251,7 +251,7 @@ kill "$(cat "$REAL_STATE/pid")" 2>/dev/null
 
 echo "=== H10. agent 的資料要上牆 ==="
 # adb 進不去但 agent 還在，是 agent 存在的全部理由 —— 那要跟「整台失聯」分開顯示
-lan_env
+hub_env
 cat > "$MOCK_STATE/list_json" <<'JSON'
 { "schema": 2, "devices": [
   { "profile": "work", "default": true, "transport": "lan", "host": "",
@@ -287,6 +287,37 @@ assert "那台不算 agent_only"    "offline" \
 # 掃描看到一支 agent，但這台 hub 沒有它的 profile
 assert "陌生的 agent 也標得出來" "True" \
   "$(q 'str(any((y.get("agent") or {}).get("reachable") for y in d["devices"] if y["name"] is None))' "$out")"
+hub_stop
+
+echo "=== H11. 輪詢執行緒不准死 ==="
+# 真的拿這台當 hub 的時候踩到的：hangar 的 stderr 有一個不是合法 UTF-8 的位元組，
+# 解碼例外直接把輪詢執行緒殺掉 —— 網頁從此停在舊資料上，而且畫面看不出來。
+# 「沒有更新」跟「沒有變化」長得一模一樣，那是最糟的失敗方式。
+hub_env
+cat > "$MOCK_STATE/list_json" <<'JSON'
+{ "schema": 2, "devices": [
+  { "profile": "work", "default": true, "transport": "lan", "host": "",
+    "ip": "192.168.1.77", "adb_serial": "192.168.1.77:5555",
+    "device_serial": "R58M12345AB", "reachability": "online", "adb_state": "device",
+    "path": null, "model": "Pixel 7 Pro", "android": { "release": "14", "sdk": 34 },
+    "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5 },
+    "scrcpy_pids": [], "errors": [] } ] }
+JSON
+# 讓假 hangar 在 stderr 吐一段壞掉的 UTF-8（0xef 開頭但沒有接續位元組）
+printf '\xef\xbc 壞掉的位元組\n' > "$MOCK_STATE/list_stderr"
+hub_start || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+out="$(get_devices)"
+# 重點不是總共幾台（掃描那半邊也會貢獻），而是 list 這一輪有沒有真的回來
+assert "壞位元組不會讓輪詢停擺" "True" "$(q 'str(d["polled_at"]["list"] is not None)' "$out")"
+assert "而且資料是對的"         "1" \
+  "$(q 'len([y for y in d["devices"] if y["name"]=="work"])' "$out")"
+# 再等一輪，確認執行緒還活著（死掉的話 polled_at 不會再前進）
+t1="$(q 'd["polled_at"]["list"]' "$out")"
+sleep 1
+out2="$(get_devices)"
+t2="$(q 'd["polled_at"]["list"]' "$out2")"
+if [ "$t1" != "$t2" ]; then echo "  PASS  下一輪照樣跑"; PASS=$((PASS+1));
+else echo "  FAIL  輪詢停住了（$t1 = ${t2}）"; FAIL=$((FAIL+1)); fi
 hub_stop
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"

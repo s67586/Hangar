@@ -9,6 +9,8 @@ printf '%s\n' "$*" >> "$MOCK_STATE/argv_log"
 case "$1" in
   list)
     [ -f "$MOCK_STATE/list_fail" ] && { echo "假裝壞掉了" >&2; exit 1; }
+    # 真實世界裡外部程式的輸出不保證是乾淨的 UTF-8，這裡要模擬得出來
+    [ -f "$MOCK_STATE/list_stderr" ] && cat "$MOCK_STATE/list_stderr" >&2
     cat "$MOCK_STATE/list_json"
     ;;
   scan)

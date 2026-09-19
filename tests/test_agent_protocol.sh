@@ -43,7 +43,7 @@ q()    { printf '%s' "$2" | python3 -c 'import json,sys;d=json.load(sys.stdin);p
 if [ -n "${HANGAR_AGENT_URL:-}" ]; then
   URL="${HANGAR_AGENT_URL%/}"
   TOKEN="${HANGAR_AGENT_TOKEN:-}"
-  echo "=== 對象：真的 agent（$URL）==="
+  echo "=== 對象：真的 agent（${URL}）==="
   REAL=1
 else
   rm -rf "$STATE"; mkdir -p "$STATE"
@@ -57,7 +57,7 @@ else
     sleep 0.1
   done
   [ -n "$URL" ] || { echo "  FAIL  參考實作起不來"; exit 1; }
-  echo "=== 對象：參考實作（$URL）==="
+  echo "=== 對象：參考實作（${URL}）==="
   REAL=0
 fi
 

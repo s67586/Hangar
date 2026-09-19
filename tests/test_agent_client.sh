@@ -70,7 +70,7 @@ env_one; : > "$MOCK_STATE/fake.apk"
 "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
 t2="$(pfield work AGENT_TOKEN)"
 if [ -n "$t1" ] && [ "$t1" != "$t2" ]; then echo "  PASS  每次入伍都是新 token"; PASS=$((PASS+1));
-else echo "  FAIL  token 沒有變（$t1 / $t2）"; FAIL=$((FAIL+1)); fi
+else echo "  FAIL  token 沒有變（$t1 / ${t2}）"; FAIL=$((FAIL+1)); fi
 
 echo "=== C2. 入伍失敗的幾種樣子 ==="
 env_one; : > "$MOCK_STATE/fake.apk"; touch "$MOCK_STATE/enroll_already"

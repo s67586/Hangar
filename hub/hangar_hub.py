@@ -53,11 +53,17 @@ def run_hangar(hangar, args, timeout):
     """
     cmd = [hangar] + args
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # errors="replace"：輸出不是乾淨的 UTF-8 時換成替代字元，不要拋例外。
+        # 這裡收到的是外部程式的輸出，壞掉的位元組是「有可能發生」而不是「不該發生」——
+        # 為了一個字元讓整個輪詢停擺，代價完全不成比例。
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           errors="replace", timeout=timeout)
     except FileNotFoundError:
         return None, "找不到 hangar：%s" % hangar
     except subprocess.TimeoutExpired:
         return None, "hangar %s 超過 %s 秒沒回應" % (" ".join(args), timeout)
+    except OSError as e:
+        return None, "跑不起來 hangar：%s" % e
     if not p.stdout.strip():
         why = p.stderr.strip().splitlines()
         return None, (why[-1] if why else "hangar %s 沒有輸出（離開碼 %d）"
@@ -269,12 +275,22 @@ class State:
 
 
 def poller(state, kind, hangar, args, interval, timeout, stop):
-    """一個來源一個執行緒。第一輪馬上跑，之後照 interval。"""
+    """一個來源一個執行緒。第一輪馬上跑，之後照 interval。
+
+    整圈包在 try 裡面是刻意的：**這個執行緒不准死**。它一死，網頁就停在舊資料上
+    而且沒有任何跡象 —— 「沒有更新」跟「沒有變化」在畫面上長得一模一樣，那是最
+    糟的失敗方式。任何沒預期到的例外都變成一則錯誤顯示在牆上，然後繼續跑。
+    """
     while not stop.is_set():
-        data, err = run_hangar(hangar, args, timeout)
-        state.update(kind, data, err)
-        if err:
-            print("[%s] %s" % (kind, err), file=sys.stderr, flush=True)
+        try:
+            data, err = run_hangar(hangar, args, timeout)
+            state.update(kind, data, err)
+            if err:
+                print("[%s] %s" % (kind, err), file=sys.stderr, flush=True)
+        except Exception as e:      # noqa: BLE001 —— 這裡就是要攔住全部
+            msg = "%s 這一輪炸了：%s: %s" % (kind, type(e).__name__, e)
+            state.update(kind, None, msg)
+            print("[%s] %s" % (kind, msg), file=sys.stderr, flush=True)
         stop.wait(interval)
 
 

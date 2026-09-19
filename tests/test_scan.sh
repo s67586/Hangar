@@ -397,5 +397,41 @@ check "說出新舊位址"     "192.168.1.250 → 192.168.1.77" "$out"
 out="$("$PM" scan --fix-ip 2>&1)"
 nocheck "已經修好就不再重複報" "PHONE_IP 已更新" "$out"
 
+echo "=== S14. 預設路由走 VPN 通道時，不可以拿通道當區網 ==="
+# 真的拿一台 Mac 當 hub 的時候踩到的：預設路由走 utun4（Tailscale），而它的
+# inet 行是點對點格式 `inet A --> B netmask 0x…`。照欄位位置抓 netmask 會抓到
+# **對端位址**，算出來是 /0，掃描就報 subnet_too_big 整個停擺。
+# 跑 Tailscale 的機器正是這個專案的目標機器，這不是邊緣案例。
+lan_env
+echo 1 > "$MOCK_STATE/ip_no_route"          # 走 macOS 那條路
+export MOCK_ROUTE_IF=utun4
+printf 'lo0 en0 utun4\n' > "$MOCK_STATE/ifconfig_list"
+out="$("$PM" scan --json 2>/dev/null)"
+assert "改去問實體介面"     "192.168.1.0/24" "$(q '.subnet' "$out")"
+assert "不可以報 too_big"   "" "$(q '.errors[] | select(.code=="subnet_too_big") | .code' "$out")"
+assert "而且掃得到東西"     "3" "$(q '.hosts | length' "$out")"
+unset MOCK_ROUTE_IF
+
+# 只有通道、沒有實體介面時，要老實說測不出來，不要硬掰一個 /0 出來
+lan_env
+echo 1 > "$MOCK_STATE/ip_no_route"
+export MOCK_ROUTE_IF=utun4
+printf 'lo0 utun4\n' > "$MOCK_STATE/ifconfig_list"
+out="$("$PM" scan --json 2>/dev/null)"
+assert "沒有實體介面就說不知道" "subnet_unknown" "$(q '.errors[0].code' "$out")"
+check  "並且教人用 --subnet"    "--subnet" "$(q '.errors[0].message' "$out")"
+unset MOCK_ROUTE_IF
+
+echo "=== S15. 中文訊息在 zh_TW.UTF-8 底下不可以炸 ==="
+# bash 在那個 locale 會把 "$pfx，" 的中文位元組算進變數名字裡，配上 set -u
+# 就是 unbound variable —— 整個指令死掉，而且錯誤訊息本身是亂碼。
+lan_env
+echo "2: en0    inet 172.16.3.9/16 brd 172.16.255.255 scope global en0" > "$MOCK_STATE/ip_addr"
+out="$(LC_ALL=zh_TW.UTF-8 "$PM" scan --json 2>&1)"
+assert "該報的錯照樣報"   "subnet_too_big" "$(q '.errors[0].code' "$out")"
+nocheck "不可以 unbound"  "unbound variable" "$out"
+out="$(LC_ALL=zh_TW.UTF-8 "$PM" scan 2>&1)"
+nocheck "人類模式也一樣"  "unbound variable" "$out"
+
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
