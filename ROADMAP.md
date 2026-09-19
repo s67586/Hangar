@@ -591,6 +591,17 @@ hangar 那邊，不是在 hub 裡另外接一條路。
 | hub 綁 1024 以下埠的權限錯誤 | 以 root 執行時（CI 的容器常是 root） | root 綁得上 80 埠，hub 會正常起來然後一直跑，那個 `$(...)` 永遠等不到它結束 —— 結果是整套測試卡死到逾時，連後面的 suite 都跑不到 |
 | 中文訊息在 `zh_TW.UTF-8` 底下不炸 | 機器上沒裝那個 locale（多數 Linux 只有 `C.utf8`） | bash 只會印一行 setlocale 警告然後退回 C；那行警告還會混進 `2>&1` 的輸出把 JSON 弄壞，看起來像產品壞了 |
 
+CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是這樣被發現的：
+
+| 腿 | 跑什麼 | 抓得到什麼 |
+|---|---|---|
+| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（575 項），不是 SKIP |
+| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（569 項）|
+| `macos` | `macos-latest` | 修 Linux 的時候不要把開發機那邊弄壞 |
+
+三條腿都設 `timeout-minutes`。預設是 6 小時，而這個專案已經有過「卡住而不是失敗」
+的測試 —— 逾時要短到一看就知道是壞了。
+
 寫測試時要小心 macOS 與 Linux 的工具差異 —— 已經咬過三次了：`wc -m` 要的 locale
 不一定存在、`stat -f` 在 GNU 上是 `--file-system`（拿格式字串當檔名，會半成功）、
 1024 以下的埠在 root 底下綁得上。判斷平台的探測要讓失敗的那條乾淨地失敗，

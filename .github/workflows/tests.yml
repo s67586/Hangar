@@ -1,0 +1,99 @@
+# 跑 ./tests/run.sh。三條腿刻意不一樣，因為這個專案被平台差異咬過三次：
+#
+#   linux        非 root 的 Ubuntu —— 平常開發是在 macOS，Linux 這邊沒人看著
+#   linux-root   container job，以 root 執行 —— hub 綁 1024 以下埠的那三項只有
+#                在非 root 下才驗得到，所以這條腿反過來確認「root 下不會卡死」
+#   macos        開發機本來的樣子，避免修 Linux 的時候把 macOS 弄壞
+#
+# 三條腿都設了 timeout-minutes。這不是裝飾：曾經有一個測試在 root 底下會無限期
+# 等下去，那種失敗在 CI 裡的表現是整個 job 跑到上限被殺（預設 6 小時），比紅燈
+# 難查得多。逾時要短到看起來就是壞了。
+
+name: tests
+
+on:
+  # 只有 main 用 push 觸發。其他分支靠 pull_request —— 兩個都開的話，有 PR 的分支
+  # 每推一次會跑兩輪（push 一輪、PR 一輪），一模一樣的東西算兩次額度。
+  #
+  # 而且 pull_request 跑的是「合併之後」那個版本（main + 這個分支的試合併結果），
+  # 比單獨測這個分支有用：分支自己綠、合進去卻壞掉，這樣才抓得到。
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:      # 也可以從 Actions 頁面手動按
+
+# 同一個分支連推好幾次時，舊的那幾輪已經沒有意義了，直接取消。
+# main 不取消 —— 每個進到 main 的 commit 都該有自己的一筆綠燈紀錄。
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  linux:
+    name: Linux（非 root）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # jq 是 hangar 的硬相依。zh_TW.UTF-8 是選配但值得裝：test_scan.sh 有一節
+      # 專門驗中文訊息在那個 locale 底下不會炸，locale 不存在的話它只能跳過。
+      # 裝了它，那一節就從 3 個 SKIP 變成 3 個真的斷言。
+      - name: 裝相依（jq、zh_TW.UTF-8）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq locales
+          sudo localedef -i zh_TW -f UTF-8 zh_TW.UTF-8
+          locale -a | grep -i zh_TW      # 沒生出來就讓這一步紅掉，不要靜靜地跳過
+
+      - name: 跑測試
+        run: ./tests/run.sh
+
+  linux-root:
+    name: Linux（root，container job）
+    runs-on: ubuntu-latest
+    # container 裡的步驟是以 root 跑的 —— 這正是我們要的那個情境。多數 CI 的
+    # 容器環境都是這樣，而 root 沒有「1024 以下的埠要權限」這條限制。
+    container: ubuntu:24.04
+    timeout-minutes: 15
+    steps:
+      # 官方映像很乾淨，連 git 都沒有；checkout 要先有 git 才走 git 那條路。
+      # 這裡裝的東西就是這套測試真正的最小相依。
+      - name: 裝相依
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bash coreutils mawk sed grep git jq python3 procps \
+            iproute2 netcat-openbsd curl ca-certificates
+
+      # 官方映像裝了什麼會隨版本變。少一個工具的話，測試會以看不出原因的方式壞掉
+      # （例如 pgrep 不在 → 清理那段靜靜地沒作用）。在這裡先擋，訊息才講得清楚。
+      # arp 與 ping 故意不裝：測試本來就用 mockbin 的假貨，裝了反而不像真的環境。
+      - name: 確認相依都在
+        run: |
+          missing=""
+          for c in bash jq python3 awk sed grep stat pgrep pkill seq locale curl nc ip; do
+            command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+          done
+          [ -z "$missing" ] || { echo "這個映像缺:$missing"; exit 1; }
+          echo "相依齊全"
+
+      - uses: actions/checkout@v4
+
+      # 這條腿故意不裝 zh_TW.UTF-8：要有一邊看得到「locale 不存在時會不會好好
+      # 跳過、而不是把 setlocale 警告當成產品壞了」。
+      - name: 跑測試
+        run: ./tests/run.sh
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 確認 jq 在
+        run: command -v jq || brew install jq
+
+      - name: 跑測試
+        run: ./tests/run.sh
