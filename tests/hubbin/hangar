@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#
+# 假的 hangar，給 test_hub.sh 用。
+# 它不看真實世界，只把 $MOCK_STATE 裡準備好的 JSON 吐出來，並把每次被呼叫的
+# 參數記進 argv_log —— hub 有沒有偷偷帶 --fix-ip 就是靠那份紀錄檢查的。
+#
+printf '%s\n' "$*" >> "$MOCK_STATE/argv_log"
+
+case "$1" in
+  list)
+    [ -f "$MOCK_STATE/list_fail" ] && { echo "假裝壞掉了" >&2; exit 1; }
+    cat "$MOCK_STATE/list_json"
+    ;;
+  scan)
+    [ -f "$MOCK_STATE/scan_fail" ] && { echo "掃不動" >&2; exit 1; }
+    cat "$MOCK_STATE/scan_json"
+    ;;
+  *) echo "假 hangar 不認得：$1" >&2; exit 2 ;;
+esac

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hangar 裝置牆</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --line: #e3e6ea; --fg: #1b1f24;
+    --dim: #6b7280; --ok: #1a7f37; --warn: #9a6700; --bad: #b42318; --idle: #8b95a1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --card: #1c2024; --line: #2c3238; --fg: #e6e8ea;
+      --dim: #9aa4b0; --ok: #3fb950; --warn: #d29922; --bad: #f85149; --idle: #6e7781;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 system-ui, -apple-system, "Noto Sans TC", sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
+  .meta { color: var(--dim); font-size: 13px; }
+  .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; }
+  .counts b { color: var(--fg); font-weight: 600; }
+
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .card.low { border-color: var(--bad); }
+  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .name { font-weight: 600; font-size: 15px; }
+  .name .unnamed { color: var(--dim); font-weight: 400; }
+  .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .s-ready { color: var(--ok); } .s-offline { color: var(--idle); }
+  .s-unauthorized, .s-no_adb, .s-unknown { color: var(--warn); } .s-unmanaged { color: var(--idle); }
+  .rows { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; }
+  .rows dt { color: var(--dim); } .rows dd { margin: 0; overflow-wrap: anywhere; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .batt { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; max-width: 120px; }
+  .bar i { display: block; height: 100%; background: var(--ok); }
+  .batt.low .bar i { background: var(--bad); } .batt.low { color: var(--bad); }
+  .note { font-size: 12.5px; color: var(--warn); }
+
+  .errors { border: 1px solid var(--bad); color: var(--bad); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; }
+  .errors div + div { margin-top: 4px; }
+  .legend { margin-top: 28px; color: var(--dim); font-size: 12.5px; }
+  .legend code { color: var(--fg); }
+  .empty { color: var(--dim); padding: 32px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Hangar 裝置牆</h1>
+    <span class="meta" id="meta"></span>
+  </header>
+  <div class="counts" id="counts"></div>
+  <div id="errors"></div>
+  <div class="grid" id="grid"></div>
+  <div id="empty"></div>
+
+  <p class="legend">
+    <code>ready</code> 可以 adb 進去（build／投影都行）｜
+    <code>no_adb</code> 連得到但 adb 不是 device，多半是手機重開機把 5555 弄丟了｜
+    <code>unauthorized</code> 這台 hub 還沒被手機授權｜
+    <code>offline</code> 手機不在線上｜
+    <code>unknown</code> 只從掃描看到它，<code>hangar list</code> 那邊沒資料（那次多半掛了）｜
+    <code>unmanaged</code> 掃到但沒設定過 —— 沒開偵錯的手機只看得到 IP 與 MAC，
+    機型與電量要等手機端的 agent app。
+    <br>這頁是唯讀的，不會去動手機或設定檔。
+  </p>
+</div>
+
+<script>
+const STATE_ZH = {
+  ready: "ready", no_adb: "no_adb", unauthorized: "unauthorized",
+  offline: "offline", unmanaged: "unmanaged", unknown: "unknown",
+};
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function ago(ts) {
+  if (!ts) return "還沒問過";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return s + " 秒前";
+  if (s < 3600) return Math.round(s / 60) + " 分鐘前";
+  return Math.round(s / 3600) + " 小時前";
+}
+
+function row(dt, dd, cls) {
+  if (dd === null || dd === undefined || dd === "") return "";
+  return `<dt>${esc(dt)}</dt><dd class="${cls || ""}">${esc(dd)}</dd>`;
+}
+
+function card(d) {
+  const b = d.battery;
+  const low = b && b.low;
+  const name = d.name
+    ? esc(d.name) + (d.default ? " <span class='meta'>（預設）</span>" : "")
+    : `<span class="unnamed">${esc(d.mac || d.ip || "?")}</span>`;
+
+  let rows = "";
+  rows += row("機型", d.model);
+  if (!d.model) rows += row("廠商", d.vendor);   // 沒開偵錯就只有 OUI 查得到的廠商
+  rows += row("Android", d.android ? `${d.android.release || "?"}（SDK ${d.android.sdk || "?"}）` : null);
+  rows += row("IP", d.ip, "mono");
+  if (d.lan_ip && d.lan_ip !== d.ip) rows += row("區網 IP", d.lan_ip, "mono");
+  rows += row("MAC", d.mac ? d.mac + (d.mac_randomized ? "（隨機）" : "") : null, "mono");
+  rows += row("序號", d.device_serial, "mono");
+  rows += row("連線方式", d.transport);
+  rows += row("5555", d.adb_port === "open" ? "開著" : d.adb_port === "closed" ? "關著" : null);
+
+  let batt = "";
+  if (b && typeof b.level === "number") {
+    batt = `<div class="batt ${low ? "low" : ""}">
+      <span>${b.level}%</span><span class="bar"><i style="width:${b.level}%"></i></span>
+      <span class="meta">${esc(b.status || "")}</span>${low ? "<span>要充電了</span>" : ""}
+    </div>`;
+  }
+
+  const notes = [];
+  if (d.profile_ip_stale) notes.push("profile 指著舊 IP（hangar scan --fix-ip 可以修）");
+  if (d.mirroring) notes.push("投影中");
+  for (const e of d.errors || []) if (e.message) notes.push(e.message);
+
+  return `<div class="card ${low ? "low" : ""}">
+    <div class="top"><span class="name">${name}</span>
+      <span class="badge s-${esc(d.state)}">${esc(STATE_ZH[d.state] || d.state)}</span></div>
+    <dl class="rows">${rows}</dl>
+    ${batt}
+    ${notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}
+  </div>`;
+}
+
+async function tick() {
+  let data;
+  try {
+    const r = await fetch("/api/devices", { cache: "no-store" });
+    data = await r.json();
+  } catch (e) {
+    document.getElementById("errors").innerHTML =
+      `<div class="errors">連不上 hub（${esc(e.message)}）</div>`;
+    return;
+  }
+
+  const ds = data.devices || [];
+  document.getElementById("meta").textContent =
+    `${data.subnet || "網段未知"}｜list ${ago(data.polled_at.list)}｜scan ${ago(data.polled_at.scan)}`;
+
+  const n = s => ds.filter(d => d.state === s).length;
+  const lowN = ds.filter(d => d.battery && d.battery.low).length;
+  document.getElementById("counts").innerHTML =
+    `共 <b>${ds.length}</b> 台：<b>${n("ready")}</b> 可以用、` +
+    `<b>${ds.filter(d => d.name).length}</b> 已設定、<b>${n("unmanaged")}</b> 只看得到` +
+    (lowN ? `｜<b>${lowN}</b> 台要充電` : "");
+
+  document.getElementById("errors").innerHTML = (data.errors || []).length
+    ? `<div class="errors">${data.errors.map(e =>
+        `<div>[${esc(e.source)}${e.code ? " " + esc(e.code) : ""}] ${esc(e.message)}</div>`).join("")}</div>`
+    : "";
+
+  document.getElementById("grid").innerHTML = ds.map(card).join("");
+  document.getElementById("empty").innerHTML = ds.length ? ""
+    : `<div class="empty">還沒看到任何裝置。hangar 那邊先跑得起來嗎？<code>hangar list</code> / <code>hangar scan</code></div>`;
+}
+
+tick();
+setInterval(tick, 10000);
+</script>
+</body>
+</html>

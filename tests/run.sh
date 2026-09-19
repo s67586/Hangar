@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# 跑全部測試。用 mock 的 adb / tailscale / scrcpy，不會碰到真的手機。
+# 跑全部測試。用 mock 的 adb / tailscale / scrcpy / arp，不會碰到真的手機，
+# 也不會真的對區網送封包。hub 的測試會在 127.0.0.1 上開一個隨機埠。
 #
 #   tests/run.sh
 #
@@ -11,7 +12,7 @@ PM="${1:-$DIR/../hangar}"
 PM="$(cd "$(dirname "$PM")" && pwd)/$(basename "$PM")"
 
 total_pass=0; total_fail=0; failed_suites=""
-for suite in test_core.sh test_multi.sh test_adb_race.sh test_multihost.sh test_json.sh test_scan.sh; do
+for suite in test_core.sh test_multi.sh test_adb_race.sh test_multihost.sh test_json.sh test_scan.sh test_hub.sh; do
   echo
   echo "############ $suite ############"
   out="$(bash "$DIR/$suite" "$PM" 2>&1)"

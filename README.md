@@ -610,6 +610,102 @@ Android Studio 走的是它自己啟動的 adb server，要它看到這支手機
 
 ---
 
+## hub（裝置牆網頁）
+
+一台常駐機器跑 `hub/hangar_hub.py`，定期問 hangar 兩件事，然後把結果合成一頁
+裝置牆：
+
+```
+hangar list --json --probe   已經設定過的手機：adb 狀態、機型、電量
+hangar scan --json           區網上看得到的所有東西：IP、MAC、廠商、5555
+```
+
+```bash
+./hub/hangar_hub.py                       # 只綁 127.0.0.1:8787
+./hub/hangar_hub.py --bind 0.0.0.0 --port 8787   # 要給同事看才這樣開
+```
+
+用的是 Python 3 的標準函式庫，**沒有任何套件要裝** —— 常駐機器上不該為了看一頁
+網頁而先裝一套生態系，跟 `hangar` 自己是一支無相依 bash script 是同一個理由。
+
+| 參數 | 預設 | |
+|---|---|---|
+| `--hangar` | repo 裡那支 | hangar 執行檔的路徑 |
+| `--bind` / `--port` | `127.0.0.1` / `8787` | 預設只有本機看得到 |
+| `--list-interval` | 30 秒 | 多久問一次 `hangar list` |
+| `--scan-interval` | 300 秒 | 多久掃一次區網（ping 整個 /24 不便宜） |
+| `--subnet` | 自動偵測 | 同 `hangar scan --subnet` |
+| `--no-scan` | | 完全不掃區網，只看已設定的手機 |
+
+端點：`/`（裝置牆）、`/api/devices`（合併後的 JSON）、`/healthz`。
+
+### 那頁上的狀態是什麼意思
+
+| | |
+|---|---|
+| `ready` | adb 是 `device`，可以 build 也可以投影 |
+| `no_adb` | 連得到，但 adb 不是 `device` —— 幾乎都是手機重開機把 5555 弄丟了 |
+| `unauthorized` | 這台 hub 還沒被那支手機授權過（要有人在手機上按允許） |
+| `offline` | 手機不在線上 |
+| `unknown` | 只從掃描看到它，`hangar list` 那邊沒資料（那次輪詢多半失敗了） |
+| `unmanaged` | 掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP、MAC、廠商 |
+
+同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 `DEVICE_SERIAL`，沒有序號
+才退回 MAC、再退回 IP —— 跟 `hangar scan` 認人用的是同一套順序（見上面的
+[區網掃描](#區網掃描)）。所以手機換了 IP，裝置牆不會多出一台幽靈。
+
+### 這一版是唯讀的
+
+裝置牆不會去動手機，也不會去改設定檔：輪詢只跑 `list` 與 `scan`，**刻意不帶
+`--fix-ip`**（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile
+指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 `hangar scan --fix-ip`。
+
+從網頁「切偵錯」「投影」那些要等 M3／M4／M5，見 [ROADMAP](ROADMAP.md)。
+
+### 讓它開機就自己跑
+
+macOS（launchd，存成 `~/Library/LaunchAgents/com.hangar.hub.plist`）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.hangar.hub</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/你/Hangar/hub/hangar_hub.py</string>
+    <string>--hangar</string><string>/usr/local/bin/hangar</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+```
+```bash
+launchctl load ~/Library/LaunchAgents/com.hangar.hub.plist
+```
+
+Linux（systemd user unit，存成 `~/.config/systemd/user/hangar-hub.service`）：
+
+```ini
+[Unit]
+Description=Hangar hub
+[Service]
+ExecStart=/usr/bin/python3 %h/Hangar/hub/hangar_hub.py --hangar /usr/local/bin/hangar
+Restart=always
+[Install]
+WantedBy=default.target
+```
+```bash
+systemctl --user enable --now hangar-hub
+```
+
+> 常駐機器上的 `hangar` 要先自己跑得起來（`hangar list` / `hangar scan` 有東西），
+> hub 只是把它們的 `--json` 接起來。掃描需要 `ping` 與 `arp`／`ip`，`--probe`
+> 要電量則需要 adb —— 但 hub 本身不需要 scrcpy。
+
+---
+
 ## 同區網直連（不經 Tailscale）
 
 手機跟電腦本來就在同一個區網、不需要跨網路時，可以不走 Tailscale ——

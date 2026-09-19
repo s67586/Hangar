@@ -43,6 +43,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | 項目 | 決定 |
 |---|---|
 | 手機端 agent | 要裝（一次性 adb 授權，不走 Device Owner） |
+| hub 後端 | Python 3 標準函式庫，零外部相依（跟 hangar 是無相依 bash script 同一個理由） |
 | hub 部署形態 | 一台常駐機器，接在測試機的同一個區網 |
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 
@@ -52,7 +53,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 |---|---|---|
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
-| M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | 卡在「後端用什麼寫」還沒決定 |
+| M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
 | M3 | agent app：授權、電量回報、mDNS 廣播、重開機後自動重開 5555 | |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
 | M5 | 網頁投影串流；iOS 唯讀 | |
@@ -226,10 +227,18 @@ adb devices                      # 期望：手機回來了，而且 RD 機什�
 
 測完把每一步的實際結果補回這一節，然後才決定要不要把它寫進 README。
 
+5. **hub 已經站起來了，而且只站在 `--json` 上面。** `hub/hangar_hub.py` 對手機
+   的所有知識都來自 `hangar list --json` 與 `hangar scan --json`，沒有自己去碰
+   adb 或網路。要多顯示一個欄位是去改 hangar，不是在 hub 裡另外接一條路 ——
+   這樣 CLI 與網頁永遠不會各說各話。
+
 ## 還沒決定
 
-後端用什麼寫、web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
+web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
 RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——這些都還開放。
+
+hub 目前是唯讀的。要從網頁動手機（M4 的切偵錯、M5 的投影）就會有寫入端點，
+那時要決定的是認證怎麼做 —— 現在連「誰在看這頁」都不知道。
 
 多人同時裝 APK 進同一支手機會互相蓋掉，目前沒有任何佔用／排隊機制。hub 要不要
 管「誰在用哪一支」也還沒決定。
@@ -244,6 +253,10 @@ hangar/
 ├── README.md             # 安裝與使用
 ├── ROADMAP.md            # 這份：方向、里程碑、程式分層、測試
 ├── hangar_install.sh     # symlink 到 /usr/local/bin
+├── hub/
+│   ├── hangar_hub.py     # 常駐服務：輪詢 hangar --json、合併、開 HTTP
+│   └── static/
+│       └── index.html    # 唯讀裝置牆（純 HTML/CSS/JS，沒有 build 步驟）
 └── tests/
     ├── run.sh            # 跑全部測試
     ├── test_core.sh      # 核心流程與錯誤分支
@@ -252,7 +265,9 @@ hangar/
     ├── test_multihost.sh # 第二台電腦（--existing）
     ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
     ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測、識別合併、--fix-ip
-    └── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
+    ├── test_hub.sh       # hub：合併邏輯、HTTP 端點、唯讀保證
+    ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
+    └── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
 ```
 
 `hangar` 這支 script 內部分層（由下往上）：
@@ -272,6 +287,19 @@ hangar/
 
 設定檔在 `~/.config/hangar/`（`XDG_CONFIG_HOME` 有設就跟著走）。
 
+`hub/hangar_hub.py` 的分層很薄，刻意如此 —— 它不該知道任何「怎麼問手機」的事：
+
+| 層 | 內容 |
+|---|---|
+| 取資料 | `run_hangar()` —— 跑 `hangar <cmd> --json`，只認 stdout 的 JSON |
+| 合併 | `merge()` —— 兩份資料合成裝置牆，主鍵 `DEVICE_SERIAL` > MAC > IP |
+| 狀態 | `State` —— 兩個輪詢執行緒寫、HTTP 執行緒讀的共用快照 |
+| HTTP | `Handler` —— `/`、`/api/devices`、`/healthz`，全部是 GET |
+
+`merge()` 是純函式（輸入兩份 dict，輸出一個 list），所以裝置牆的邏輯不用開
+伺服器也測得動。hub 對手機的所有知識都來自 `--json`，要多支援什麼欄位是改
+hangar 那邊，不是在 hub 裡另外接一條路。
+
 ## 測試
 
 ```bash
@@ -281,6 +309,11 @@ hangar/
 用 mock 的 `adb` / `tailscale` / `scrcpy` / `arp` / `ping` 跑，**不會碰到真的手機，
 也不會真的對區網送封包**，設定檔也是寫在 `$TMPDIR/hangar-test` 底下，
 不會動到 `~/.config/hangar`。
+
+`test_hub.sh` 會在 `127.0.0.1` 上開幾個隨機埠（`--port 0`）把 hub 真的跑起來，
+所以整份測試比以前久一點。它的最後一節刻意接**真正的** `hangar`（配 mockbin）
+而不是假的 —— 手寫的 JSON 擋得住 hub 自己的迴歸，擋不住「hangar 改了欄位、hub
+沒跟上」。
 
 涵蓋範圍：
 
@@ -292,6 +325,7 @@ hangar/
 | `test_multihost.sh` | `setup --existing`（第二台電腦）、unauthorized 的說明、連不上時的提示方向、`--name` 別名 |
 | `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
 | `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡）、`--fix-ip` 只改認得出來的那幾支且不碰 tailscale profile |
+| `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。
