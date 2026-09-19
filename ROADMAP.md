@@ -84,6 +84,26 @@ adb），而那條路上有兩個還沒有解的地方。真的要動它之前�
 D1 若是「每次都要人按」，這件事就不是「遠端管得動」，只是「不用開偵錯的投影」
 —— 那時要重新判斷值不值得做。
 
+## 現況速查（改東西之前先看這張）
+
+號碼與端點只在這裡列一次。底下各節講的是「當時為什麼這樣決定」，不是現況 ——
+對不起來的話以這張表和程式碼為準。
+
+| | 現在是 | 在哪裡 |
+|---|---|---|
+| `hangar` 版本 | `1.2.0` | `hangar:18` |
+| `list` / `status --json` | schema **2** | `JSON_SCHEMA`，`hangar:2037` |
+| `scan --json` | schema **5** | `SCAN_SCHEMA`，`hangar:162` |
+| hub `/api/devices` | schema **5** | `API_SCHEMA`，`hub/hangar_hub.py:41` |
+| agent 協定 | schema **1**，版本 `0.1.0` | `agent/app/build.gradle.kts` |
+| hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
+| agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/adb`（一律 501） | 5599/tcp |
+| helper 端點 | `POST /mirror`（只綁 127.0.0.1） | `helper/hangar_helper.py` |
+
+`POST /api/refresh` 是 hub 目前唯一的非 GET 端點。它**不會動手機**，只是把輪詢
+提早叫醒，跑的還是同樣那兩個唯讀的 `hangar` 指令 —— 「唯讀」在這份文件裡一律
+指這個意思，不是指「只有 GET」。
+
 ## 幾個要記住的現實限制
 
 - **MAC randomization**：Android 10+ / iOS 14+ 對每個 SSID 使用隨機但穩定的 MAC。
@@ -96,7 +116,8 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
   對話框做過防疊加／防自動點擊的保護，那本來就是要擋自動化的安全設計）。
   Android 11+ 的無線偵錯配對碼一樣要人在裝置上操作。
   **結論：只要那台電腦用自己的金鑰直連手機，第一次就一定要有人在手機上按允許。**
-  這件事 agent app 幫不上忙 —— 下面「hub 當 adb server」那條路才是繞開它的方式。
+  這件事 agent app 幫不上忙 —— 下面兩條「待實測」才是繞開它的方式：讓 RD 的電腦
+  不要直連手機（待實測 1），或讓已經被授權的 hub 代按那個對話框（待實測 2）。
 - **Android 12+ 不准 app 從背景啟動前景服務**：實機實測踩到的。入伍廣播裡呼叫
   `startForegroundService()` 會丟 `ForegroundServiceStartNotAllowedException`，
   沒接住的話整支 app 當場崩潰（入伍資料已經寫好了，但服務起不來）。被允許的路徑
@@ -125,6 +146,21 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
    這也是上面「MAC randomization」那條限制實際落地的地方。認出來之後 profile
    指著舊 IP 的，`hangar scan --fix-ip` 會就地改好 —— 但掃描預設仍然是唯讀的，
    要寫設定檔得明講。
+
+5. **agent 的協定被兩份實作夾住了。** `agent/` 是 Kotlin，`tests/agentbin/fake_agent.py`
+   是同一份協定的 Python 參考實作，`tests/test_agent_protocol.sh` 兩邊都打得過去
+   （帶 `HANGAR_AGENT_URL` 就打真的手機）。這是刻意的：同一份協定被寫兩次，
+   對不起來的地方就是協定沒講清楚的地方。參考實作同時也讓 `hangar` 那一側不用
+   有手機就能開發。
+6. **helper 也只站在 `--json` 上面。** `helper/hangar_helper.py` 要知道「這台
+   電腦上有哪些手機」，走的是 `hangar list --json`，不是自己去讀
+   `~/.config/hangar/`。設定檔長什麼樣子是 `hangar` 的事 —— 多一個地方認得那個
+   格式，就多一個地方會跟它走岔。它做的事也只有一件：在本機跑 `hangar -p`。
+
+7. **hub 已經站起來了，而且只站在 `--json` 上面。** `hub/hangar_hub.py` 對手機
+   的所有知識都來自 `hangar list --json` 與 `hangar scan --json`，沒有自己去碰
+   adb 或網路。要多顯示一個欄位是去改 hangar，不是在 hub 裡另外接一條路 ——
+   這樣 CLI 與網頁永遠不會各說各話。
 
 ## M3 協定：agent 跟另外兩邊怎麼講話
 
@@ -276,11 +312,15 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 
 | 元件 | 動到的地方 | schema |
 |---|---|---|
-| `hangar` | `hangar enroll`；`agent_*` 這一層；profile 多 `AGENT_TOKEN` / `AGENT_PORT`；`scan` 多探 5599；`list --probe` 在 adb 不通時改問 agent | `list` 1 → 2、`scan` 3 → 4 |
-| hub | 多讀 `agent` 與 `battery.source`，多一個 `agent_only` 狀態。**沒有**直接跟 agent 講話，M2b 的規矩維持 | `/api/devices` 1 → 2 |
+| `hangar` | `hangar enroll`；`agent_*` 這一層；profile 多 `AGENT_TOKEN` / `AGENT_PORT`；`scan` 多探 5599；`list --probe` 在 adb 不通時改問 agent | `list` 1 → 2、`scan` 3 → 4（**當時**的號碼） |
+| hub | 多讀 `agent` 與 `battery.source`，多一個 `agent_only` 狀態。**沒有**直接跟 agent 講話，M2b 的規矩維持 | `/api/devices` 1 → 2（**當時**的號碼） |
 | README | 「profile 沒有任何祕密」那句已經改掉 —— 入伍過的 profile 有 token |  |
 
-還沒做的：mDNS（M3b）、`adb.wifi_port`（M3c，agent 目前一律回 `null`）。
+還沒做的：mDNS（M3b，`hangar` 裡目前沒有任何 `dns-sd` / `avahi` 的呼叫）、
+`adb.wifi_port`（M3c，agent 目前一律回 `null`）。
+
+> 這張表寫的是 **M3a 當時**動到什麼，號碼停在那一刻。之後 `scan` 與 hub 都又
+> 往上加過，現在各是多少看上面的「現況速查」。
 
 ## 待確認清單
 
@@ -316,11 +356,14 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 
 ### C. 想知道的（還沒量過）
 
+> C2 / C3 已經驗過，搬到下面「已經確認過的」了 —— 編號留著不重排，這樣舊 commit 訊息與筆記裡提到的「C 幾」還找得到人。
+
 | # | 要確認什麼 | 怎麼確認 |
 |---|---|---|
 | C1 | agent 對電池的影響 | 裝了 agent 的手機放一天，比較耗電曲線 |
 | C4 | 加固 app 實際擋什麼 | 實測 protocol 另存於專案外部 |
-| C5 | hub 當 adb server 那條路可不可行 | 見下面那一節的最小驗證步驟 |
+| C5 | hub 當 adb server 那條路可不可行 | 見「待實測 1」的最小驗證步驟 |
+| C7 | 已授權的 hub 能不能代按授權對話框 | 見「待實測 2」的最小驗證步驟 |
 | C6 | iOS 那條線（`libimobiledevice`）拿得到什麼 | 還沒開始 |
 
 ### 已經確認過的（不用再問）
@@ -329,7 +372,7 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 |---|---|
 | Kotlin 編譯得過嗎 | 過（`kotlinc` 對著 `android.jar`，7 個檔） |
 | manifest 合法嗎 | 過（`aapt2 link`） |
-| adb 授權能不能自動化 | **不能**。見上面「幾個要記住的現實限制」 |
+| 手機能不能自己按掉授權對話框 | **不能**。見上面「幾個要記住的現實限制」。注意這句話管的是「手機自己點自己」—— 由**已授權的電腦**代點是另一回事，還沒測，見待實測 2 |
 | **agent 在實機上跑得起來嗎** | **會**。Pixel 4 / Android 13：裝得上、服務起得來、5599 答得出話 |
 | **`hangar enroll` 走得完嗎**（C2） | **走得完**，五步都 ok。但過程中發現 Android 12+ 的前景服務限制，多了 `am start` 那一步才行 |
 | **`WRITE_SECURE_SETTINGS` 拿得到嗎** | **拿得到**。`pm grant` 之後 `granted=true`，agent 自報 `can.toggle_adb: true` |
@@ -340,7 +383,7 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 前半段）。測試時是用 `adb disconnect` 模擬「adb 不通」，那不等於重開機 ——
 而真的重開機要由手邊有那支手機的人做。
 
-## 待實測：讓 hub 當唯一被授權的那台電腦
+## 待實測 1：讓 hub 當唯一被授權的那台電腦
 
 上面那條限制的實際痛點是**加人**：每多一個 RD，就要有人拿著手機按一次「一律允許」，
 而且那台電腦從此握有一把等同完整裝置控制權的金鑰。
@@ -472,28 +515,151 @@ adb devices                      # 期望：手機回來了，而且 RD 機什�
 
 測完把每一步的實際結果補回這一節，然後才決定要不要把它寫進 README。
 
-5. **agent 的協定被兩份實作夾住了。** `agent/` 是 Kotlin，`tests/agentbin/fake_agent.py`
-   是同一份協定的 Python 參考實作，`tests/test_agent_protocol.sh` 兩邊都打得過去
-   （帶 `HANGAR_AGENT_URL` 就打真的手機）。這是刻意的：同一份協定被寫兩次，
-   對不起來的地方就是協定沒講清楚的地方。參考實作同時也讓 `hangar` 那一側不用
-   有手機就能開發。
-6. **helper 也只站在 `--json` 上面。** `helper/hangar_helper.py` 要知道「這台
-   電腦上有哪些手機」，走的是 `hangar list --json`，不是自己去讀
-   `~/.config/hangar/`。設定檔長什麼樣子是 `hangar` 的事 —— 多一個地方認得那個
-   格式，就多一個地方會跟它走岔。它做的事也只有一件：在本機跑 `hangar -p`。
+## 待實測 2：讓 hub 代按那個「允許 USB 偵錯」
 
-7. **hub 已經站起來了，而且只站在 `--json` 上面。** `hub/hangar_hub.py` 對手機
-   的所有知識都來自 `hangar list --json` 與 `hangar scan --json`，沒有自己去碰
-   adb 或網路。要多顯示一個欄位是去改 hangar，不是在 hub 裡另外接一條路 ——
-   這樣 CLI 與網頁永遠不會各說各話。
+上一條是把 RD 的電腦擋在手機外面（改連 hub 的 adb server）。這一條反過來：RD 的
+電腦照樣直連手機，但**按允許的那隻手改由 hub 出**，人不用走到手機架前面。
+
+### 為什麼這條跟 agent 那條不一樣
+
+「現實限制」那節寫的是對話框防疊加／防自動點擊。要講精確一點：那個防護擋的是
+**覆蓋窗** —— `filterTouchesWhenObscured` 會讓對話框拒收「上面壓著別人視窗」的
+觸控，所以裝在手機裡的 app 點不到它。
+
+但 `adb shell input tap`（以及 scrcpy 的控制通道）不是覆蓋窗。它以 **shell uid**
+走 `InputManager.injectInputEvent` 注入，這條路沒有「被遮蔽」這回事。而 hub 是
+已經被授權的那台，它天生就有這條注入權限。
+
+所以「adb 授權不能自動化」準確的說法是：**手機不能自己點自己**。已授權的電腦
+代點是另一件事 —— 沒被證明不行，也還沒被證明行，所以放在這一節。
+
+### 不需要投影
+
+投影只是為了讓人看到對話框再用滑鼠點。既然 hub 已授權，它可以直接偵測與點掉：
+
+```bash
+adb shell dumpsys window | grep -i UsbDebugging     # 對話框在不在
+adb shell uiautomator dump /sdcard/w.xml            # 撈「一律允許」與「允許」的 bounds
+adb shell input tap <x> <y>
+```
+
+全程不需要螢幕、不需要 scrcpy、不需要有人在 hub 旁邊。hub 要是放在角落沒接螢幕，
+投影那條反而卡住（scrcpy 要有桌面才開得出視窗），`input tap` 沒這問題。
+
+要人眼確認的話，在 hub 上跑 `hangar -p` 投影出來用滑鼠點，是同一條路的手動版 ——
+差別只在 hub 得有螢幕，以及得有人在旁邊。
+
+### 要先確認的事
+
+| | |
+|---|---|
+| 對話框是不是 `FLAG_SECURE` | 是的話投影全黑（見 README 的 FLAG_SECURE 那節）。**但 tap 不看畫面** —— 只要 `uiautomator dump` 撈得到座標就還點得到。兩個都撈不到才是死路 |
+| OEM ROM 擋不擋注入 | MIUI／HyperOS 要另外開「USB 偵錯（安全設定）」才准注入，Samsung 也有自己一套。AOSP 系的應該沒事 |
+| 新連線會不會踢掉 hub 自己 | 另一把金鑰連上 5555 的時候，hub 那條已授權連線要撐得住 —— 不然要按的那隻手先斷了 |
+| 對話框跨版本穩不穩 | 文字與元件 id 各版本不一定一樣。要靠 resource-id 去找，不要把座標寫死 |
+
+### 這條解的是什麼、不解什麼
+
+原本的痛點有兩半：**加人要有人碰手機**、**那台電腦從此握有一把等同完整裝置控制權
+的金鑰**。兩條路解的不是同一半：
+
+| | 待實測 1（走 hub 的 adb server） | 待實測 2（hub 代按） |
+|---|---|---|
+| 加人不用碰手機 | ✅ | ✅ |
+| 收得回來 | ✅ 手機只認得 hub 那一把 | ❌ 每人一把永久金鑰，要撤只能在手機上全撤，所有人一起重來 |
+| Android Studio | ❓ 最不確定的一項 | ✅ 完全不用改，RD 那邊照舊 |
+| RD 跟手機的連線 | 不直連，全部擠在 hub | 直連 |
+
+所以這兩條是**互補**的：1 的安全性明顯好，2 的相容性好。如果 1 的第 6 步
+（Android Studio）過不了，2 就是退路。
+
+### 絕對不能無條件自動按
+
+5555 開著的時候，任何連得到的人都能觸發那個對話框。無條件幫他按「一律允許」
+等於把整支手機送出去，而且不留任何痕跡。對話框上顯示的是 RSA 指紋，不是人名，
+hub 自己分不出誰是誰。
+
+要做就得是：hub 偵測到請求 → 把指紋丟到網頁上 → **有人在 UI 上按准** → hub 才 tap。
+這樣「有人按一次」還在，但按的人是在自己座位上看網頁，不是走到手機架前面 ——
+那才是真正省掉的東西。RD 那邊可以先自己算指紋來對：
+
+```bash
+awk '{print $1}' ~/.android/adbkey.pub | base64 -d | openssl dgst -md5 -c
+```
+
+> 指紋格式對不對得上手機顯示的那一串，也還沒實測過。
+
+### 最小驗證步驟
+
+要三樣東西：hub（已經被這支手機授權過）、一支手機、**一台從來沒被這支手機授權過的
+電腦**（RD 機）。換金鑰的方法同上一條。
+
+**1. hub：確認基準狀態**
+
+```bash
+hangar status -p <手機>          # adb 要是 device
+adb shell echo ok                # 確認 shell 打得進去
+```
+
+**2. RD 機：觸發對話框**
+
+```bash
+adb connect <手機 IP>:5555
+adb devices                      # 期望：unauthorized
+```
+
+> 手機上應該跳出「允許 USB 偵錯」。**從這裡開始不要碰手機** —— 整條路要證明的
+> 就是不用碰。
+
+**3. hub：看不看得見那個對話框**
+
+```bash
+adb shell dumpsys window | grep -i usbdebug
+adb shell uiautomator dump /sdcard/w.xml
+adb shell cat /sdcard/w.xml | tr '>' '\n' | grep -i "allow\|允許"
+```
+
+> 期望：抓得到 `UsbDebuggingActivity`，而且 dump 裡有「一律允許」checkbox 跟允許鈕
+> 的 `bounds`。dump 失敗（secure window／拿不到 idle state）就記下來，這條大概到此為止。
+
+**4. hub：先勾「一律允許」，再按允許**
+
+```bash
+adb shell input tap <checkbox 的 x y>
+adb shell input tap <允許鈕的 x y>
+```
+
+> 期望：對話框消失。點不動（畫面沒反應、對話框還在）就是注入被擋了 —— 記下手機的
+> 廠商與 Android 版本，那決定這條路能涵蓋哪些機型。
+
+**5. RD 機：驗證真的授權了**
+
+```bash
+adb devices                      # 期望：device，不再是 unauthorized
+adb shell getprop ro.product.model
+```
+
+**6. hub：確認自己沒被踢掉**
+
+```bash
+hangar status -p <手機>          # 期望：還是 device
+```
+
+**7. 收拾**
+
+> 注意：手機上的「撤銷 USB 偵錯授權」是**一次全撤**，連 hub 那一把也會被撤掉 ——
+> 撤完要有人拿著手機重新授權 hub 一次。排測試時間的時候要把這一步算進去。
+
+測完把每一步的實際結果補回這一節。這條跟上一條不衝突，兩條都測完才比得出來要走哪邊。
 
 ## 還沒決定
 
 web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
 RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——這些都還開放。
 
-hub 目前是唯讀的。要從網頁動手機（M4 的切偵錯）就會有寫入端點，
-那時要決定的是認證怎麼做 —— 現在連「誰在看這頁」都不知道。
+hub 目前沒有任何會動手機的端點（`POST /api/refresh` 只叫醒自己的輪詢）。
+要從網頁動手機（M4 的切偵錯）就會有真正的寫入端點，那時要決定的是認證
+怎麼做 —— 現在連「誰在看這頁」都不知道。
 
 agent 的端點目前定為明文 HTTP + token。要不要上 TLS、還是乾脆只在 tailnet 上
 開放，等 M3a 跑起來、知道實際的延遲與麻煩程度再決定。
@@ -511,6 +677,12 @@ hangar/
 ├── README.md             # 安裝與使用
 ├── ROADMAP.md            # 這份：方向、里程碑、程式分層、測試
 ├── hangar_install.sh     # symlink 到 /usr/local/bin
+├── LICENSE
+├── docs/
+│   ├── manual.html       # 從 README 產生的單檔使用手冊（給不看 GitHub 的人）
+│   └── logo-agent*.svg   # agent 的圖示來源
+├── tools/
+│   └── make_manual.py    # README → docs/manual.html 的轉換器
 ├── agent/                # 手機端 app（Kotlin，零外部相依，連 AndroidX 都沒有）
 │   ├── README.md         # 怎麼蓋、怎麼手動入伍、驗證到什麼程度
 │   └── app/src/main/     # HttpServer / Status / Enrollment / AgentService …
@@ -532,6 +704,7 @@ hangar/
     ├── test_helper.sh    # helper：三道鎖、投影起得來／起不來的回報、序號對名字
     ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
     ├── test_agent_client.sh     # 電腦這一側：enroll、改問 agent、掃描探 5599
+    ├── test_manual.sh    # 手冊：Markdown 有沒有轉乾淨、內容有沒有掉、印記可不可決定
     ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
     ├── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
     ├── helperbin/        # 假的 hangar + scrcpy（會真的 exec，helper 靠那個判斷起來了）
@@ -563,7 +736,7 @@ hangar/
 | 取資料 | `run_hangar()` —— 跑 `hangar <cmd> --json`，只認 stdout 的 JSON |
 | 合併 | `merge()` —— 兩份資料合成裝置牆，主鍵 `DEVICE_SERIAL` > MAC > IP |
 | 狀態 | `State` —— 兩個輪詢執行緒寫、HTTP 執行緒讀的共用快照 |
-| HTTP | `Handler` —— `/`、`/api/devices`、`/healthz`，全部是 GET |
+| HTTP | `Handler` —— `/`、`/api/devices`、`/healthz`、`/static/…` 都是 GET；另有 `POST /api/refresh`（把輪詢提早叫醒，帶最小間隔節流，不碰手機） |
 
 `merge()` 是純函式（輸入兩份 dict，輸出一個 list），所以裝置牆的邏輯不用開
 伺服器也測得動。hub 對手機的所有知識都來自 `--json`，要多支援什麼欄位是改
@@ -594,8 +767,9 @@ hangar 那邊，不是在 hub 裡另外接一條路。
 | `test_multihost.sh` | `setup --existing`（第二台電腦）、unauthorized 的說明、連不上時的提示方向、`--name` 別名 |
 | `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
 | `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡）、`--fix-ip` 只改認得出來的那幾支且不碰 tailscale profile |
-| `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳 |
+| `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳、`POST /api/refresh` 的節流（剛問過回 429 並說還要等幾秒）、`GET /api/refresh` 是 404、不認得的 `what` 回 400 |
 | `test_agent_protocol.sh` | `/hello` 不需要 token 也不吐序號、`/status` 要 token、status 的每個欄位型別（電量是 0-100 整數、充電狀態用小寫那一套、`wifi_enabled` 可以是 null 但不能用 false 混充、拿不到的東西回 null 不塞假值、協定裡根本沒有 MAC 這一欄）、501 與 404 要分得出來、沒入伍是 409 不是 401。**帶 `HANGAR_AGENT_URL` 就直接打真的手機** |
+| `test_manual.sh` | `tools/make_manual.py`：Markdown 轉乾淨了沒（讀者不該看到 `**這樣**` 或一整列 `| --- |`）、區段與表格有沒有整段掉、README 裡的錨點連結在手冊裡對不對得上、同一份 README 跑兩次印記要一模一樣（`--check` 才有意義） |
 | `test_agent_client.sh` | `hangar enroll` 的四個步驟與三種失敗（沒 APK、已入伍過、安裝失敗）、每次入伍都是新 token、廣播帶的序號跟 profile 一致、adb 通時用 adb 的資料、**adb 不通時改問 agent 拿電量與機型**、入伍過但 agent 死掉看得出來、掃描只對探得到 5599 的發 HTTP、缺 `curl` 時安靜降級但入伍要明講 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，

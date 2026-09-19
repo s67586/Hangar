@@ -149,18 +149,16 @@
       <dt><code>unmanaged</code></dt>
       <dd>掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP 與 MAC —— 機型與電量要等它裝上 agent</dd>
     </dl>
-    <p class="foot">電池那一行的<b>插著沒在充</b>是 Android 的 <code>not_charging</code>：
-      線插著、但電沒有在進去（溫度過高、充電保護、或那個孔供電不夠），跟<b>放電中</b>
-      的沒插電是兩回事。停在高電量是正常的保護機制；停在低電量代表那條線或那個孔有問題，
-      所以低電量提醒把它算成「要充電」。</p>
-    <p class="foot">這頁不會去動手機，也不會去改設定檔 —— hub 上沒有任何會動手機的端點。</p>
+    <p class="foot">這頁不會去動手機，也不會去改設定檔 —— hub 上沒有任何會動手機的端點。
+      <b>立即更新</b>也只是把輪詢提早叫醒，跑的還是同樣那兩個唯讀的指令。</p>
 
     <h2 style="margin-top:22px">投影按鈕</h2>
-    <p class="foot">按鈕叫的不是 hub，是<b>你自己這台電腦</b>：hub 跑起來的視窗開在那台常駐機器上，
-      沒有人看得到。所以每台要按的電腦得自己跑一支 helper，按鈕才叫得動它 ——
-      <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，然後照它印的連結進來一次。</p>
-    <p class="foot">第一次投某一支手機，那台電腦仍然要跑過 <code>hangar setup</code>：
-      adb 授權綁的是每台電腦自己的金鑰，按鈕省不掉這一步。</p>
+    <p class="foot">視窗開在<b>你自己這台電腦</b>上，不是 hub 上。hub 多半是一台沒人在看的機器，
+      視窗開在那裡等於沒開。</p>
+    <p class="foot">所以按鈕要按得動，這台電腦要先跑一支 helper：
+      <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再照它印出來的連結進來一次。</p>
+    <p class="foot">第一次投某一支手機，這台電腦還是要跑過一次 <code>hangar setup</code> ——
+      adb 授權綁的是每台電腦自己的金鑰。</p>
   </section>
 </div>
 

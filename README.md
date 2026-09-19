@@ -370,7 +370,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "devices": [
     {
       "profile": "work",
@@ -385,7 +385,9 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "path": { "kind": "direct", "latency_ms": 12 },
       "model": "Pixel 7",
       "android": { "release": "14", "sdk": 34 },
-      "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5 },
+      "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5,
+                   "source": "adb" },
+      "agent": { "reachable": true, "version": "0.1.0", "enrolled": true },
       "scrcpy_pids": [12345],
       "errors": []
     }
@@ -417,6 +419,10 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 - **`--json` 時 stdout 只有 JSON。** 所有給人看的訊息都轉到 stderr，
   所以 `hangar list --json 2>/dev/null | jq .` 一定解析得過。
+
+- **`battery.source` 與 `agent` 是 schema 2 加的。** 前者說這筆電量是誰量的
+  （`adb` 還是 `agent`），後者在沒入伍也叫不動時是 `null` —— 細節見
+  [手機端 agent](#手機端-agent)。
 
 - **`device_serial` 是穩定識別碼。** IP 會變、連線方式會換，硬體序號不會。
   這是日後要認出「同一支手機」時唯一可靠的欄位。
