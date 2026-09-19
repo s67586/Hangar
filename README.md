@@ -536,7 +536,7 @@ hangar setup --existing pixel-4
 
 ### 也可以直接複製設定檔
 
-profile 只有兩行、沒有任何祕密，直接抄過去也行：
+profile 就是幾行純文字、沒有任何祕密（IP、序號、MAC，沒有金鑰），直接抄過去也行：
 
 ```bash
 scp ~/.config/hangar/profiles/pixel-4.conf 另一台:~/.config/hangar/profiles/
