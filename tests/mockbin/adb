@@ -87,9 +87,11 @@ case "$1" in
             exit 0 ;;
         esac
         case "$ser" in
-          *110:5555) m="Zenfone 10"; sn="ZEN0000002" ;;
-          *) m="Pixel 7 Pro"; sn="PIX0000001" ;;
+          *110:5555) m="Zenfone 10"; sn="ZEN0000002"; mac="f0:5c:77:aa:bb:02" ;;
+          *) m="Pixel 7 Pro"; sn="PIX0000001"; mac="f0:5c:77:aa:bb:01" ;;
         esac
+        # MAC 可由 state 檔換掉：wifi_mac（測隨機 MAC）、wifi_off（測沒連 Wi-Fi）
+        [ -f "$S/wifi_mac" ] && mac="$(cat "$S/wifi_mac")"
         case "$2" in
           dumpsys)
             [ "$3" = "battery" ] || exit 0
@@ -109,6 +111,13 @@ Current Battery Service state:
   temperature: 275
   technology: Li-ion
 BATT
+            ;;
+          cmd)
+            [ "$3" = "wifi" ] && [ "$4" = "status" ] || exit 0
+            if [ -f "$S/wifi_off" ]; then echo "Wifi is disabled"; exit 0; fi
+            echo "Wifi is enabled"
+            echo "Wifi is connected to \"TestNet\""
+            echo "WifiInfo: SSID: \"TestNet\", BSSID: e8:26:89:1a:a3:d1, MAC: $mac, IP: /192.168.1.5, Security type: 0"
             ;;
           getprop)
             case "$3" in

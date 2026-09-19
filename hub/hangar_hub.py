@@ -54,7 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 5
+API_SCHEMA = 6
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -157,8 +157,15 @@ def merge(list_data, scan_data):
             "mirroring": bool(d.get("scrcpy_pids")),
             # agent：null = 沒入伍過；reachable=false = 入伍過但現在叫不動
             "agent": d.get("agent"),
+            # MAC 有兩個來源。這裡拿的是 adb 問手機自己要來的（list 那半邊），
+            # 走 tailscale 或不同 Wi-Fi 的手機也有 —— 掃描永遠對不上那些。
+            # 掃到的話下面會用區網那一份覆蓋：同一段區網上 ARP 換來的才是
+            # 「hub 實際看到的那張網卡」。
+            "mac": (d.get("mac") or {}).get("address"),
+            "vendor": (d.get("mac") or {}).get("vendor"),
+            "mac_randomized": (d.get("mac") or {}).get("randomized"),
+            "mac_ssid": (d.get("mac") or {}).get("ssid"),
             # 區網那半邊的欄位，等下面掃描結果對上了再補
-            "mac": None, "vendor": None, "mac_randomized": None,
             "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
             "is_gateway": False,
             "sources": ["list"],
@@ -185,6 +192,7 @@ def merge(list_data, scan_data):
                 "model": None, "android": None, "battery": None,
                 "mirroring": False,
                 "mac": None, "vendor": None, "mac_randomized": None,
+                "mac_ssid": None,
                 "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
                 "agent": None, "is_gateway": False, "sources": [], "errors": [],
             }
@@ -202,7 +210,7 @@ def merge(list_data, scan_data):
                 "model": None, "android": None, "battery": None,
                 "mirroring": False,
                 "mac": h.get("mac"), "vendor": h.get("vendor"),
-                "mac_randomized": h.get("mac_randomized"),
+                "mac_randomized": h.get("mac_randomized"), "mac_ssid": None,
                 "adb_port": h.get("adb_port"), "lan_ip": h.get("ip"),
                 "profile_ip_stale": False,
                 # 掃到一支 agent 卻沒有對應的 profile：那台裝過 agent 但這台
@@ -214,9 +222,12 @@ def merge(list_data, scan_data):
                 "sources": ["scan"], "errors": [],
             })
             continue
-        entry["mac"] = h.get("mac")
-        entry["vendor"] = h.get("vendor")
-        entry["mac_randomized"] = h.get("mac_randomized")
+        # 掃到 MAC 才覆蓋。掃描配對是靠 profile 名字，配得上卻沒 MAC 是有的
+        # （例如那一輪 ARP 沒回）—— 這時候不能把 adb 問到的那份洗掉。
+        if h.get("mac"):
+            entry["mac"] = h.get("mac")
+            entry["vendor"] = h.get("vendor")
+            entry["mac_randomized"] = h.get("mac_randomized")
         entry["adb_port"] = h.get("adb_port")
         entry["lan_ip"] = h.get("ip")
         entry["profile_ip_stale"] = bool(h.get("profile_ip_stale"))

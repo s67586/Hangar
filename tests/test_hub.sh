@@ -127,7 +127,7 @@ echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
 assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "5" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "6" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -232,6 +232,33 @@ assert "跨連線方式仍是一台"  "1"            "$(m "len(${same})")"
 assert "IP 用 list 那邊的"    "100.1.1.1"    "$(m "${same}[0]['ip']")"
 assert "區網位址另外放一欄"   "192.168.1.77" "$(m "${same}[0]['lan_ip']")"
 assert "主鍵是序號"           "serial:S1"    "$(m "${same}[0]['key']")"
+
+# MAC 兩個來源：adb 問到的（list.mac）在掃不到的時候要留著，掃得到的時候
+# 讓區網那一份覆蓋 —— ARP 換來的才是「hub 實際看到的那張網卡」
+adb_only='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"f0:5c:77:aa:bb:01","randomized":False,
+                      "vendor":None,"ssid":"TestNet"}}]}, None)'
+assert "掃不到時用 adb 問到的 MAC" "f0:5c:77:aa:bb:01" "$(m "${adb_only}[0]['mac']")"
+assert "SSID 也帶過來"             "TestNet"           "$(m "${adb_only}[0]['mac_ssid']")"
+
+both='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"f0:5c:77:aa:bb:01","randomized":False,
+                      "vendor":None,"ssid":"TestNet"}}]},
+  {"hosts":[{"ip":"192.168.1.77","mac":"a4:03:e7:01:02:03","vendor":"宏達電子",
+             "profile":"work","device_serial":"S1"}]})'
+assert "掃得到就用區網那一份" "a4:03:e7:01:02:03" "$(m "${both}[0]['mac']")"
+assert "廠商也跟著換"         "宏達電子"          "$(m "${both}[0]['vendor']")"
+
+# 掃描配得上（靠 profile 名字）卻沒 MAC —— 例如那一輪 ARP 沒回。
+# 這時候不能把 adb 問到的那份洗成 None
+no_arp='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"f0:5c:77:aa:bb:01","randomized":False,
+                      "vendor":None,"ssid":"TestNet"}}]},
+  {"hosts":[{"ip":"192.168.1.77","mac":None,"profile":"work","device_serial":"S1"}]})'
+assert "掃到但沒 MAC 時不清空" "f0:5c:77:aa:bb:01" "$(m "${no_arp}[0]['mac']")"
 
 # list 那次剛好掛掉，但掃描認得出這是 work —— 要叫得出名字，不能顯示成陌生機器
 only_scan='merge(None, {"hosts":[{"ip":"192.168.1.77","mac":"a4:03:e7:01:02:03","profile":"work","device_serial":"S1","adb_port":"open"}]})'

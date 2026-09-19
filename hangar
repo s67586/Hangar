@@ -1350,6 +1350,41 @@ adb_device_info() { # <serial>
   DEV_SERIALNO="$(run_timeout 10 adb -s "$1" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
 }
 
+DEV_MAC=""; DEV_MAC_SSID=""
+
+# 手機自己那張 Wi-Fi 網卡的 MAC。
+#
+# 為什麼不讀 /sys/class/net/wlan0/address 或 ip link：Android 11 起這兩條路對
+# shell 使用者都關起來了（Permission denied），`cmd wifi status` 是還問得出來的
+# 那一條。
+#
+# 為什麼 hangar list 要自己問，明明 scan 也給 MAC：scan 是對某個網段送 ARP 換來
+# 的，只認得出「跟 hub 在同一段區網上」的手機。走 tailscale 或在別的 Wi-Fi 上的
+# 手機 adb 明明通，scan 卻永遠對不上 —— 那正是最需要靠 MAC 認人的情境。
+#
+# 拿到的可能是隨機 MAC（Android 10 起每個 SSID 一組，換個 Wi-Fi 就換一組）。
+# 判斷交給既有的 scan_mac_is_random，UI 上會標成「（隨機）」—— 別拿它當長期識別
+# 碼，那是序號的工作。
+adb_wifi_mac() { # <serial> — 結果放進 DEV_MAC / DEV_MAC_SSID
+  DEV_MAC=""; DEV_MAC_SSID=""
+  local out
+  out="$(run_timeout 10 adb -s "$1" shell cmd wifi status 2>/dev/null | tr -d '\r')"
+  [ -n "$out" ] || return 1
+  # 這一行長這樣：WifiInfo: SSID: "Cathay", BSSID: e8:26:…, MAC: f0:5c:…, IP: /…
+  # 前面那個 ", " 是用來跟 BSSID（連上的那台 AP，不是手機）分開的。
+  DEV_MAC="$(printf '%s\n' "$out" | grep -oE ', MAC: [0-9a-fA-F:]{17}' | head -1 \
+             | awk '{ print tolower($3) }')"
+  DEV_MAC_SSID="$(printf '%s\n' "$out" \
+                  | sed -nE 's/.*WifiInfo: SSID: "([^"]*)".*/\1/p' | head -1)"
+  # 兩種「等於沒拿到」：沒連 Wi-Fi 時整行 WifiInfo 就不在（抓出來是空的），
+  # 以及 02:00:00:00:00:00 —— 那是 Android 對沒有權限的呼叫端回的固定假值，
+  # 端出去會被當成一個真的位址。
+  case "$DEV_MAC" in
+    ""|02:00:00:00:00:00) DEV_MAC=""; DEV_MAC_SSID=""; return 1 ;;
+  esac
+  return 0
+}
+
 BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
 
 # dumpsys battery 的 status 是數字碼（framework BatteryManager 的定義）
@@ -2066,6 +2101,7 @@ probe_add_error() { PROBE_ERRORS="${PROBE_ERRORS}${1}|${2}"$'\n'; }
 probe_reset() {
   PROBE_REACH=""; PROBE_ADB=""; PROBE_PATH_KIND=""; PROBE_PATH_MS=""; PROBE_ERRORS=""
   DEV_MODEL=""; DEV_RELEASE=""; DEV_SDK=""; DEV_SERIALNO=""
+  DEV_MAC=""; DEV_MAC_SSID=""
   BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
 }
 
@@ -2142,6 +2178,7 @@ probe_adb() { # <deep 0/1> <try_connect 0/1>
     if [ "$PROBE_ADB" = "device" ]; then
       adb_device_info "$SERIAL"
       adb_battery "$SERIAL" || true
+      adb_wifi_mac "$SERIAL" || true
       AGENT_SOURCE="adb"
       # 入伍過的手機順手確認 agent 還活著。agent 死掉而 adb 還通，是「現在沒事、
       # 但下次重開機就會失聯」的預警 —— 那是會想提早知道的事。
@@ -2162,7 +2199,7 @@ scrcpy_pids_for() { pgrep -f "scrcpy .*${1}" 2>/dev/null | tr '\n' ' '; }
 #
 # 這是之後 web 後端讀 hangar 的介面，schema 有變動就要把 schema 號碼往上加。
 
-JSON_SCHEMA=2
+JSON_SCHEMA=3
 
 # device_json <is_default 0/1> — 依目前的 probe 結果組出一個 device 物件
 device_json() {
@@ -2186,6 +2223,11 @@ device_json() {
     --arg     pathkind  "$PROBE_PATH_KIND" \
     --arg     pathms    "$PROBE_PATH_MS" \
     --arg     model     "$DEV_MODEL" \
+    --arg     mac       "$DEV_MAC" \
+    --arg     macssid   "$DEV_MAC_SSID" \
+    --argjson macrnd    "$(if [ -n "$DEV_MAC" ] && scan_mac_is_random "$DEV_MAC"; \
+                           then echo true; else echo false; fi)" \
+    --arg     macvendor "$([ -n "$DEV_MAC" ] && scan_vendor "$DEV_MAC" || true)" \
     --arg     release   "$DEV_RELEASE" \
     --arg     sdk       "$DEV_SDK" \
     --arg     blevel    "$BATTERY_LEVEL" \
@@ -2213,6 +2255,14 @@ device_json() {
       path:          (if $pathkind == "" then null
                       else { kind: $pathkind, latency_ms: ($pathms | n) } end),
       model:         ($model | s),
+      # 手機那張 Wi-Fi 網卡的 MAC，adb 問出來的（見 adb_wifi_mac）。scan 那邊
+      # 也給 MAC，但只涵蓋跟 hub 同一段區網的手機；這一份走 adb，所以 tailscale
+      # 上的手機也有。randomized=true 表示它每個 SSID 換一組，別當識別碼用。
+      mac:           (if $mac == "" then null
+                      else { address:    $mac,
+                             randomized: $macrnd,
+                             vendor:     ($macvendor | s),
+                             ssid:       ($macssid | s) } end),
       android:       (if $release == "" and $sdk == "" then null
                       else { release: ($release | s), sdk: ($sdk | n) } end),
       battery:       (if $blevel == "" then null

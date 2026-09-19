@@ -376,7 +376,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "devices": [
     {
       "profile": "work",
@@ -390,6 +390,8 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "adb_state": "device",
       "path": { "kind": "direct", "latency_ms": 12 },
       "model": "Pixel 7",
+      "mac": { "address": "f0:5c:77:df:c7:43", "randomized": false,
+               "vendor": null, "ssid": "Cathay" },
       "android": { "release": "14", "sdk": 34 },
       "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5,
                    "source": "adb" },
@@ -419,9 +421,9 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
   `adb_port_closed` 只在「連得到機器但埠不通」時才出現。傳輸層整個沒通的時候
   不會一起報它 —— 否則讀 code 的人會去叫使用者插 USB，方向完全錯了。
 
-- **慢欄位預設略過。** `path` 要跑一次 `tailscale ping`，`model` / `battery` 各要一次
-  adb 往返。十支手機全取會跑很久，所以 `list --json` 預設把它們留成 `null`，
-  要完整資料才加 `--probe`。`status --json` 只有一支，一律完整探測。
+- **慢欄位預設略過。** `path` 要跑一次 `tailscale ping`，`model` / `battery` / `mac`
+  各要一次 adb 往返。十支手機全取會跑很久，所以 `list --json` 預設把它們留成
+  `null`，要完整資料才加 `--probe`。`status --json` 只有一支，一律完整探測。
 
 - **`--json` 時 stdout 只有 JSON。** 所有給人看的訊息都轉到 stderr，
   所以 `hangar list --json 2>/dev/null | jq .` 一定解析得過。
@@ -429,6 +431,17 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 - **`battery.source` 與 `agent` 是 schema 2 加的。** 前者說這筆電量是誰量的
   （`adb` 還是 `agent`），後者在沒入伍也叫不動時是 `null` —— 細節見
   [手機端 agent](#手機端-agent)。
+
+- **`mac` 是 schema 3 加的，跟 `scan` 那份不是同一個來源。** 這裡的 MAC 是
+  `adb shell cmd wifi status` 問手機自己要的，所以走 tailscale 或人在別的 Wi-Fi
+  上的手機也有 —— `hangar scan` 是對某個網段送 ARP，那些手機它永遠對不上。
+  （不讀 `/sys/class/net/wlan0/address` 或 `ip link` 是因為 Android 11 起這兩條路
+  對 shell 使用者都是 `Permission denied`。）
+
+  `randomized` 為 `true` 表示這是 Android 10+ 每個 SSID 一組的隨機 MAC，換個
+  Wi-Fi 就換一組 —— `ssid` 記的就是「這組 MAC 屬於哪個網路」。**別拿它當長期
+  識別碼**，那是 `device_serial` 的工作。兩邊都有 MAC 時 hub 用 `scan` 那一份：
+  ARP 換來的才是 hub 實際看到的那張網卡。
 
 - **`device_serial` 是穩定識別碼。** IP 會變、連線方式會換，硬體序號不會。
   這是日後要認出「同一支手機」時唯一可靠的欄位。
@@ -752,8 +765,11 @@ agent 現在叫不動** —— 現在可能還沒事（adb 還通），但下次
 ### 限制
 
 - **需要 `curl`**（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。
-- **agent 拿不到自己的 MAC**（Android 6+ 對一般 app 回傳假的），所以 MAC 仍然
-  只能由 `hangar scan` 從 ARP 表學。
+- **agent 拿不到自己的 MAC**（Android 6+ 對一般 app 回傳假的
+  `02:00:00:00:00:00`），所以 agent 回報的資料裡沒有這一欄。MAC 由另外兩條路
+  取得：`hangar scan` 從 ARP 表學，或 `hangar list --probe` 用
+  `adb shell cmd wifi status` 問 —— 後者連 adb 通得到但不在同一段區網的手機
+  也拿得到。
 - **agent 也拿不到硬體序號**（Android 10+ 要特權權限），所以序號是入伍時由電腦
   這一側寫進去的 —— 兩邊因此一定是同一個字串。
 - **切偵錯還沒做**（M4）。現在 `POST /hangar/v1/adb` 一律回 501。
