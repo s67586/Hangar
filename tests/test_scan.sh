@@ -43,7 +43,7 @@ out="$("$PM" scan --json 2>/dev/null)"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
   && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
-assert "有 schema 版本"      "4"                "$(q '.schema' "$out")"
+assert "有 schema 版本"      "5"                "$(q '.schema' "$out")"
 assert "掃的網段寫在結果裡"  "192.168.1.0/24"   "$(q '.subnet' "$out")"
 assert "hosts 是陣列"        "array"            "$(q '.hosts | type' "$out")"
 assert "errors 是空陣列"     "0"                "$(q '.errors | length' "$out")"
@@ -369,7 +369,7 @@ assert "修好了就不再是 stale"       "false" \
 assert "而且說得出這支被修過"       "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_fixed' "$out")"
 assert "MAC 沒被動到"               "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
-assert "改檔案不影響 JSON 純淨度"   "4" "$(q '.schema' "$out")"
+assert "改檔案不影響 JSON 純淨度"   "5" "$(q '.schema' "$out")"
 # 只改該改的那一行，其他欄位不能被洗掉
 assert "TRANSPORT 還在"             "lan"  "$(pfield work TRANSPORT)"
 
@@ -432,6 +432,34 @@ assert "該報的錯照樣報"   "subnet_too_big" "$(q '.errors[0].code' "$out")
 nocheck "不可以 unbound"  "unbound variable" "$out"
 out="$(LC_ALL=zh_TW.UTF-8 "$PM" scan 2>&1)"
 nocheck "人類模式也一樣"  "unbound variable" "$out"
+
+echo "=== S16. 閘道器要標出來（它每次都會出現，而且絕對不是測試機）==="
+lan_env
+printf '192.168.1.1\n' > "$MOCK_STATE/gateway_ip"
+out="$("$PM" scan --json 2>/dev/null)"
+assert "schema 往上加了"   "5" "$(q '.schema' "$out")"
+assert "閘道器標出來了"     "true" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.1") | .is_gateway' "$out")"
+assert "別台不可以被標成閘道器" "false" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .is_gateway' "$out")"
+out="$("$PM" scan 2>/dev/null)"
+check "人類表格的身分欄寫閘道器" "閘道器" "$out"
+
+# 問不到閘道位址時不可以亂標一台
+lan_env
+touch "$MOCK_STATE/gateway_none"
+echo 1 > "$MOCK_STATE/ip_no_route"      # Linux 那條路也問不到
+out="$("$PM" scan --json 2>/dev/null)"
+assert "問不到就一台都不標" "0" \
+  "$(q '[.hosts[] | select(.is_gateway)] | length' "$out")"
+assert "但其他東西照常"     "3" "$(q '.hosts | length' "$out")"
+
+# 閘道位址不在正在掃的網段裡（換過網路、或指定了別的網段）也不該標
+lan_env
+printf '10.0.0.1\n' > "$MOCK_STATE/gateway_ip"
+out="$("$PM" scan --json 2>/dev/null)"
+assert "別的網段的閘道不算" "0" \
+  "$(q '[.hosts[] | select(.is_gateway)] | length' "$out")"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# 假的 ipconfig（macOS）。掃描層只用它問一件事：那張介面的 DHCP router。
+#
+#   $MOCK_STATE/gateway_none  → 問不到閘道（模擬沒有 DHCP router 的網段）
+#
+S="$MOCK_STATE"
+echo "ipconfig $*" >> "$S/ipconfig_log"
+case "$*" in
+  *"getoption"*"router"*)
+    [ -f "$S/gateway_none" ] && exit 1
+    cat "$S/gateway_ip" 2>/dev/null || echo "192.168.1.1"
+    ;;
+esac
+exit 0

@@ -39,7 +39,12 @@ hub_env() {
 ] }
 JSON
   cat > "$MOCK_STATE/scan_json" <<'JSON'
-{ "schema": 3, "subnet": "192.168.1.0/24", "hosts": [
+{ "schema": 5, "subnet": "192.168.1.0/24", "hosts": [
+  { "ip": "192.168.1.1", "mac": "3c:37:86:aa:bb:cc", "vendor": "Netgear",
+    "mac_randomized": false, "adb_port": "closed", "profile": null,
+    "matched_by": null, "device_serial": null,
+    "profile_ip_stale": false, "profile_ip_fixed": false,
+    "agent": null, "is_gateway": true },
   { "ip": "192.168.1.77", "mac": "a4:03:e7:01:02:03", "vendor": "宏達電子",
     "mac_randomized": false, "adb_port": "open", "profile": "work",
     "matched_by": "mac", "device_serial": "R58M12345AB",
@@ -48,7 +53,7 @@ JSON
     "mac_randomized": true, "adb_port": "closed", "profile": null,
     "matched_by": null, "device_serial": null,
     "profile_ip_stale": false, "profile_ip_fixed": false,
-    "agent": { "version": "0.1.0" } }
+    "agent": { "version": "0.1.0" }, "is_gateway": false }
 ], "errors": [] }
 JSON
 }
@@ -122,12 +127,13 @@ echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
 assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "3" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "4" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 echo "=== H2. 兩份資料合成一張裝置牆 ==="
-# work 在 list 與 scan 裡各出現一次，序號一樣 → 只能是一台
-assert "總共三台"        "3" "$(q 'len(d["devices"])' "$out")"
+# work 在 list 與 scan 裡各出現一次，序號一樣 → 只能是一台。
+# 四台 = work（兩份資料合起來）+ spare（只在 list）+ .90 與閘道器（只在 scan）
+assert "總共四台"        "4" "$(q 'len(d["devices"])' "$out")"
 assert "work 只有一張卡" "1" "$(q 'len([x for x in d["devices"] if x["name"]=="work"])' "$out")"
 assert "而且兩個來源都算到" "list,scan" \
   "$(q '",".join([x for y in d["devices"] if y["name"]=="work" for x in y["sources"]])' "$out")"
@@ -411,6 +417,21 @@ nocheck "不可以誤報成被佔住"       "已經有人在用" "$out"
 out="$(python3 "$HUB" --hangar "$FAKE" --bind 10.99.99.99 2>&1)"
 nocheck "位址問題也不丟 traceback" "Traceback" "$out"
 check   "說得出是位址的問題"       "沒有這個位址" "$out"
+
+echo "=== H14. 閘道器要傳得到牆上 ==="
+hub_env
+hub_start || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+out="$(get_devices)"
+assert "閘道器標記傳過來了" "True" \
+  "$(q 'str([y["is_gateway"] for y in d["devices"] if y["ip"]=="192.168.1.1"][0])' "$out")"
+assert "別台不是閘道器"     "False" \
+  "$(q 'str([y["is_gateway"] for y in d["devices"] if y["ip"]=="192.168.1.90"][0])' "$out")"
+assert "已設定的手機也有這個欄位" "False" \
+  "$(q 'str([y["is_gateway"] for y in d["devices"] if y["name"]=="work"][0])' "$out")"
+# 閘道器排在同類的最後面：它每次都在，而且永遠不是要找的那台
+assert "閘道器排在陌生裝置後面" "True" \
+  "$(q 'str([y["ip"] for y in d["devices"] if y["state"]=="unmanaged"][-1] == "192.168.1.1")' "$out")"
+hub_stop
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

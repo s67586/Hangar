@@ -240,20 +240,29 @@ hangar scan --json
 ```
 
 ```
-  IP                MAC                 adb      已設定       廠商
-  ────────────────────────────────────────────────────────────
-  192.168.1.1       3c:37:86:aa:bb:cc   closed   -            Netgear
-  192.168.1.77      a4:03:e7:01:02:03   open     work         宏達電子
-  192.168.1.90      de:ad:be:ef:00:01   closed   -            隨機 MAC
+  IP                MAC                 adb      agent   身分         廠商
+  ────────────────────────────────────────────────────────────────────
+  192.168.1.1       3c:37:86:aa:bb:cc   closed   -       閘道器       Netgear
+  192.168.1.77      a4:03:e7:01:02:03   open     有      work         宏達電子
+  192.168.1.90      de:ad:be:ef:00:01   closed   有      -            隨機 MAC
 
   共 3 台，其中 1 台的 5555 是開著的（可以 adb 進去）
+  其中 2 台裝了 agent，那幾台不開偵錯也看得到機型與電量
 ```
 
 它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 `arp -an`
 （沒有 `arp` 就用 `ip neigh`），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播
 與多播位址（`ff:ff:…`、mDNS 的 `01:00:5e:…`）會濾掉 —— 那些背後沒有一台機器。
 
-#### `已設定` 那欄是怎麼認人的
+`身分` 那一欄回答的是「這台對我們來說是什麼」：已經設定過的手機叫什麼名字、
+是不是這個網段的**閘道器**、還是完全不認識（`-`）。閘道器每次掃描都會出現而且
+絕對不是測試機，標出來才不用每次重新想一次「192.168.1.1 是什麼」。
+
+> 閘道位址是問**掃描用的那張介面**拿到的（macOS 問 DHCP 給的 router，Linux 問
+> 那張介面的預設路由），不是問「預設路由的 gateway」—— 跑 Tailscale 的機器上
+> 預設路由是點對點通道，根本沒有閘道那一欄。問不到就不標，不會亂猜一台。
+
+#### `身分` 那欄怎麼認出是哪一支手機
 
 只比 IP 是不夠的：DHCP 換一次位址，同一支手機就會變成「另一台」；更糟的是
 舊 IP 被分給別的機器時，只比 IP 會把那台**誤認**成你的手機。所以識別碼的可靠度
@@ -411,7 +420,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 3,
+  "schema": 5,
   "subnet": "192.168.1.0/24",
   "hosts": [
     {
@@ -424,14 +433,18 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "matched_by": "mac",
       "device_serial": "R58M12345AB",
       "profile_ip_stale": false,
-      "profile_ip_fixed": false
+      "profile_ip_fixed": false,
+      "agent": { "version": "0.1.0" },
+      "is_gateway": false
     }
   ],
   "errors": []
 }
 ```
 
-`adb_port` 是 `open` / `closed` / `unknown`（`--no-probe` 或這台機器沒有 `nc`）。
+`agent` 在那台有 agent 在聽 5599 時才不是 `null`，`is_gateway` 是「這台是這個
+網段的閘道器」。`adb_port` 是 `open` / `closed` / `unknown`（`--no-probe` 或這台
+機器沒有 `nc`）。
 `profile` 對不上任何已設定的手機時是 `null`，`matched_by` 與 `device_serial`
 也跟著是 `null`。`subnet` 是實際掃過的範圍。
 

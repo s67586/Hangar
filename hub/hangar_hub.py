@@ -37,7 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 3
+API_SCHEMA = 4
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -143,6 +143,7 @@ def merge(list_data, scan_data):
             # 區網那半邊的欄位，等下面掃描結果對上了再補
             "mac": None, "vendor": None, "mac_randomized": None,
             "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
+            "is_gateway": False,
             "sources": ["list"],
             "errors": list(d.get("errors") or []),
         }
@@ -168,7 +169,7 @@ def merge(list_data, scan_data):
                 "mirroring": False,
                 "mac": None, "vendor": None, "mac_randomized": None,
                 "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
-                "agent": None, "sources": [], "errors": [],
+                "agent": None, "is_gateway": False, "sources": [], "errors": [],
             }
             devices.append(entry)
             by_profile[prof] = entry
@@ -191,6 +192,8 @@ def merge(list_data, scan_data):
                 # hub 沒有它的 token。看得到、問不出細節。
                 "agent": ({"reachable": True, "version": (h.get("agent") or {}).get("version"),
                            "enrolled": None} if h.get("agent") else None),
+                # 這個網段的閘道器。每次掃描都會出現，標出來才不用每次重新猜
+                "is_gateway": bool(h.get("is_gateway")),
                 "sources": ["scan"], "errors": [],
             })
             continue
@@ -200,6 +203,7 @@ def merge(list_data, scan_data):
         entry["adb_port"] = h.get("adb_port")
         entry["lan_ip"] = h.get("ip")
         entry["profile_ip_stale"] = bool(h.get("profile_ip_stale"))
+        entry["is_gateway"] = bool(h.get("is_gateway"))
         if h.get("agent") and not (entry.get("agent") or {}).get("reachable"):
             # list 那邊沒問到（沒 token 或沒帶 --probe），但掃描看到它在聽
             entry["agent"] = {"reachable": True,
@@ -216,8 +220,9 @@ def merge(list_data, scan_data):
 
     def sort_key(d):
         low = 0 if (d.get("battery") or {}).get("low") else 1
-        return (low, order.get(d["state"], 9), d.get("name") or "",
-                _ip_key(d.get("ip") or ""))
+        # 閘道器排在同類的最後面：它每次都在，而且永遠不是要找的那台
+        return (low, order.get(d["state"], 9), 1 if d.get("is_gateway") else 0,
+                d.get("name") or "", _ip_key(d.get("ip") or ""))
 
     devices.sort(key=sort_key)
     return devices
