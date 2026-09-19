@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# 假的 ifconfig（macOS 那條路）。netmask 照 macOS 的寫法印成 0xffffff00。
+S="$MOCK_STATE"
+echo "ifconfig $*" >> "$S/ifconfig_log"
+if [ -f "$S/ifconfig_out" ]; then cat "$S/ifconfig_out"; exit 0; fi
+cat <<OUT
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	inet 192.168.1.42 netmask 0xffffff00 broadcast 192.168.1.255
+OUT

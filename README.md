@@ -13,6 +13,7 @@ hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
 hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
+hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
 ```
 
 ---
@@ -50,6 +51,13 @@ brew install tailscale
 `tailscale` 只有 `TRANSPORT=tailscale` 的手機需要。純用 `TRANSPORT=lan`
 （同區網直連）的話不必裝，改成需要 `nc`——macOS 內建，通常不用管。
 用法見「[同區網直連](#同區網直連不經-tailscale)」。
+
+`hangar scan`（區網掃描）用的是 `ping` 與 `arp`，兩個都是系統內建。想讓它顯示
+裝置廠商就要有一份 OUI 資料庫，裝 `nmap` 或 `arp-scan` 任一個就有：
+
+```bash
+brew install nmap        # 選配，只影響 scan 的「廠商」那一欄
+```
 
 ### 2. 安裝 Hangar
 
@@ -171,6 +179,7 @@ hangar reset            # 連線卡死時重建 adb 連線
 hangar forget work      # 刪掉該手機的設定
 hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
+hangar scan             # 掃描區網，列出看得到的裝置
 ```
 
 ```bash
@@ -202,6 +211,48 @@ pkill -f 'scrcpy .*:5555'
 hangar -p work -- --window-x=100 --window-y=60   # 指定視窗位置
 hangar -p work -- --record=demo.mp4              # 錄影
 ```
+
+### 區網掃描
+
+`list` 只看得到**已經設定過**的手機。`hangar scan` 反過來：不管有沒有設定、
+有沒有開偵錯，只回答「這個區網上現在有哪些東西」。
+
+```bash
+hangar scan                        # 掃預設路由所在的那個 /24
+hangar scan --subnet 192.168.1     # 指定網段（也吃 192.168.1.0/24 或網段內任一 IP）
+hangar scan --no-ping              # 不做 ping sweep，只讀現有的 ARP 表（快很多）
+hangar scan --no-probe             # 不去測每台的 5555
+hangar scan --json
+```
+
+```
+  IP                MAC                 adb      已設定       廠商
+  ────────────────────────────────────────────────────────────
+  192.168.1.1       3c:37:86:aa:bb:cc   closed   -            Netgear
+  192.168.1.77      a4:03:e7:01:02:03   open     work         宏達電子
+  192.168.1.90      de:ad:be:ef:00:01   closed   -            隨機 MAC
+
+  共 3 台，其中 1 台的 5555 是開著的（可以 adb 進去）
+```
+
+它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 `arp -an`
+（沒有 `arp` 就用 `ip neigh`），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播
+與多播位址（`ff:ff:…`、mDNS 的 `01:00:5e:…`）會濾掉 —— 那些背後沒有一台機器。
+`已設定` 那欄會把 IP 對得上的 profile 名稱標出來，方便對照哪幾台已經入伍了。
+
+需要知道的限制：
+
+- **拿不到機型，也拿不到電量。** 沒開偵錯的手機 adb 完全碰不到，網路層只給得出
+  IP 與 MAC。這一欄要補齊得等手機端的 agent app（見 [ROADMAP](ROADMAP.md)）。
+- **隨機 MAC 查不到廠商，也不能當識別碼。** Android 10+ / iOS 14+ 對每個 SSID
+  用一組隨機 MAC，`廠商` 會直接寫「隨機 MAC」而不是亂猜一個牌子。
+- **廠商要靠系統上現成的 OUI 資料庫。** 裝了 `nmap` 或 `arp-scan` 就有；沒有的話
+  這一欄一律是 `?`。hangar 不內建自己的表 —— 完整的表好幾萬筆，只抄一小份會把
+  不認得的廠商全部誤判成不知名。要指定自己的表：`HANGAR_OUI_FILE=/path/to/oui`。
+- **只掃 /24。** 更大的網段逐台 ping 不現實，偵測到 `/16` 這種會直接要你用
+  `--subnet` 指定。網段比 `/24` 小（`/28` 之類）則是掃包住它的那個 `/24`。
+- **`scan` 不需要 adb 也不需要 scrcpy。** 它只用到 `ping`、`arp`／`ip`、`nc`，
+  在一台只裝了網路工具的常駐機器上也跑得動 —— 之後 hub 就是那種機器。
 
 ### 電量
 
@@ -294,6 +345,40 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 - **`--probe` 只對 `--json` 有作用。** 人類版 `list` 的欄位是固定的，
   加了會警告並忽略。
+
+`scan --json` 是另一份文件（描述的是網段，不是 profile），所以 schema 號碼自己算：
+
+```json
+{
+  "schema": 1,
+  "subnet": "192.168.1.0/24",
+  "hosts": [
+    {
+      "ip": "192.168.1.77",
+      "mac": "a4:03:e7:01:02:03",
+      "vendor": "宏達電子",
+      "mac_randomized": false,
+      "adb_port": "open",
+      "profile": "work"
+    }
+  ],
+  "errors": []
+}
+```
+
+`adb_port` 是 `open` / `closed` / `unknown`（`--no-probe` 或這台機器沒有 `nc`）。
+`profile` 對不上任何已設定的手機時是 `null`。`subnet` 是實際掃過的範圍。
+scan 自己的 error code：
+
+| code | 意思 |
+|---|---|
+| `scan_unavailable` | 這台電腦上缺工具（讀不到 ARP 表） |
+| `subnet_unknown` | 測不出預設路由的網段，要用 `--subnet` 指定 |
+| `subnet_too_big` | 偵測到的網段比 `/24` 大，掃不動 |
+| `subnet_invalid` | `--subnet` 給的值看不懂 |
+
+「缺工具」跟「區網上沒東西」分成兩件事報，跟 `transport_unavailable` 是同一個
+道理：前者要修的是這台電腦，後者才該去看裝置。
 
 ---
 

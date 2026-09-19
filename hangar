@@ -6,6 +6,7 @@
 #   hangar all [--hq|--lq] [--screen-on]                同時投影所有已設定的手機
 #   hangar setup [tailscale節點名] [--name 別名]        初始化（需同區網或 USB）
 #   hangar list                                        列出已設定的手機
+#   hangar scan [--subnet 192.168.1]                   列出區網上看得到的裝置
 #   hangar use <手機>                                  設定預設手機
 #   hangar forget <手機>                               刪除該手機的設定
 #   hangar status [-p 手機]                            顯示連線 / 裝置狀態
@@ -14,7 +15,7 @@
 #
 set -uo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 ADB_PORT=5555
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hangar"
 PROFILE_DIR="$CONFIG_DIR/profiles"
@@ -50,7 +51,11 @@ fi
 dwidth() {
   local b c
   b="$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')"
-  c="$(printf '%s' "$1" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')"
+  # 字元數不靠 locale 算：UTF-8 的續接位元組固定落在 0x80–0xBF，刪掉它們剩下的
+  # 就是字元數。原本這裡指定 LC_ALL=en_US.UTF-8 給 wc -m，但那個 locale 不是每台
+  # 機器都有（多數 Linux 只有 C.utf8），沒有的時候 wc -m 會退回數 bytes，
+  # 整張表就歪掉 —— hub 將來是跑在 Linux 上的，這條路一定會走到。
+  c="$(printf '%s' "$1" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' ')"
   printf '%s' "$(( (b + c) / 2 ))"
 }
 
@@ -128,6 +133,266 @@ require_deps() {
   # 「找得到就記下來」。真正需要它的時候由 transport_require_deps 把關。
   TS="$(find_tailscale)" || TS=""
   [ "$missing" -eq 0 ] || exit 1
+}
+
+# --------------------------------------------------------------- lan scan ----
+#
+# 區網掃描：ARP 層級的「這個網段上有哪些裝置」。
+#
+# 為什麼需要這一層：沒開偵錯模式的手機 adb 完全碰不到，這時候唯一還看得見它的
+# 地方就是網路層 —— 拿得到 IP、MAC，運氣好還有廠商，拿不到機型也拿不到電量。
+# hub 的裝置牆得先列得出這些「看得到但管不動」的機器，之後 agent app 上線再把
+# 資料補齊。
+#
+# 這不是 transport backend（它不回答「怎麼連到某一支手機」），所以叫 scan_*：
+# lan backend 的候選清單和 cmd_scan 都從這裡拿資料，不各自實作一次。
+#
+# 刻意不做的事：
+#   * 不查 mDNS —— 裝置名稱要等 agent app 自己廣播，現在去猜只會猜錯
+#   * 不內建 OUI 表 —— 完整的表好幾萬筆，塞進 script 不現實；只抄一小份又會
+#     把不認得的廠商全部誤判。系統上有現成的就用（nmap / arp-scan / wireshark
+#     都會帶一份），沒有就老實說廠商不知道
+#   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
+
+SCAN_SCHEMA=1
+SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
+case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
+SCAN_SUBNET=""        # 要掃的 /24 前三段，例如 192.168.1
+SCAN_SELF_IP=""       # 這台電腦自己的 IP，結果裡要排掉
+SCAN_HOSTS=""         # 一行一台："ip|mac|廠商|隨機MAC(0/1)|adb(open/closed/unknown)"
+SCAN_ERRORS=""        # 一行一筆的「code|給人看的訊息」，格式與 PROBE_ERRORS 相同
+
+scan_add_error() { SCAN_ERRORS="${SCAN_ERRORS}${1}|${2}"$'\n'; }
+
+scan_reset() { SCAN_HOSTS=""; SCAN_ERRORS=""; SCAN_SUBNET=""; SCAN_SELF_IP=""; }
+
+# 讀 ARP 表要用哪個工具。arp 兩邊都有（macOS 內建、Linux 的 net-tools），
+# 新一點的 Linux 可能只有 iproute2 的 ip neigh。
+scan_arp_tool() {
+  command -v arp >/dev/null 2>&1 && { printf 'arp'; return 0; }
+  command -v ip  >/dev/null 2>&1 && { printf 'ip';  return 0; }
+  return 1
+}
+
+# 缺工具 ≠ 區網上沒東西。這兩件事混在一起報，使用者會跑去檢查手機，
+# 但問題其實在這台電腦上 —— 跟 transport_deps_check 是同一個道理。
+scan_deps_check() { # <要不要 ping sweep 0/1>
+  # ping 只有要做 sweep 時才需要 —— --no-ping 是純讀 ARP 表，不該因為缺 ping 就擋
+  if [ "${1:-1}" -eq 1 ] && ! command -v ping >/dev/null 2>&1; then
+    printf '找不到 ping（只想讀現有的 ARP 表可以加 --no-ping）'
+    return 1
+  fi
+  scan_arp_tool >/dev/null || {
+    printf '讀不到 ARP 表（找不到 arp，也沒有 iproute2 的 ip）'; return 1; }
+  return 0
+}
+
+scan_mask_to_prefix() { # 0xffffff00 或 255.255.255.0 → 24
+  local m="$1" v=0 a b c d i n=0
+  case "$m" in
+    0x*|0X*) v=$(( m )) ;;
+    *.*.*.*) IFS=. read -r a b c d <<<"$m"
+             v=$(( (a << 24) | (b << 16) | (c << 8) | d )) ;;
+    *) return 1 ;;
+  esac
+  for i in 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 \
+           15 14 13 12 11 10 9 8 7 6 5 4 3 2 1 0; do
+    [ $(( (v >> i) & 1 )) -eq 1 ] || break
+    n=$(( n + 1 ))
+  done
+  printf '%s' "$n"
+}
+
+scan_detect_cidr() { # → "<這台電腦的 IP> <prefixlen>"，測不出來 return 1
+  local dev line
+  # Linux（iproute2）
+  if command -v ip >/dev/null 2>&1; then
+    dev="$(ip -4 route show default 2>/dev/null | sed -nE 's/.* dev ([^ ]+).*/\1/p' | head -1)"
+    if [ -n "$dev" ]; then
+      line="$(ip -4 -o addr show dev "$dev" 2>/dev/null \
+              | sed -nE 's#.* inet ([0-9.]+)/([0-9]+).*#\1 \2#p' | head -1)"
+      [ -n "$line" ] && { printf '%s' "$line"; return 0; }
+    fi
+  fi
+  # macOS（route + ifconfig）。netmask 在 ifconfig 裡是 0xffffff00 這種寫法。
+  if command -v ifconfig >/dev/null 2>&1; then
+    dev="$(route -n get default 2>/dev/null \
+           | sed -nE 's/^[[:space:]]*interface:[[:space:]]*(.+)$/\1/p' | head -1)"
+    [ -n "$dev" ] || dev=en0
+    line="$(ifconfig "$dev" 2>/dev/null | awk '/[[:space:]]inet [0-9]/ {print $2, $4; exit}')"
+    if [ -n "$line" ]; then
+      local pfx
+      pfx="$(scan_mask_to_prefix "${line##* }")" || return 1
+      printf '%s %s' "${line%% *}" "$pfx"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+scan_prepare() { # 決定要掃的網段 → SCAN_SUBNET / SCAN_SELF_IP
+  local want="${1:-}"
+  if [ -n "$want" ]; then
+    # 「192.168.1」「192.168.1.0/24」「192.168.1.37」都收 —— 後兩種取它的 /24
+    want="${want%%/*}"
+    case "$want" in *.*.*.*) want="${want%.*}" ;; esac
+    if printf '%s' "$want" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+      SCAN_SUBNET="$want"
+    else
+      scan_add_error "subnet_invalid" \
+        "看不懂的網段：$1（要像 192.168.1 或 192.168.1.0/24）"
+      return 1
+    fi
+    # 自己的 IP 仍然去測一次，測不到就算了——只影響「要不要把自己排掉」
+    local cidr; cidr="$(scan_detect_cidr)" && SCAN_SELF_IP="${cidr%% *}"
+    return 0
+  fi
+
+  local cidr ip pfx
+  cidr="$(scan_detect_cidr)" || {
+    scan_add_error "subnet_unknown" \
+      "測不出這台電腦在哪個網段，請用 hangar scan --subnet 192.168.1 指定"
+    return 1; }
+  ip="${cidr%% *}"; pfx="${cidr##* }"
+  # 比 /24 小（/25、/28…）就掃包住它的那個 /24：多打的那幾個位址會被路由丟去
+  # 閘道器、ARP 表不會多出東西，沒有壞處。比 /24 大的才是真的掃不動。
+  if [ "$pfx" -lt 24 ]; then
+    scan_add_error "subnet_too_big" \
+      "偵測到的網段是 /$pfx，逐台 ping 不現實；請用 --subnet 指定要掃哪一個 /24"
+    return 1
+  fi
+  SCAN_SELF_IP="$ip"
+  SCAN_SUBNET="${ip%.*}"
+  return 0
+}
+
+# 把整個 /24 碰一下，好讓核心把 ARP 表填起來。ping 的逾時參數 macOS 與 Linux
+# 寫法不同（-W 的單位一邊是毫秒一邊是秒），所以一律靠 run_timeout 管，
+# 不去碰 ping 自己的旗標。
+scan_sweep() {
+  local i running=0
+  for i in $(seq 1 254); do
+    run_timeout 1 ping -c 1 "${SCAN_SUBNET}.${i}" >/dev/null 2>&1 &
+    running=$(( running + 1 ))
+    if [ "$running" -ge "$SCAN_PARALLEL" ]; then wait; running=0; fi
+  done
+  wait
+}
+
+scan_arp_table() { # → 每行 "<ip> <mac>"；沒答覆的 incomplete 項目自然不會match
+  case "$(scan_arp_tool)" in
+    arp) arp -an 2>/dev/null \
+           | sed -nE 's/^.*\(([0-9.]+)\) at ([0-9a-fA-F][0-9a-fA-F:]+).*/\1 \2/p' ;;
+    ip)  ip neigh show 2>/dev/null \
+           | sed -nE 's/^([0-9.]+).*lladdr ([0-9a-fA-F][0-9a-fA-F:]+).*/\1 \2/p' ;;
+  esac
+}
+
+# macOS 的 arp 會把 0 開頭的段印成一位數（a4:3:e7:…），查 OUI 前要補回兩位。
+scan_norm_mac() {
+  printf '%s' "$1" | tr 'A-F' 'a-f' | awk -F: '{
+    out = ""
+    for (i = 1; i <= NF; i++) out = out (i > 1 ? ":" : "") sprintf("%02s", $i)
+    gsub(/ /, "0", out); print out
+  }'
+}
+
+# MAC 的第一個 byte 帶 locally-administered 位元時那是隨機 MAC：Android 10+ /
+# iOS 14+ 對每個 SSID 都給一組。這種 MAC 查 OUI 沒有意義，而且使用者「忘記
+# 網路再重連」就會換一組 —— 這就是 README 裡「裝置識別不能只靠 MAC」的限制。
+scan_mac_is_random() {
+  case "${1:1:1}" in 2|3|6|7|a|b|e|f) return 0 ;; esac
+  return 1
+}
+
+# 真的網路上 ARP 表裡不會只有裝置：廣播（ff:ff:ff:ff:ff:ff）、IPv4 多播
+# （01:00:5e:…，mDNS 就是走這個）、IPv6 多播（33:33:…）都可能在裡面。
+# 這些位址背後沒有「一台機器」，列出來只是雜訊。判斷方式是第一個 byte 的最低位
+# 元是 1 —— 上面那三種全部落在這個條件裡。
+scan_mac_is_multicast() {
+  case "${1:1:1}" in 1|3|5|7|9|b|d|f) return 0 ;; esac
+  return 1
+}
+
+# 系統上現成的 OUI 資料庫。nmap / arp-scan / wireshark 任一個裝了就有。
+scan_oui_db() {
+  # 指定了就只認它 —— 測試也靠這個模擬「這台機器上沒有 OUI 資料庫」
+  if [ -n "${HANGAR_OUI_FILE:-}" ]; then
+    [ -f "$HANGAR_OUI_FILE" ] && { printf '%s' "$HANGAR_OUI_FILE"; return 0; }
+    return 1
+  fi
+  local p
+  for p in \
+           /usr/share/nmap/nmap-mac-prefixes \
+           /opt/homebrew/share/nmap/nmap-mac-prefixes \
+           /usr/local/share/nmap/nmap-mac-prefixes \
+           /usr/share/arp-scan/ieee-oui.txt \
+           /usr/share/wireshark/manuf \
+           /opt/homebrew/share/wireshark/manuf \
+           /usr/local/share/wireshark/manuf; do
+    [ -n "$p" ] && [ -f "$p" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+scan_vendor() { # <正規化過的 mac> → 廠商名稱；查不到或沒有資料庫就印空字串
+  local db hex
+  db="$(scan_oui_db)" || return 0
+  hex="$(printf '%s' "$1" | tr -d ':' | tr 'a-f' 'A-F')"
+  hex="${hex:0:6}"
+  # nmap 是「A4483E 廠商」，wireshark / arp-scan 是「A4:48:3E<TAB>廠商」，兩種都收
+  grep -i -m1 -E "^(${hex}|${hex:0:2}:${hex:2:2}:${hex:4:2})[[:space:]]" "$db" 2>/dev/null \
+    | sed -E 's/^[^[:space:]]+[[:space:]]+//' | cut -f1 | head -1
+}
+
+scan_adb_open() { # <ip> → open / closed / unknown
+  command -v nc >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  if run_timeout 3 nc -z -w 1 "$1" "$ADB_PORT" >/dev/null 2>&1
+  then printf 'open'; else printf 'closed'; fi
+}
+
+# scan_run <subnet 或空> <要不要 ping sweep 0/1> <要不要測 5555 0/1>
+#   結果放在 SCAN_HOSTS，錯誤放在 SCAN_ERRORS。掃得動就 return 0。
+scan_run() {
+  local want="${1:-}" do_sweep="${2:-1}" do_probe="${3:-1}"
+  scan_reset
+
+  local why
+  if ! why="$(scan_deps_check "$do_sweep")"; then
+    scan_add_error "scan_unavailable" "$why"
+    return 1
+  fi
+  scan_prepare "$want" || return 1
+  [ "$do_sweep" -eq 1 ] && scan_sweep
+
+  local ip mac vendor rnd adb
+  while read -r ip mac; do
+    [ -n "$ip" ] || continue
+    case "$ip" in "${SCAN_SUBNET}."*) : ;; *) continue ;; esac
+    [ "$ip" = "$SCAN_SELF_IP" ] && continue
+    # 這個 /24 的網路位址與廣播位址不是裝置
+    case "${ip##*.}" in 0|255) continue ;; esac
+    mac="$(scan_norm_mac "$mac")"
+    scan_mac_is_multicast "$mac" && continue
+    rnd=0; scan_mac_is_random "$mac" && rnd=1
+    vendor=""
+    [ "$rnd" -eq 0 ] && vendor="$(scan_vendor "$mac")"
+    adb="unknown"
+    [ "$do_probe" -eq 1 ] && adb="$(scan_adb_open "$ip")"
+    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}"$'\n'
+  done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+
+  return 0
+}
+
+# 這個 IP 是不是某個已設定的 profile？掃描結果標出來，才看得懂哪幾台已經入伍了。
+scan_profile_for_ip() {
+  local n
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ "$(profile_field "$n" PHONE_IP)" = "$1" ] && { printf '%s' "$n"; return 0; }
+  done < <(list_profiles)
+  return 1
 }
 
 # ------------------------------------------------------------- tailscale ----
@@ -228,15 +493,29 @@ ts_state() { printf '%s' "$(printf '%s' "$TS_JSON" | jq -r '.BackendState // "Un
 
 # ------- backend: lan（同區網直連） ------------------------------------------
 #
-# 目前只做到「這個 IP 的 5555 有沒有在聽」。區網掃描與裝置發現屬於 hub 的範圍，
-# 還沒實作 —— 這個 backend 存在的意義是證明上面那層介面切得乾淨。
+# 「這個 IP 的 5555 有沒有在聽」由 lan_reachability 負責；「這個網段上有哪些
+# 裝置」則是下面 scan_* 那一層的事，這裡只是把它投影成候選清單的格式。
 
 lan_require_up() { return 0; }           # 同區網不需要額外的傳輸層
 lan_is_up()      { return 0; }
 lan_state()      { printf '直連'; }
 lan_path()       { printf 'direct ?'; }  # 同區網一律視為直連
 lan_resolve_ip() { printf '%s' "$1"; }   # 沒有節點名的概念，IP 就是 IP
-lan_list_candidates() { return 0; }      # 區網掃描尚未實作
+lan_list_candidates() { # 用區網掃描的結果當候選清單
+  scan_run "" 1 1 || return 0
+  local n=0 ip mac vendor rnd adb label os
+  while IFS='|' read -r ip mac vendor rnd adb; do
+    [ -n "$ip" ] || continue
+    n=$(( n + 1 ))
+    # 名稱欄：區網上沒有「節點名」這種東西，能給的最好答案是廠商，再不然是 MAC
+    if   [ "$rnd" -eq 1 ];   then label="隨機 MAC"
+    elif [ -n "$vendor" ];   then label="$vendor"
+    else                          label="$mac"; fi
+    # OS 欄：5555 開著代表「這台是已經可以 adb 進去的 Android」；其餘一律不知道
+    if [ "$adb" = "open" ]; then os="android"; else os="?"; fi
+    printf '%s|%s|%s|%s|%s\n' "$n" "$label" "$ip" "$os" "online"
+  done <<< "$SCAN_HOSTS"
+}
 
 lan_reachability() { # <節點名> <IP>
   local ip="$2"
@@ -1061,7 +1340,9 @@ cmd_setup() {
   if [ -z "$peer" ]; then
     info "tailnet 內的節點："
     local rows
-    rows="$(ts_list_peers)"
+    # 走 transport 介面而不是直接呼叫 ts_list_peers —— cmd_* 不碰 ts_*。
+    # 這裡 TRANSPORT 還沒設定，transport_name 會回 tailscale（預設值）。
+    rows="$(transport_list_candidates)"
     [ -n "$rows" ] || die "tailnet 裡沒有其他節點，請確認手機端也登入了同一個 tailnet"
     local idx hn hip hos hst
     while IFS='|' read -r idx hn hip hos hst; do
@@ -1742,6 +2023,9 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
   hangar list                     列出已設定的手機與即時狀態（含電量）
   hangar list --json [--probe]    同上，輸出 JSON（--probe 連路徑/機型/電量一起取，比較慢）
                                   --probe 只對 --json 有作用，人類版表格欄位是固定的
+  hangar scan [--subnet 192.168.1] [--no-ping] [--no-probe]
+                                   掃描區網，列出看得到的裝置（不限已設定的）
+  hangar scan --json              同上，輸出 JSON
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
@@ -1794,6 +2078,141 @@ scrcpy 關掉後螢幕會維持關著，按一下手機電源鍵就回來。
 EOF
 }
 
+# hangar scan — 列出這個網段上看得到的裝置
+#
+# 這是 hub 裝置牆的資料來源：它不管手機有沒有設定過、有沒有開偵錯，只回答
+# 「區網上有這些東西」。已經設定過的會標出 profile 名稱，方便對照。
+cmd_scan() {
+  local want="" do_sweep=1 do_probe=1
+  JSON_MODE=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json)      JSON_MODE=1; shift ;;
+      --subnet)    want="${2:-}"
+                   [ -n "$want" ] || die "--subnet 要接網段，例如 --subnet 192.168.1"
+                   shift 2 ;;
+      --subnet=*)  want="${1#--subnet=}"; shift ;;
+      --no-ping)   do_sweep=0; shift ;;
+      --no-probe)  do_probe=0; shift ;;
+      *) die "scan 不認得參數：$1" ;;
+    esac
+  done
+
+  # scan 刻意不走 require_deps：它不需要 adb 也不需要 scrcpy。hub 之後會跑在一台
+  # 只有網路工具的常駐機器上，在那裡因為沒裝 scrcpy 而掃不了區網是說不過去的。
+  if [ "$JSON_MODE" -eq 1 ] && ! command -v jq >/dev/null 2>&1; then
+    err "找不到 jq（--json 需要它）"; hint "brew install jq"; exit 1
+  fi
+  migrate_legacy
+
+  if [ "$JSON_MODE" -eq 0 ]; then
+    if [ "$do_sweep" -eq 1 ]; then
+      info "掃描區網（先 ping 一輪把 ARP 表填起來，約 5 秒）…"
+    else
+      info "只讀 ARP 表（沒有 ping sweep，看得到的是最近有往來的裝置）…"
+    fi
+  fi
+
+  scan_run "$want" "$do_sweep" "$do_probe"
+  local rc=$?
+
+  if [ "$JSON_MODE" -eq 1 ]; then
+    local errs objs="" ip mac vendor rnd adb prof
+    errs="$(printf '%s' "$SCAN_ERRORS" | jq -R -s -c \
+      '[split("\n")[] | select(length > 0) | split("|")
+        | { code: .[0], message: (.[1:] | join("|")) }]')"
+    while IFS='|' read -r ip mac vendor rnd adb; do
+      [ -n "$ip" ] || continue
+      prof="$(scan_profile_for_ip "$ip")" || prof=""
+      objs="${objs}$(jq -n \
+        --arg ip "$ip" --arg mac "$mac" --arg vendor "$vendor" \
+        --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" '
+        def s: if . == "" then null else . end;
+        { ip:             $ip,
+          mac:            ($mac | s),
+          vendor:         ($vendor | s),
+          mac_randomized: ($rnd == 1),
+          adb_port:       $adb,
+          profile:        ($prof | s) }')"$'\n'
+    done <<< "$SCAN_HOSTS"
+    printf '%s' "$objs" | jq -s \
+      --argjson schema "$SCAN_SCHEMA" \
+      --arg     subnet "$( [ -n "$SCAN_SUBNET" ] && printf '%s.0/24' "$SCAN_SUBNET" )" \
+      --argjson errors "$errs" \
+      '{ schema: $schema,
+         subnet: (if $subnet == "" then null else $subnet end),
+         hosts:  .,
+         errors: $errors }'
+    return 0
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    local code msg
+    while IFS='|' read -r code msg; do
+      [ -n "$code" ] || continue
+      err "$msg"
+    done <<< "$SCAN_ERRORS"
+    exit 1
+  fi
+
+  local total rnd_any=0 open_n=0
+  total="$(printf '%s' "$SCAN_HOSTS" | grep -c . || true)"
+  if [ "${total:-0}" -eq 0 ]; then
+    warn "這個網段（${SCAN_SUBNET}.0/24）上沒看到其他裝置"
+    [ "$do_sweep" -eq 1 ] || hint "加上 ping sweep 會看到更多：hangar scan"
+    return 0
+  fi
+
+  # 廠商放最後一欄：OUI 資料庫裡的名稱長短差很多（「Hon Hai Precision Ind. Co.,
+  # Ltd.」這種），擺在中間會把後面的欄位推歪。長度不固定的東西就放尾巴。
+  printf '\n  %s %s %s %s %s\n' \
+    "$(pad "IP" 17)" "$(pad "MAC" 19)" "$(pad "adb" 8)" \
+    "$(pad "已設定" 12)" "廠商"
+  printf '  %s\n' "$(printf '─%.0s' $(seq 1 60))"
+
+  local ip mac vendor rnd adb prof v_txt v_col a_txt a_col p_txt
+  while IFS='|' read -r ip mac vendor rnd adb; do
+    [ -n "$ip" ] || continue
+
+    if [ "$rnd" -eq 1 ]; then
+      v_txt="隨機 MAC"; v_col="$C_YEL"; rnd_any=1
+    elif [ -n "$vendor" ]; then
+      v_txt="$vendor"; v_col=""
+    else
+      v_txt="?"; v_col="$C_DIM"
+    fi
+
+    case "$adb" in
+      open)   a_txt="open";   a_col="$C_GRN"; open_n=$(( open_n + 1 )) ;;
+      closed) a_txt="closed"; a_col="$C_DIM" ;;
+      *)      a_txt="?";      a_col="$C_DIM" ;;
+    esac
+
+    prof="$(scan_profile_for_ip "$ip")" || prof=""
+    if [ -n "$prof" ]; then p_txt="$prof"; else p_txt="-"; fi
+
+    # 顏色碼放在補齊過的內容外面，才不會被算進欄寬
+    printf '  %s %s %s%s%s %s %s%s%s\n' \
+      "$(pad "$ip" 17)" "$(pad "$mac" 19)" \
+      "$a_col" "$(pad "$a_txt" 8)" "$C_0" \
+      "$(pad "$p_txt" 12)" \
+      "$v_col" "$v_txt" "$C_0"
+  done <<< "$SCAN_HOSTS"
+
+  echo
+  printf '  %s共 %s 台，其中 %s 台的 %s 是開著的（可以 adb 進去）%s\n' \
+    "$C_DIM" "$total" "$open_n" "$ADB_PORT" "$C_0"
+  printf '  %s沒開偵錯的裝置只看得到 IP / MAC —— 機型與電量要等手機端 agent app%s\n' \
+    "$C_DIM" "$C_0"
+  if [ "$rnd_any" -eq 1 ]; then
+    printf '  %s隨機 MAC 的裝置不能只靠 MAC 認人：使用者「忘記網路」再連就會換一組%s\n' \
+      "$C_DIM" "$C_0"
+  fi
+  scan_oui_db >/dev/null || printf '  %s廠商查不到是因為這台機器上沒有 OUI 資料庫（裝 nmap 或 arp-scan 就有）%s\n' \
+    "$C_DIM" "$C_0"
+  echo
+}
+
 # ----------------------------------------------------------------- main -----
 
 main() {
@@ -1803,6 +2222,7 @@ main() {
     status|st)       shift; cmd_status "$@" ;;
     reset)           shift; cmd_reset "$@" ;;
     list|ls)         shift; cmd_list "$@" ;;
+    scan)            shift; cmd_scan "$@" ;;
     use)             shift; cmd_use "${1:-}" ;;
     forget|rm)       shift; cmd_forget "${1:-}" ;;
     all)             shift; cmd_all "$@" ;;

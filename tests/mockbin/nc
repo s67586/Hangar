@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 #
 # 假的 nc。lan backend 用 `nc -z -w 2 <ip> <port>` 測 5555 通不通，
-# 測試不該真的對外連線。由 $MOCK_STATE/nc_result 控制：ok（預設）= 通。
+# 測試不該真的對外連線。
+#
+#   $MOCK_STATE/nc_open_ips  → 一行一個 IP，只有列在裡面的才算通（掃描用）
+#   $MOCK_STATE/nc_result    → ok（預設）＝一律通；其他值＝一律不通
 #
 S="$MOCK_STATE"
 echo "nc $*" >> "$S/nc_log"
+if [ -f "$S/nc_open_ips" ]; then
+  for a in "$@"; do
+    case "$a" in
+      [0-9]*.[0-9]*.[0-9]*.[0-9]*) grep -qxF "$a" "$S/nc_open_ips" && exit 0 || exit 1 ;;
+    esac
+  done
+  exit 1
+fi
 [ "$(cat "$S/nc_result" 2>/dev/null || echo ok)" = "ok" ]

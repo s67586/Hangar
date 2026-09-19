@@ -51,7 +51,8 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | | 內容 | 狀態 |
 |---|---|---|
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
-| M2 | hub 骨架：常駐服務 + 區網掃描 + 唯讀裝置牆網頁 | |
+| M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單 | **已完成** |
+| M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | 卡在「後端用什麼寫」還沒決定 |
 | M3 | agent app：授權、電量回報、mDNS 廣播、重開機後自動重開 5555 | |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
 | M5 | 網頁投影串流；iOS 唯讀 | |
@@ -67,13 +68,16 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 
 ## 這對現在的程式碼意味著什麼
 
-在 web 版出現以前，`hangar` 這支 script 還是主要的東西。M1 已經把地基打好：
+在 web 版出現以前，`hangar` 這支 script 還是主要的東西。M1 與 M2a 已經把地基打好：
 
 1. **Tailscale 的假設收在一層後面了。** 所有「怎麼連到這支手機」的知識都在
    `transport_*` 介面後面，`cmd_*` 層不直接呼叫 `ts_*`。多一種連線方式是加一個
    backend（目前除了 `tailscale` 還有一個很薄的 `lan`），不是整份 script 重寫。
 2. **裝置狀態已經可以被程式讀。** `--json` 是之後 hub 讀 hangar 的介面，
    schema 有變動就把 `schema` 號碼往上加。
+3. **「看得到但管不動」的裝置已經列得出來了。** `scan_*` 這一層跟 profile 無關，
+   `hangar scan --json` 回答的是網段而不是某一支手機，所以它有自己的 schema 號碼。
+   hub 的裝置牆就是 `list --json` 加 `scan --json` 兩份資料合出來的。
 
 ## 還沒決定
 
@@ -97,7 +101,8 @@ hangar/
     ├── test_adb_race.sh  # adb server 競態、欄位對齊
     ├── test_multihost.sh # 第二台電腦（--existing）
     ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
-    └── mockbin/          # 假的 adb / tailscale / scrcpy / nc
+    ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測
+    └── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
 ```
 
 `hangar` 這支 script 內部分層（由下往上）：
@@ -105,11 +110,12 @@ hangar/
 | 層 | 內容 |
 |---|---|
 | 輸出 | `info` / `ok` / `warn` / `err` / `kv` / 中文欄寬對齊 |
+| scan | `scan_*` —— ARP 層級的「這個網段上有哪些裝置」，不分已設定與否；`cmd_scan` 和 lan backend 的候選清單共用它 |
 | transport | `transport_*` —— 「怎麼連到這支手機」全部收在這後面，底下有 `ts_*` 和 `lan_*` 兩個 backend |
 | profile | `.conf` 的讀寫、預設值、舊格式遷移 |
 | adb | 連線重試、狀態判讀、裝置資訊、電量 |
 | probe | `probe_transport` / `probe_adb` —— 人類輸出與 `--json` 共用同一份取得邏輯 |
-| 指令 | `cmd_setup` / `cmd_mirror` / `cmd_status` / `cmd_list` / … |
+| 指令 | `cmd_setup` / `cmd_mirror` / `cmd_status` / `cmd_list` / `cmd_scan` / … |
 
 `cmd_*` 層不直接呼叫 `ts_*`，一律走 `transport_*`。所有跟連線方式有關的**措辭**
 也集中在 `transport_msg` 這一個查表函式裡，加 backend 時不用去各處翻字串。
@@ -122,8 +128,9 @@ hangar/
 ./tests/run.sh
 ```
 
-用 mock 的 `adb` / `tailscale` / `scrcpy` 跑，**不會碰到真的手機**，
-設定檔也是寫在 `$TMPDIR/hangar-test` 底下，不會動到 `~/.config/hangar`。
+用 mock 的 `adb` / `tailscale` / `scrcpy` / `arp` / `ping` 跑，**不會碰到真的手機，
+也不會真的對區網送封包**，設定檔也是寫在 `$TMPDIR/hangar-test` 底下，
+不會動到 `~/.config/hangar`。
 
 涵蓋範圍：
 
@@ -134,6 +141,7 @@ hangar/
 | `test_adb_race.sh` | adb server 重啟競態的自動重試、本機 adb 問題與手機重開機的區分、setup 的 `start-server`、中文欄位對齊 |
 | `test_multihost.sh` | `setup --existing`（第二台電腦）、unauthorized 的說明、連不上時的提示方向、`--name` 別名 |
 | `test_json.sh` | `--json` 是合法 JSON 且 stdout 不被污染、schema 欄位、舊 profile 沒有 `TRANSPORT` 時的回退、慢欄位要 `--probe` 才取、電量數值與低電量標記、各種錯誤 code、傳輸層掛掉時不誤報成手機重開機、`lan` backend 可抽換、壞掉的 profile 不影響其他支、setup 記下裝置序號 |
+| `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。
