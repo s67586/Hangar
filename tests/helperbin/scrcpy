@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# 假的 scrcpy：把參數記下來，然後像真的投影視窗一樣待著不動
+printf '%s\n' "$*" >> "$MOCK_STATE/scrcpy_argv"
+sleep "${MOCK_SCRCPY_SLEEP:-30}"

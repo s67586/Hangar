@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# 假的 hangar，給 test_helper.sh 用。
+# `list --json` 吐一份固定的手機清單；`-p <名稱>` 就是投影 —— 跟真的一樣，
+# 最後一步是 exec 一支 scrcpy（也是假的），helper 判斷「真的起來了」靠的正是
+# 那個 exec 換掉 process 的動作。
+#
+printf '%s\n' "$*" >> "$MOCK_STATE/argv_log"
+
+case "${1:-}" in
+  list)
+    [ -f "$MOCK_STATE/list_fail" ] && { echo " xx 假裝壞掉了" >&2; exit 1; }
+    cat "$MOCK_STATE/list_json"
+    ;;
+  -p)
+    name="${2:-}"
+    if [ -f "$MOCK_STATE/fail_$name" ]; then
+      # 真的 hangar 的錯誤走 stderr、而且帶顏色碼與行首記號
+      printf '\033[31m xx \033[0m [%s] 手機不在線上\n' "$name" >&2
+      printf '    \033[2m去看看它有沒有開機\033[0m\n' >&2
+      exit 1
+    fi
+    # 測「同一支按兩次」要有東西擋得住第一個請求
+    [ -f "$MOCK_STATE/slow_$name" ] && sleep 2
+    exec "$(dirname "$0")/scrcpy" --serial "$name"
+    ;;
+  *) echo "假 hangar 不認得：${1:-}" >&2; exit 2 ;;
+esac

@@ -8,7 +8,8 @@
 | | |
 |---|---|
 | [`hangar`](hangar) | CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源 |
-| [`hub/`](hub) | 常駐服務 + 唯讀裝置牆網頁（Python 3 標準函式庫，零套件） |
+| [`hub/`](hub) | 常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件） |
+| [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影按鈕在你面前開視窗 |
 | [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
 
 > **[📖 使用手冊（一頁可讀版）](https://claude.ai/artifact/WyegAVdz2UzVitcvwB5kZ8)**
@@ -26,6 +27,7 @@ hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
 hangar enroll -p work       # 在這支手機上裝 agent（那唯一一次 USB）
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
+./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的投影按鈕要按得動
 ```
 
 ---
@@ -337,6 +339,24 @@ MAC 記進 profile 的 `PHONE_MAC`，之後就改用 MAC 認人。**
 
 電量只在 adb 已經連著的手機上取得（`dumpsys battery`，一次很短的往返）。
 沒連線的顯示 `-` —— `list` 不會為了拿電量而硬去建立連線，那會讓它變得很慢。
+
+狀態是 Android 自己的分類（`dumpsys battery` 的 `status`）。`not_charging` 刻意
+不照字面翻成「未充電」——那會被讀成「沒插電」，而那是 `discharging`：
+
+| | 中文 | 意思 |
+|---|---|---|
+| `charging` | 充電中 | 插著，而且電在進去 |
+| `discharging` | 放電中 | 沒插電 |
+| `not_charging` | 插著沒在充 | **插著，但電沒有在進去** |
+| `full` | 已充滿 | |
+
+`not_charging` 是測試機最容易長期停在的那一個：插著線但系統決定不充——溫度
+太高、充電保護（很多機型會刻意停在 80% 左右）、或是那個 USB 孔／線供電不夠。
+它跟 `discharging` 要分開看：一支停在 `not_charging` 80% 的手機是健康的，
+停在 `not_charging` 9% 的手機是**插著線卻在往下掉**，那條線或那個孔有問題。
+
+低電量提醒把 `not_charging` 算成「要充電」（只有 `charging` 與 `full` 不提醒）
+—— 電沒有在進去就是沒有在進去。
 
 ### 機器可讀的輸出（--json）
 
@@ -815,7 +835,14 @@ curl -X POST 'http://127.0.0.1:8787/api/refresh?what=all'   # 或 what=list / wh
 `--fix-ip`**（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile
 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 `hangar scan --fix-ip`。
 
-從網頁「切偵錯」「投影」那些要等 M3／M4／M5，見 [ROADMAP](ROADMAP.md)。
+牆上的**投影按鈕也沒有破壞這件事**：它叫的不是 hub，是你自己那台電腦上的
+helper（見[從裝置牆上按投影](#從裝置牆上按投影)），而 helper 跑的就是 CLI 的
+`hangar -p <名稱>`。hub 這一側仍然只有 `list` 與 `scan` 兩個唯讀端點，一個會
+動到手機的路都沒有多。
+
+從網頁「切偵錯」要等 M3／M4，見 [ROADMAP](ROADMAP.md)。**在瀏覽器裡直接看到
+畫面（網頁投影串流）仍然是遠期目標** —— 投影本身維持走 CLI 的 scrcpy，那顆
+按鈕省的是打字，不是換掉投影的方式。
 
 ### 換一台 hub
 
@@ -920,6 +947,135 @@ systemctl --user enable --now hangar-hub
 > 要電量則需要 adb —— 但 hub 本身不需要 scrcpy。
 
 ---
+
+## 從裝置牆上按投影
+
+裝置牆上每張已設定的手機卡片都有一顆投影按鈕。按下去，scrcpy 開在**按按鈕的
+那台電腦**上。
+
+要理解它為什麼長這樣，先看一個限制：**網頁啟動不了本機程式**。所以按鈕不能
+直接叫 hub —— hub 在角落那台常駐機器上，它跑起來的視窗開在那台機器的螢幕上，
+沒有人看得到。要按的那台電腦得自己跑一支小服務，網頁再去叫它：
+
+```bash
+./helper/hangar_helper.py --hub http://192.168.1.5:8787
+```
+
+`--hub` 要跟你**瀏覽器網址列上的那一串一模一樣**（只有那一頁叫得動 helper）。
+它起來之後會印一個帶鑰匙的連結：
+
+```
+hangar helper: http://127.0.0.1:8788/（只有這台電腦連得到）
+在這台電腦的瀏覽器開這個連結一次，裝置牆就記得住這台電腦了：
+  http://192.168.1.5:8787/#helper=ab12…&port=8788
+（鑰匙在 # 後面，不會送到 hub 那邊去）
+```
+
+在那台電腦上開一次那個連結，牆上的按鈕就活了。鑰匙存在那台瀏覽器裡，之後
+直接開裝置牆就好。
+
+### 每台電腦要先做的事
+
+| | 為什麼 |
+|---|---|
+| 裝好 `hangar` + `adb` + `scrcpy`（[安裝](#安裝)那一節） | 按鈕跑的就是 `hangar -p <名稱>`，它省的是打字，不是省掉這些 |
+| 跑過一次 `hangar setup` | **這一步躲不掉**：adb 授權綁的是每台電腦自己的金鑰，要有人在手機上按「一律允許」。任何按鈕都繞不過它 |
+| 跑著 `hangar_helper.py` | 網頁啟動不了本機程式 |
+
+沒 setup 過的手機按下去，按鈕會照實說：
+
+```
+這台電腦上沒有這支手機（work）—— 先在這台電腦跑一次 hangar setup
+```
+
+牆上的名字是 **hub 那台機器**取的，同一支手機在你的電腦上可以叫別的名字：
+按鈕會連**序號**一起送，helper 優先用序號去對，對到了會告訴你它在這台電腦上
+叫什麼。這跟 `hangar scan` 認人用的是同一套順序。
+
+### 它會回答你，不是丟出去就算
+
+按下去之後 helper 會等到其中一件事發生才回話：
+
+| 發生的事 | 牆上顯示 |
+|---|---|
+| process 變成 scrcpy 了 | `投影視窗開了（你的電腦名）` |
+| `hangar` 中途失敗 | 它自己的錯誤與提示，例如 `手機不在線上 —— 去看看它有沒有開機` |
+| 等超過 `--grace`（預設 30 秒） | `還在跑，但等了 30 秒沒看到 scrcpy 接手` |
+
+「真的起來了」判斷的是 `hangar` 最後那一步 `exec scrcpy` 把 process 換掉 ——
+不是解析任何訊息文字，也不是「叫過了就算成功」。
+
+> [!NOTE]
+> 卡片上的「<hub 的機器名> 上有 scrcpy 開著」講的是 **hub 那一台**，不是你
+> （hub 剛好就是你這台時會多寫一句「你這台」）。
+> 同事在自己電腦上按的投影，牆上看不到 —— 那個欄位是 `hangar list` 在 hub 上
+> `pgrep` 出來的。誰在用哪一支還沒有任何佔用機制，三個人同時按同一支會各投各的。
+
+### 三道鎖
+
+「網頁叫得動本機程式」本來就是要小心的事：
+
+| | |
+|---|---|
+| 只綁 `127.0.0.1` | 別台電腦連不到。**沒有 `--bind` 可以改** |
+| Origin 白名單 | 只有 `--hub` 給的那些網址上的頁面叫得動。Origin 是瀏覽器自己填的，頁面上的 JS 偽造不了 |
+| token | 擋掉這台電腦上其他不是從那頁來的呼叫。放在 `~/.config/hangar/helper.token`（0600），換一把用 `--new-token` |
+
+hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到手機的路。按下去走的
+是「你的瀏覽器 → 你自己電腦上的 helper」，hub 全程不知情。
+
+| 參數 | 預設 | |
+|---|---|---|
+| `--hub` | 無（必填） | 裝置牆的網址，可以給多次 |
+| `--hangar` | repo 裡那支 | hangar 執行檔的路徑 |
+| `--port` | `8788` | 只在 `127.0.0.1` 上聽 |
+| `--grace` | 30 秒 | 等投影起來的上限 |
+| `--new-token` | | 換一把新鑰匙（舊連結失效） |
+
+### 按不動的時候
+
+牆上那一行會講是哪一種：
+
+| 牆上寫的 | 多半是 |
+|---|---|
+| 這台電腦得先跑一支 helper | 還沒開過那個帶鑰匙的連結 |
+| 叫不動這台電腦的 helper | helper 沒在跑，**或者 `--hub` 跟這一頁的網址對不起來**（`localhost` 與 `192.168.x.x` 是不同的來源），也可能是瀏覽器不讓網頁連本機 |
+| helper 在跑，但這一頁沒有它的鑰匙 | 換過 token 了，再開一次那個連結 |
+
+> [!IMPORTANT]
+> 瀏覽器對「區網上的頁面連 127.0.0.1」還有自己的一關（Chrome 的 Private
+> Network Access／Local Network Access），新版可能會跳一次權限詢問。helper
+> 該給的標頭都給了，但那個詢問是瀏覽器的 UI，程式這邊關不掉也繞不過。
+> **這一關還沒有在各家瀏覽器的新版上實測過**，第一個試的人請回報。
+
+按不動也不會卡住：helper 不在的時候按鈕會變成**複製指令**，把
+`hangar -p <名稱>` 放進剪貼簿，貼到終端機的結果完全一樣。
+
+### 讓 helper 開機就自己跑
+
+macOS（launchd，存成 `~/Library/LaunchAgents/com.hangar.helper.plist`）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.hangar.helper</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/你/Hangar/helper/hangar_helper.py</string>
+    <string>--hangar</string><string>/usr/local/bin/hangar</string>
+    <string>--hub</string><string>http://192.168.1.5:8787</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+```
+
+`PATH` 那一段不能省：launchd 給的環境很乾淨，`adb` 與 `scrcpy` 在 Homebrew
+底下，找不到的話按鈕會說投影沒起來。
 
 ## 同區網直連（不經 Tailscale）
 

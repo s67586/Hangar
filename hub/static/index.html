@@ -25,13 +25,22 @@
   h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
   .meta { color: var(--dim); font-size: 13px; }
   .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  button.refresh {
+  button.refresh, button.cast {
     font: inherit; font-size: 12.5px; color: var(--fg); background: var(--card);
     border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
   }
-  button.refresh:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
-  button.refresh:disabled { opacity: .55; cursor: default; }
+  button.refresh:hover:not(:disabled), button.cast:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
+  button.refresh:disabled, button.cast:disabled { opacity: .55; cursor: default; }
   .said { font-size: 12.5px; color: var(--dim); }
+  .said.bad { color: var(--bad); } .said.good { color: var(--ok); }
+
+  /* 這台電腦的 helper：在不在、認不認得這一頁 */
+  .helper { margin: -8px 0 18px; font-size: 12.5px; color: var(--dim); }
+  .helper b { color: var(--fg); font-weight: 600; }
+  .helper code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); }
+  .helper.off { color: var(--warn); }
+  .cast-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: 2px; }
+  .cast-row .said { flex: 1 1 100%; }
   .counts b { color: var(--fg); font-weight: 600; }
 
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
@@ -101,6 +110,7 @@
     <button class="refresh" id="refresh" type="button">立即更新</button>
     <span class="said" id="said"></span>
   </div>
+  <div class="helper" id="helper"></div>
   <div id="errors"></div>
   <section class="zone" id="zone-mine">
     <h2 class="zone-h" id="h-mine"></h2>
@@ -139,11 +149,32 @@
       <dt><code>unmanaged</code></dt>
       <dd>掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP 與 MAC —— 機型與電量要等它裝上 agent</dd>
     </dl>
-    <p class="foot">這頁是唯讀的，不會去動手機或設定檔。</p>
+    <p class="foot">電池那一行的<b>插著沒在充</b>是 Android 的 <code>not_charging</code>：
+      線插著、但電沒有在進去（溫度過高、充電保護、或那個孔供電不夠），跟<b>放電中</b>
+      的沒插電是兩回事。停在高電量是正常的保護機制；停在低電量代表那條線或那個孔有問題，
+      所以低電量提醒把它算成「要充電」。</p>
+    <p class="foot">這頁不會去動手機，也不會去改設定檔 —— hub 上沒有任何會動手機的端點。</p>
+
+    <h2 style="margin-top:22px">投影按鈕</h2>
+    <p class="foot">按鈕叫的不是 hub，是<b>你自己這台電腦</b>：hub 跑起來的視窗開在那台常駐機器上，
+      沒有人看得到。所以每台要按的電腦得自己跑一支 helper，按鈕才叫得動它 ——
+      <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，然後照它印的連結進來一次。</p>
+    <p class="foot">第一次投某一支手機，那台電腦仍然要跑過 <code>hangar setup</code>：
+      adb 授權綁的是每台電腦自己的金鑰，按鈕省不掉這一步。</p>
   </section>
 </div>
 
 <script>
+// 電池狀態的中文。這幾個字要跟 hangar 的 battery_status_zh 一模一樣 ——
+// 同一支手機在 CLI 跟網頁上講不同的話，就是叫人自己去對照兩套詞彙。
+//
+// not_charging 特別容易被讀成「沒插電」（那是 discharging），所以不用字面
+// 翻譯，直接寫它真正的意思：線插著、系統決定不充。
+const BATT_ZH = {
+  charging: "充電中", discharging: "放電中",
+  not_charging: "插著沒在充", full: "已充滿", unknown: "未知",
+};
+
 const STATE_ZH = {
   ready: "ready", no_adb: "no_adb", unauthorized: "unauthorized",
   offline: "offline", unmanaged: "unmanaged", unknown: "unknown",
@@ -166,6 +197,181 @@ function row(dt, dd, cls) {
   if (dd === null || dd === undefined || dd === "") return "";
   return `<dt>${esc(dt)}</dt><dd class="${cls || ""}">${esc(dd)}</dd>`;
 }
+
+// ---- 這台電腦的 helper ------------------------------------------------------
+//
+// 這一頁是 hub 給的，但投影要開在「正在看這一頁的那台電腦」上 —— hub 跑起來的
+// scrcpy 視窗開在那台常駐機器的螢幕上，沒有人看得到。網頁又啟動不了本機程式，
+// 所以那台電腦要自己跑一支 helper（helper/hangar_helper.py），這頁再去叫它。
+//
+// 鑰匙是 helper 印出來的連結帶進來的，放在 # 後面 —— # 不會送到伺服器，所以
+// hub 從頭到尾不知道這把鑰匙。存進 localStorage 之後這台瀏覽器就記得了。
+const HELPER_KEY = "hangar.helper";
+const HELPER_PORT = 8788;
+
+function helperCfg() {
+  // localStorage 在無痕視窗或擋了網站資料時會直接丟例外，不能讓它打死整頁
+  try { return JSON.parse(localStorage.getItem(HELPER_KEY) || "null"); }
+  catch (e) { return null; }
+}
+
+function adoptKeyFromHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const token = h.get("helper");
+  if (!token) return false;
+  try {
+    localStorage.setItem(HELPER_KEY, JSON.stringify(
+      { token, port: Number(h.get("port")) || HELPER_PORT }));
+  } catch (e) { /* 記不住就記不住，下面會顯示成沒有 helper */ }
+  // 鑰匙不要留在網址列上，也不要進瀏覽記錄
+  history.replaceState(null, "", location.pathname + location.search);
+  return true;
+}
+adoptKeyFromHash();
+// 牆已經開著的時候才貼上那個連結，是不會重新載入的（只換 # 的導覽不會跑 script）
+// —— 那是最容易發生的用法，所以這裡要接住
+window.addEventListener("hashchange", () => { if (adoptKeyFromHash()) helperTick(); });
+
+// status: none（沒設定過）/ ok / nokey（鑰匙不對）/ down（叫不動）
+let helper = { status: "none" };
+
+async function helperPing() {
+  const cfg = helperCfg();
+  if (!cfg) { helper = { status: "none" }; return; }
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/healthz`,
+      { headers: { Authorization: "Bearer " + cfg.token }, cache: "no-store" });
+    if (r.status === 401) { helper = { status: "nokey" }; return; }
+    const j = await r.json();
+    helper = { status: "ok", host: j.host, profiles: j.profiles || [] };
+  } catch (e) {
+    // 連不上跟「Origin 被擋掉」在瀏覽器裡長得一模一樣（被擋的回應讀不到），
+    // 所以這裡兩個原因都要講，而且要把這一頁的網址原封不動印出來讓人去比對
+    helper = { status: "down" };
+  }
+}
+
+function helperLine() {
+  const el = document.getElementById("helper");
+  const port = (helperCfg() || {}).port || HELPER_PORT;
+  if (helper.status === "ok") {
+    el.className = "helper";
+    el.innerHTML = `這台電腦：<b>${esc(helper.host || "?")}</b>` +
+      `　投影按鈕會在這台上開視窗（它看得到 ${helper.profiles.length} 支設定過的手機）`;
+  } else if (helper.status === "nokey") {
+    el.className = "helper off";
+    el.innerHTML = "這台電腦的 helper 在跑，但這一頁沒有它的鑰匙 —— " +
+      "去 helper 那個視窗，用它印出來的連結再進來一次。";
+  } else if (helper.status === "down") {
+    el.className = "helper off";
+    el.innerHTML = "叫不動這台電腦的 helper：它沒在跑，或者它的 <code>--hub</code> " +
+      `跟這一頁的網址對不起來（這一頁是 <code>${esc(location.origin)}</code>）。`;
+  } else {
+    el.className = "helper";
+    el.innerHTML = "要按投影的話，這台電腦得先跑一支 helper：" +
+      `<code>./helper/hangar_helper.py --hub ${esc(location.origin)}</code>` +
+      "，然後照它印出來的連結進來一次。";
+  }
+}
+
+// 每張卡按鈕底下那句話。key → { busy, msg, bad }
+const says = new Map();
+let byKey = new Map();
+
+function castRow(d) {
+  // 沒有 profile 的卡沒有東西可以投：adb 根本碰不到它們
+  if (!d.name) return "";
+  const st = says.get(d.key) || {};
+  const said = st.msg
+    ? `<span class="said ${st.bad ? "bad" : "good"}">${esc(st.msg)}</span>` : "";
+
+  // 沒有 helper（沒裝、沒跑、或是這個瀏覽器不讓網頁連本機）的時候不要只給一顆
+  // 按不動的按鈕。指令本來就在那裡，複製去貼是完全一樣的結果 —— 這一版的按鈕
+  // 省的是打字，不是省掉那台電腦要有 hangar。
+  if (helper.status !== "ok") {
+    return `<div class="cast-row">
+      <button class="cast" type="button" data-copy="${esc(d.key)}">複製指令</button>
+      ${said || `<span class="said mono">hangar -p ${esc(d.name)}</span>`}
+    </div>`;
+  }
+  return `<div class="cast-row">
+    <button class="cast" type="button" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>${
+      st.busy ? "叫了…" : "投影到這台電腦"}</button>
+    ${said}
+  </div>`;
+}
+
+function copyText(t) {
+  // navigator.clipboard 只在 secure context（https 或 localhost）才有，而裝置牆
+  // 幾乎一定是 http://某個區網 IP —— 所以要留著那條舊路
+  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(t);
+  return new Promise((res, rej) => {
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    ta.remove();
+    ok ? res() : rej(new Error("這個瀏覽器不讓網頁複製"));
+  });
+}
+
+async function copyCmd(key) {
+  const d = byKey.get(key);
+  if (!d) return;
+  const cmd = `hangar -p ${d.name}`;
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
+  catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function cast(key) {
+  const d = byKey.get(key);
+  const cfg = helperCfg();
+  if (!d || !cfg) return;
+  const mine = { busy: true };
+  says.set(key, mine);
+  paint();
+  let st;
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/mirror`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 Authorization: "Bearer " + cfg.token },
+      // 序號一起送：牆上的名字是 hub 那台機器取的，同一支手機在你的電腦上
+      // 很可能叫別的名字。helper 會優先用序號去對。
+      body: JSON.stringify({ profile: d.name, serial: d.device_serial || "" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      // helper 那邊對到的名字跟牆上不一樣時要講出來，不然會以為按錯支
+      const alias = j.profile && j.profile !== d.name ? `，這台電腦上叫 ${j.profile}` : "";
+      st = { msg: `${j.message}（${j.host || "這台"}${alias}）` };
+    } else {
+      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
+                              .filter(Boolean).join(" —— ") };
+    }
+  } catch (e) {
+    st = { bad: true, msg: "叫不動這台電腦的 helper（它還在跑嗎？）" };
+  }
+  says.set(key, st);
+  paint();
+  // 訊息留一陣子再收掉，但別把後來按的那次蓋掉
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+// 卡片每 10 秒會被重畫，所以事件掛在 document 上，不掛在按鈕上
+document.addEventListener("click", (ev) => {
+  const b = ev.target.closest("button.cast");
+  if (!b || b.disabled) return;
+  if (b.dataset.copy) copyCmd(b.dataset.copy);
+  else if (b.dataset.key) cast(b.dataset.key);
+});
 
 function card(d) {
   const b = d.battery;
@@ -199,7 +405,7 @@ function card(d) {
   if (b && typeof b.level === "number") {
     batt = `<div class="batt ${low ? "low" : ""}">
       <span>${b.level}%</span><span class="bar"><i style="width:${b.level}%"></i></span>
-      <span class="meta">${esc(b.status || "")}</span>${
+      <span class="meta" title="${esc(b.status || "")}">${esc(BATT_ZH[b.status] || b.status || "")}</span>${
         b.source === "agent" ? '<span class="tag">agent 回報</span>' : ""
       }${low ? "<span>要充電了</span>" : ""}
     </div>`;
@@ -212,7 +418,15 @@ function card(d) {
   if (d.state === "agent_only")
     notes.push("adb 進不去，這些資料是手機裡的 agent 回報的");
   if (d.profile_ip_stale) notes.push("profile 指著舊 IP（hangar scan --fix-ip 可以修）");
-  if (d.mirroring) notes.push("投影中");
+  // 這個欄位是 hangar 在 hub 那台機器上 pgrep 出來的，不是「有人在投影」——
+  // 同事在自己電腦上按的投影，這裡看不到。名字講出來才認得出是哪一台；
+  // hub 剛好就是你這台的時候（自己的 Mac 跑 hub 很常見）更要講，不然會以為
+  // 是別人開的
+  if (d.mirroring) {
+    const who = (latest && latest.host) || "hub 那台機器";
+    const me = helper.status === "ok" && helper.host === (latest && latest.host);
+    notes.push(`${who}${me ? "（你這台）" : ""} 上有 scrcpy 開著`);
+  }
   for (const e of d.errors || []) if (e.message) notes.push(e.message);
 
   return `<div class="card ${low ? "low" : ""}">
@@ -221,8 +435,13 @@ function card(d) {
     <dl class="rows">${rows}</dl>
     ${batt}
     ${notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}
+    ${castRow(d)}
   </div>`;
 }
+
+// 最後一次從 hub 拿到的資料。畫面要能在「沒有新資料」的時候重畫 —— 按了投影
+// 之後那句話就是這樣長出來的，不必等下一輪輪詢。
+let latest = null;
 
 async function tick() {
   let data;
@@ -245,9 +464,20 @@ async function tick() {
     return;
   }
 
+  latest = data;
+  paint();
+}
+
+// 把目前知道的東西畫出來。tick() 之外，按了投影按鈕也會叫它 —— 所以每張卡的
+// 按鈕狀態都得從 says 這份 Map 長出來，不能存在 DOM 上：10 秒一次的重畫會把
+// DOM 上的狀態抹掉。
+function paint() {
+  const data = latest;
+  if (!data) return;
   const ds = data.devices || [];
   const busy = Object.entries(data.polling || {}).filter(([, v]) => v).map(([k]) => k);
   document.getElementById("meta").textContent =
+    (data.host ? `hub：${data.host}｜` : "") +
     `${data.subnet || "網段未知"}｜list ${ago(data.polled_at.list)}｜scan ${ago(data.polled_at.scan)}` +
     (busy.length ? `｜${busy.join(" / ")} 更新中…` : "");
   // 更新中就把按鈕鎖起來，不然使用者會連按，而掃描那一邊是對整個 /24 送封包
@@ -269,6 +499,8 @@ async function tick() {
   // 一起排的話，區網上隨便一台機器會跟測試機長得一樣重要。
   const mine = ds.filter(d => d.name);
   const others = ds.filter(d => !d.name);
+  byKey = new Map(ds.map(d => [d.key, d]));
+  helperLine();
 
   document.getElementById("h-mine").innerHTML =
     `測試機 <b>${mine.length}</b> 台`;
@@ -308,8 +540,14 @@ btn.addEventListener("click", async () => {
   setTimeout(() => { said.textContent = ""; }, 6000);
 });
 
+// helper 只在這台電腦上，問它很便宜，但也不必比畫面更新還勤
+// 這一行要在 hub 還沒回話的時候就畫得出來，所以它不經過 paint()
+async function helperTick() { await helperPing(); helperLine(); paint(); }
+
 tick();
+helperTick();
 setInterval(tick, 10000);
+setInterval(helperTick, 15000);
 </script>
 </body>
 </html>

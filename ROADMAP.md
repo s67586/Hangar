@@ -46,6 +46,8 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | hub 後端 | Python 3 標準函式庫，零外部相依（跟 hangar 是無相依 bash script 同一個理由） |
 | hub 部署形態 | 一台常駐機器，接在測試機的同一個區網 |
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
+| 網頁投影 | **遠期目標**，不排進 M1–M5。投影目前維持走 CLI 的 scrcpy，網頁只負責切偵錯（見里程碑下面那段） |
+| 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 `helper/`，helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
 
 ## 里程碑
 
@@ -58,7 +60,29 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | |
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
-| M5 | 網頁投影串流；iOS 唯讀 | |
+| M5 | iOS 唯讀 | |
+
+### 遠期：網頁投影串流
+
+排在 M5 之後，**不在目前的路線上**。現在的分工是：投影走 CLI 的 `hangar`
+（scrcpy），網頁只負責看狀態與切偵錯 —— 偵錯開著就用 CLI 投影，要關就從網頁關。
+近期要做的網頁功能到 **M4 的切偵錯**為止。
+
+牆上那顆投影按鈕不算破例：它按下去之後跑的還是 CLI 的 `hangar -p`，只是由
+`helper/hangar_helper.py` 在**按按鈕那台電腦**上代跑（網頁啟動不了本機程式，
+而 hub 跑起來的視窗開在沒有人看的那台機器上）。真正還沒做的是「畫面出現在
+瀏覽器裡」，那才是下面這兩條要先有答案的東西。
+
+會排到遠期不是因為沒價值，是因為它得由 agent 自己走 MediaProjection（不經過
+adb），而那條路上有兩個還沒有解的地方。真的要動它之前，這兩條要先有答案：
+
+| # | 要確認什麼 | 沒解的話 |
+|---|---|---|
+| D1 | MediaProjection 能不能不要每次都要人在手機上按同意（Android 14 起每個 session 都要）；常駐 app 有沒有豁免路徑 | 沒消掉「要人碰手機」，跟現在插 USB 的差別只剩少走幾步 |
+| D2 | FLAG_SECURE 的頁面照樣全黑（見 README 的 FLAG_SECURE 那節），這是系統層排除所有擷取管道，換掉 scrcpy 不會變好 | 加固／金流／密碼頁一樣投不出來，而那常常正是 QA 要看的畫面 |
+
+D1 若是「每次都要人按」，這件事就不是「遠端管得動」，只是「不用開偵錯的投影」
+—— 那時要重新判斷值不值得做。
 
 ## 幾個要記住的現實限制
 
@@ -453,7 +477,12 @@ adb devices                      # 期望：手機回來了，而且 RD 機什�
    （帶 `HANGAR_AGENT_URL` 就打真的手機）。這是刻意的：同一份協定被寫兩次，
    對不起來的地方就是協定沒講清楚的地方。參考實作同時也讓 `hangar` 那一側不用
    有手機就能開發。
-6. **hub 已經站起來了，而且只站在 `--json` 上面。** `hub/hangar_hub.py` 對手機
+6. **helper 也只站在 `--json` 上面。** `helper/hangar_helper.py` 要知道「這台
+   電腦上有哪些手機」，走的是 `hangar list --json`，不是自己去讀
+   `~/.config/hangar/`。設定檔長什麼樣子是 `hangar` 的事 —— 多一個地方認得那個
+   格式，就多一個地方會跟它走岔。它做的事也只有一件：在本機跑 `hangar -p`。
+
+7. **hub 已經站起來了，而且只站在 `--json` 上面。** `hub/hangar_hub.py` 對手機
    的所有知識都來自 `hangar list --json` 與 `hangar scan --json`，沒有自己去碰
    adb 或網路。要多顯示一個欄位是去改 hangar，不是在 hub 裡另外接一條路 ——
    這樣 CLI 與網頁永遠不會各說各話。
@@ -463,7 +492,7 @@ adb devices                      # 期望：手機回來了，而且 RD 機什�
 web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
 RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——這些都還開放。
 
-hub 目前是唯讀的。要從網頁動手機（M4 的切偵錯、M5 的投影）就會有寫入端點，
+hub 目前是唯讀的。要從網頁動手機（M4 的切偵錯）就會有寫入端點，
 那時要決定的是認證怎麼做 —— 現在連「誰在看這頁」都不知道。
 
 agent 的端點目前定為明文 HTTP + token。要不要上 TLS、還是乾脆只在 tailnet 上
@@ -488,7 +517,9 @@ hangar/
 ├── hub/
 │   ├── hangar_hub.py     # 常駐服務：輪詢 hangar --json、合併、開 HTTP
 │   └── static/
-│       └── index.html    # 唯讀裝置牆（純 HTML/CSS/JS，沒有 build 步驟）
+│       └── index.html    # 裝置牆（純 HTML/CSS/JS，沒有 build 步驟）
+├── helper/
+│   └── hangar_helper.py  # 每個人自己電腦上的那一支：牆上的投影按鈕代跑 hangar -p
 └── tests/
     ├── run.sh            # 跑全部測試
     ├── test_core.sh      # 核心流程與錯誤分支
@@ -498,10 +529,12 @@ hangar/
     ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
     ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測、識別合併、--fix-ip
     ├── test_hub.sh       # hub：合併邏輯、HTTP 端點、唯讀保證
+    ├── test_helper.sh    # helper：三道鎖、投影起得來／起不來的回報、序號對名字
     ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
     ├── test_agent_client.sh     # 電腦這一側：enroll、改問 agent、掃描探 5599
     ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / arp / ip / ping / route
     ├── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
+    ├── helperbin/        # 假的 hangar + scrcpy（會真的 exec，helper 靠那個判斷起來了）
     └── agentbin/         # 假的 agent（M3 協定的 Python 參考實作）
 ```
 

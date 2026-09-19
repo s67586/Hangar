@@ -1239,7 +1239,9 @@ battery_status_zh() {
   case "$1" in
     charging)     printf '充電中' ;;
     discharging)  printf '放電中' ;;
-    not_charging) printf '未充電' ;;
+    # 不照字面翻：「未充電」會被讀成「沒插電」，而那是 discharging。
+    # 這個狀態的意思是線插著、但系統決定不充（溫度、充電保護、供電不夠）。
+    not_charging) printf '插著沒在充' ;;
     full)         printf '已充滿' ;;
     *)            printf '未知' ;;
   esac

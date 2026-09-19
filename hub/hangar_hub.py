@@ -27,6 +27,7 @@ import argparse
 import errno
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -37,7 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 4
+API_SCHEMA = 5
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -293,6 +294,10 @@ class State:
                                    "message": e.get("message")})
             return {
                 "schema": API_SCHEMA,
+                # hub 自己跑在哪一台。scrcpy_pids 是 hangar 在**這台機器上**
+                # pgrep 出來的，所以牆上要講「哪台電腦開著視窗」時，答案永遠
+                # 是這個名字 —— 端出來才不用叫人自己去猜 hub 在哪。
+                "host": hostname(),
                 "devices": devices,
                 "subnet": (self.scan_data or {}).get("subnet"),
                 "polled_at": {"list": self.list_at, "scan": self.scan_at},
@@ -301,6 +306,12 @@ class State:
                 "polling": {k: bool(v) for k, v in self.busy.items()},
                 "errors": errors,
             }
+
+
+def hostname():
+    """這台機器叫什麼。只取第一段：在 tailnet 上 gethostname() 常常是一整串 FQDN，
+    而這個字串是要印在牆上給人認「是哪一台」用的。"""
+    return socket.gethostname().split(".")[0] or "?"
 
 
 def poller(state, kind, hangar, args, interval, timeout, stop):

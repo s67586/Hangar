@@ -127,8 +127,15 @@ echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
 assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "4" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "5" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
+
+# scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
+# 視窗」時答案永遠是 hub 自己 —— 所以它得講得出自己叫什麼
+assert "端得出 hub 自己的名字" "True" \
+  "$(q 'str(bool(d.get("host")))' "$(get "$HUB_URL/api/devices")")"
+assert "而且不是一整串 FQDN" "True" \
+  "$(q 'str("." not in d["host"])' "$(get "$HUB_URL/api/devices")")"
 
 echo "=== H2. 兩份資料合成一張裝置牆 ==="
 # work 在 list 與 scan 裡各出現一次，序號一樣 → 只能是一台。
