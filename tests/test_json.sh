@@ -44,7 +44,7 @@ assert "沒有手機時 devices 是空陣列" "0" "$(q '.devices | length' "$out
 echo "=== J2. schema 與必要欄位 ==="
 two_phones
 out="$("$PM" list --json 2>/dev/null)"
-assert "有 schema 版本"      "2"      "$(q '.schema' "$out")"
+assert "有 schema 版本"      "3"      "$(q '.schema' "$out")"
 assert "列出兩支"            "2"      "$(q '.devices | length' "$out")"
 assert "profile 名稱"        "work"   "$(q '.devices[] | select(.profile=="work") | .profile' "$out")"
 assert "adb serial"          "$P1:5555" "$(q '.devices[] | select(.profile=="work") | .adb_serial' "$out")"
@@ -79,6 +79,40 @@ assert "--probe 的 sdk 是數字"  "number" "$(q '.devices[0].android.sdk | typ
 [ "$(grep -c . "$MOCK_STATE/ts_log" 2>/dev/null || echo 0)" -gt 0 ] \
   && { echo "  PASS  --probe 時才去 ping"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  --probe 沒有觸發 ping"; FAIL=$((FAIL+1)); }
+
+echo "=== J4b. MAC：adb 問手機自己要（scan 只認得出同一段區網的） ==="
+two_phones
+out="$("$PM" list --json 2>/dev/null)"
+assert "沒 --probe 時 mac 是 null" "null" "$(q '.devices[0].mac' "$out")"
+
+out="$("$PM" list --json --probe 2>/dev/null)"
+assert "--probe 取得 MAC"     "f0:5c:77:aa:bb:01" \
+  "$(q '.devices[] | select(.profile=="work") | .mac.address' "$out")"
+assert "兩支的 MAC 不一樣"    "f0:5c:77:aa:bb:02" \
+  "$(q '.devices[] | select(.profile=="test") | .mac.address' "$out")"
+assert "帶著 SSID"            "TestNet" "$(q '.devices[0].mac.ssid' "$out")"
+# f0 的 locally-administered 位元是 0 → 這是出廠的硬體位址
+assert "認得出不是隨機的"      "false"  "$(q '.devices[0].mac.randomized' "$out")"
+
+# Android 10+ 的隨機 MAC：第一個 byte 帶 locally-administered 位元
+echo "f2:5c:77:aa:bb:01" > "$MOCK_STATE/wifi_mac"
+out="$("$PM" list --json --probe 2>/dev/null)"
+assert "認得出隨機 MAC"        "true"   "$(q '.devices[0].mac.randomized' "$out")"
+rm -f "$MOCK_STATE/wifi_mac"
+
+# 應用程式拿不到 MAC 時 Android 回這一組假的，不能當成真的位址端出去
+echo "02:00:00:00:00:00" > "$MOCK_STATE/wifi_mac"
+out="$("$PM" list --json --probe 2>/dev/null)"
+assert "擋掉 02:00:… 那組假的" "null" "$(q '.devices[0].mac' "$out")"
+rm -f "$MOCK_STATE/wifi_mac"
+
+# 沒連 Wi-Fi 就沒有 MAC，但其他欄位照樣要出得來
+touch "$MOCK_STATE/wifi_off"
+out="$("$PM" list --json --probe 2>/dev/null)"
+assert "沒連 Wi-Fi 時 mac 是 null" "null" "$(q '.devices[0].mac' "$out")"
+assert "沒連 Wi-Fi 也還有機型" "Pixel 7 Pro" \
+  "$(q '.devices[] | select(.profile=="work") | .model' "$out")"
+rm -f "$MOCK_STATE/wifi_off"
 
 echo "=== J5. 電量 ==="
 two_phones

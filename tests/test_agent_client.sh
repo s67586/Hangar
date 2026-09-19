@@ -95,7 +95,7 @@ echo "=== C3. list --json：adb 通的時候，agent 只是附帶資訊 ==="
 env_one; : > "$MOCK_STATE/fake.apk"
 "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
 out="$("$PM" list --json --probe 2>/dev/null)"
-assert "schema 往上加了"     "2" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "3" "$(q '.schema' "$out")"
 assert "adb 通就用 adb 的資料" "adb" "$(q '.devices[0].battery.source' "$out")"
 assert "電量是 adb 那份"      "78" "$(q '.devices[0].battery.level' "$out")"
 assert "agent 也看得到"       "true" "$(q '.devices[0].agent.reachable' "$out")"

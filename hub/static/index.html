@@ -392,7 +392,11 @@ function card(d) {
   rows += row("Android", d.android ? `${d.android.release || "?"}（SDK ${d.android.sdk || "?"}）` : null);
   rows += row("IP", d.ip, "mono");
   if (d.lan_ip && d.lan_ip !== d.ip) rows += row("區網 IP", d.lan_ip, "mono");
-  rows += row("MAC", d.mac ? d.mac + (d.mac_randomized ? "（隨機）" : "") : null, "mono");
+  // 隨機 MAC 是「每個 SSID 一組」，所以標隨機的時候把 SSID 一起寫出來 ——
+  // 不然下次換個 Wi-Fi 再看到另一組，會以為是換了一台手機
+  const macNote = d.mac_randomized
+    ? "（隨機" + (d.mac_ssid ? "・" + d.mac_ssid : "") + "）" : "";
+  rows += row("MAC", d.mac ? d.mac + macNote : null, "mono");
   rows += row("序號", d.device_serial, "mono");
   rows += row("連線方式", d.transport);
   rows += row("5555", d.adb_port === "open" ? "開著" : d.adb_port === "closed" ? "關著" : null);

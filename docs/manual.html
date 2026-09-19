@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 7a73242f2966</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 eb54025491db</span><span class="fact">hangar v1.2.0</span></div>
 </header>
 
 <div class="cols">
@@ -272,7 +272,7 @@ hangar scan --json</pre></div>
 hangar list --json              <span class="c"># 只出便宜的欄位（快）</span>
 hangar list --json --probe      <span class="c"># 連線路徑、機型、電量一起取（慢）</span></pre></div>
 <div class="term"><div class="bar">json</div><pre>{
-  &quot;schema&quot;: 2,
+  &quot;schema&quot;: 3,
   &quot;devices&quot;: [
     {
       &quot;profile&quot;: &quot;work&quot;,
@@ -286,6 +286,8 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
       &quot;adb_state&quot;: &quot;device&quot;,
       &quot;path&quot;: { &quot;kind&quot;: &quot;direct&quot;, &quot;latency_ms&quot;: 12 },
       &quot;model&quot;: &quot;Pixel 7&quot;,
+      &quot;mac&quot;: { &quot;address&quot;: &quot;f0:5c:77:df:c7:43&quot;, &quot;randomized&quot;: false,
+               &quot;vendor&quot;: null, &quot;ssid&quot;: &quot;Cathay&quot; },
       &quot;android&quot;: { &quot;release&quot;: &quot;14&quot;, &quot;sdk&quot;: 34 },
       &quot;battery&quot;: { &quot;level&quot;: 78, &quot;status&quot;: &quot;discharging&quot;, &quot;temperature_c&quot;: 27.5,
                    &quot;source&quot;: &quot;adb&quot; },
@@ -299,9 +301,11 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
 <ul><li><strong><code>errors</code> 帶 code，不只帶訊息。</strong> 「手機重開機了」這種判斷不能只活在印給人看的 中文句子裡，不然程式沒辦法據以決策。目前的 code：</li></ul>
 <p>| code | 意思 | |---|---| | <code>transport_down</code> | 傳輸層本身沒通（例如 Tailscale 沒開） | | <code>peer_not_found</code> | 連線方式裡找不到這台裝置 | | <code>peer_offline</code> | 找得到但離線 | | <code>adb_port_closed</code> | <strong>連得到機器但 5555 不通 → 通常是手機重開過</strong> | | <code>adb_unreachable</code> | 上層就不通了，adb 自然連不上（不是重開機） | | <code>unauthorized</code> | 這台電腦還沒被手機授權 | | <code>adb_offline</code> | adb 卡在 offline |</p>
 <p><code>adb_port_closed</code> 只在「連得到機器但埠不通」時才出現。傳輸層整個沒通的時候 不會一起報它 —— 否則讀 code 的人會去叫使用者插 USB，方向完全錯了。</p>
-<ul><li><strong>慢欄位預設略過。</strong> <code>path</code> 要跑一次 <code>tailscale ping</code>，<code>model</code> / <code>battery</code> 各要一次 adb 往返。十支手機全取會跑很久，所以 <code>list --json</code> 預設把它們留成 <code>null</code>， 要完整資料才加 <code>--probe</code>。<code>status --json</code> 只有一支，一律完整探測。</li></ul>
+<ul><li><strong>慢欄位預設略過。</strong> <code>path</code> 要跑一次 <code>tailscale ping</code>，<code>model</code> / <code>battery</code> / <code>mac</code> 各要一次 adb 往返。十支手機全取會跑很久，所以 <code>list --json</code> 預設把它們留成 <code>null</code>，要完整資料才加 <code>--probe</code>。<code>status --json</code> 只有一支，一律完整探測。</li></ul>
 <ul><li><strong><code>--json</code> 時 stdout 只有 JSON。</strong> 所有給人看的訊息都轉到 stderr， 所以 <code>hangar list --json 2&gt;/dev/null | jq .</code> 一定解析得過。</li></ul>
 <ul><li><strong><code>battery.source</code> 與 <code>agent</code> 是 schema 2 加的。</strong> 前者說這筆電量是誰量的 （<code>adb</code> 還是 <code>agent</code>），後者在沒入伍也叫不動時是 <code>null</code> —— 細節見 <a href="#手機端-agent">手機端 agent</a>。</li></ul>
+<ul><li><strong><code>mac</code> 是 schema 3 加的，跟 <code>scan</code> 那份不是同一個來源。</strong> 這裡的 MAC 是 <code>adb shell cmd wifi status</code> 問手機自己要的，所以走 tailscale 或人在別的 Wi-Fi 上的手機也有 —— <code>hangar scan</code> 是對某個網段送 ARP，那些手機它永遠對不上。 （不讀 <code>/sys/class/net/wlan0/address</code> 或 <code>ip link</code> 是因為 Android 11 起這兩條路 對 shell 使用者都是 <code>Permission denied</code>。）</li></ul>
+<p><code>randomized</code> 為 <code>true</code> 表示這是 Android 10+ 每個 SSID 一組的隨機 MAC，換個 Wi-Fi 就換一組 —— <code>ssid</code> 記的就是「這組 MAC 屬於哪個網路」。<strong>別拿它當長期 識別碼</strong>，那是 <code>device_serial</code> 的工作。兩邊都有 MAC 時 hub 用 <code>scan</code> 那一份： ARP 換來的才是 hub 實際看到的那張網卡。</p>
 <ul><li><strong><code>device_serial</code> 是穩定識別碼。</strong> IP 會變、連線方式會換，硬體序號不會。 這是日後要認出「同一支手機」時唯一可靠的欄位。</li></ul>
 <ul><li><strong>退出碼不代表手機的狀態。</strong> <code>list --json</code> / <code>status --json</code> 只要指令本身跑完 就回 <code>0</code>，即使手機離線、adb 連不上也一樣 —— 那些是 <code>errors</code> 裡的內容， 不是「指令失敗」。要判斷一支手機現在能不能用，請讀 JSON：</li></ul>
 <p>``<code>bash hangar status --json -p work 2&gt;/dev/null \ | jq -e &#x27;.devices[0].adb_state == &quot;device&quot;&#x27; &gt;/dev/null &amp;&amp; echo 可用 </code>``</p>
@@ -446,7 +450,7 @@ cd .. &amp;&amp; hangar enroll -p work          <span class="c"># 手機插 USB�
 <p><code>agent.reachable</code> 是 <code>false</code> 而 profile 又有 token，意思是<strong>這支手機入伍過但 agent 現在叫不動</strong> —— 現在可能還沒事（adb 還通），但下次重開機就會失聯。 裝置牆會把這件事標出來。</p>
 <p><code>hangar scan</code> 也會順手探每台的 5599：探得到就在 <code>agent</code> 欄標「有」。它先用 <code>nc</code> 測埠、只對有回應的發 HTTP —— 一個 /24 上大多數東西沒有 agent，每台都等 逾時的話掃描會從幾秒變成幾分鐘。</p>
 <h3 id="限制">限制</h3>
-<ul><li><strong>需要 <code>curl</code></strong>（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。</li><li><strong>agent 拿不到自己的 MAC</strong>（Android 6+ 對一般 app 回傳假的），所以 MAC 仍然 只能由 <code>hangar scan</code> 從 ARP 表學。</li><li><strong>agent 也拿不到硬體序號</strong>（Android 10+ 要特權權限），所以序號是入伍時由電腦 這一側寫進去的 —— 兩邊因此一定是同一個字串。</li><li><strong>切偵錯還沒做</strong>（M4）。現在 <code>POST /hangar/v1/adb</code> 一律回 501。</li></ul>
+<ul><li><strong>需要 <code>curl</code></strong>（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。</li><li><strong>agent 拿不到自己的 MAC</strong>（Android 6+ 對一般 app 回傳假的 <code>02:00:00:00:00:00</code>），所以 agent 回報的資料裡沒有這一欄。MAC 由另外兩條路 取得：<code>hangar scan</code> 從 ARP 表學，或 <code>hangar list --probe</code> 用 <code>adb shell cmd wifi status</code> 問 —— 後者連 adb 通得到但不在同一段區網的手機 也拿得到。</li><li><strong>agent 也拿不到硬體序號</strong>（Android 10+ 要特權權限），所以序號是入伍時由電腦 這一側寫進去的 —— 兩邊因此一定是同一個字串。</li><li><strong>切偵錯還沒做</strong>（M4）。現在 <code>POST /hangar/v1/adb</code> 一律回 501。</li></ul>
 </section>
 <section id="hub裝置牆網頁">
 <h2 id="hub裝置牆網頁">hub（裝置牆網頁）</h2>
@@ -555,7 +559,7 @@ WantedBy=default.target</pre></div>
 <p>按下去之後 helper 會等到其中一件事發生才回話：</p>
 <div class="tw"><table><tr><th>發生的事</th><th>牆上顯示</th></tr><tr><td class="wrap">process 變成 scrcpy 了</td><td class="wrap"><code>投影視窗開了（你的電腦名）</code></td></tr><tr><td class="wrap"><code>hangar</code> 中途失敗</td><td class="wrap">它自己的錯誤與提示，例如 <code>手機不在線上 —— 去看看它有沒有開機</code></td></tr><tr><td class="wrap">等超過 <code>--grace</code>（預設 30 秒）</td><td class="wrap"><code>還在跑，但等了 30 秒沒看到 scrcpy 接手</code></td></tr></table></div>
 <p>「真的起來了」判斷的是 <code>hangar</code> 最後那一步 <code>exec scrcpy</code> 把 process 換掉 —— 不是解析任何訊息文字，也不是「叫過了就算成功」。</p>
-<div class="note"><p>卡片上的「這支手機的畫面正開在 &lt;hub 的機器名&gt; 上」講的是 <strong>hub 那一台電腦</strong>，不是你 （hub 剛好就是你這台時會多寫一句「你這台電腦」）。 同事在自己電腦上按的投影，牆上看不到 —— 那個欄位是 <code>hangar list</code> 在 hub 上 <code>pgrep</code> 出來的。誰在用哪一支還沒有任何佔用機制，三個人同時按同一支會各投各的。</p></div>
+<div class="note"><p>卡片上的「這支手機的畫面正開在 &lt;hub 的機器名&gt; 上」講的是 <strong>hub 那一台電腦</strong>， 不是你（hub 剛好就是你這台時會多寫一句「你這台電腦」）。 同事在自己電腦上按的投影，牆上看不到 —— 那個欄位是 <code>hangar list</code> 在 hub 上 <code>pgrep</code> 出來的。誰在用哪一支還沒有任何佔用機制，三個人同時按同一支會各投各的。</p></div>
 <h3 id="三道鎖">三道鎖</h3>
 <p>「網頁叫得動本機程式」本來就是要小心的事：</p>
 <div class="tw"><table><tr><td class="wrap">只綁 <code>127.0.0.1</code></td><td class="wrap">別台電腦連不到。<strong>沒有 <code>--bind</code> 可以改</strong></td></tr><tr><td class="wrap">Origin 白名單</td><td class="wrap">只有 <code>--hub</code> 給的那些網址上的頁面叫得動。Origin 是瀏覽器自己填的，頁面上的 JS 偽造不了</td></tr><tr><td class="wrap">token</td><td class="wrap">擋掉這台電腦上其他不是從那頁來的呼叫。放在 <code>~/.config/hangar/helper.token</code>（0600），換一把用 <code>--new-token</code></td></tr></table></div>
@@ -723,7 +727,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 7a73242f2966</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 eb54025491db</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>
