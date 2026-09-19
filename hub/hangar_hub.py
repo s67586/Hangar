@@ -24,6 +24,7 @@
 """
 
 import argparse
+import errno
 import json
 import os
 import subprocess
@@ -455,7 +456,32 @@ def main(argv=None):
         t.start()
 
     Handler.state = state
-    httpd = ThreadingHTTPServer((args.bind, args.port), Handler)
+    try:
+        httpd = ThreadingHTTPServer((args.bind, args.port), Handler)
+    except OSError as e:
+        # 「埠被佔住」是最常發生的一種：多半是自己上一個 hub 還活著。
+        # 這種事丟一整串 traceback 出來沒有幫到任何人 —— 它看起來像程式壞了，
+        # 但實際上要做的事很明確。
+        if e.errno == errno.EADDRINUSE:
+            print("%s:%d 已經有人在用了" % (args.bind, args.port), file=sys.stderr)
+            print("  多半是另一個 hangar hub 還在跑：", file=sys.stderr)
+            print("    pgrep -fl hangar_hub.py       # 看是不是它", file=sys.stderr)
+            print("    pkill -f hangar_hub.py        # 收掉", file=sys.stderr)
+            print("  或者換一個埠：--port 8788", file=sys.stderr)
+        elif e.errno == errno.EACCES:
+            print("沒有權限綁 %s:%d（1024 以下的埠要 root）" % (args.bind, args.port),
+                  file=sys.stderr)
+            print("  換一個大一點的：--port 8787", file=sys.stderr)
+        elif e.errno in (errno.EADDRNOTAVAIL, errno.ENOENT):
+            print("綁不上 %s —— 這台機器上沒有這個位址" % args.bind, file=sys.stderr)
+            print("  只給自己看用 --bind 127.0.0.1，要給同事看用 --bind 0.0.0.0",
+                  file=sys.stderr)
+        else:
+            print("開不了 %s:%d：%s" % (args.bind, args.port, e), file=sys.stderr)
+        stop.set()
+        for ev in state.wake.values():
+            ev.set()
+        return 1
     host, port = httpd.socket.getsockname()[:2]
     print("hangar hub: http://%s:%d/" % (host, port), flush=True)
     if args.bind not in ("127.0.0.1", "localhost", "::1"):

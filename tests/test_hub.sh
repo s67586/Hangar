@@ -386,5 +386,31 @@ assert "GET 不觸發輪詢"    "404" "$(code1 "$(get_code "$HUB_URL/api/refresh
 assert "不認得的 what 回 400" "400" "$(code1 "$(post "$HUB_URL/api/refresh?what=nonesuch")")"
 hub_stop
 
+echo "=== H13. 起不來的時候要講人話，不要丟 traceback ==="
+# 實際踩到的：埠被自己上一個 hub 佔著，Python 吐一整串 traceback。
+# 那看起來像程式壞了，但要做的事其實很明確。
+hub_env
+hub_start || { echo "  FAIL  第一個 hub 起不來"; FAIL=$((FAIL+1)); }
+port="$(printf '%s' "$HUB_URL" | sed -E 's|.*:([0-9]+)$|\1|')"
+out="$(python3 "$HUB" --hangar "$FAKE" --bind 127.0.0.1 --port "$port" 2>&1)"
+rc=$?
+assert "離開碼非 0"        "1" "$rc"
+nocheck "不可以有 traceback" "Traceback" "$out"
+check  "要說埠被佔住了"     "已經有人在用" "$out"
+check  "並且教人怎麼查"     "pgrep" "$out"
+check  "也給另一條路"       "--port" "$out"
+hub_stop
+
+# 1024 以下的埠不是「被佔住」，是權限 —— 兩件事要分得出來
+out="$(python3 "$HUB" --hangar "$FAKE" --bind 127.0.0.1 --port 80 2>&1)"
+nocheck "權限問題也不丟 traceback" "Traceback" "$out"
+check   "說得出是權限"             "權限" "$out"
+nocheck "不可以誤報成被佔住"       "已經有人在用" "$out"
+
+# 綁一個這台機器上沒有的位址，又是第三種事
+out="$(python3 "$HUB" --hangar "$FAKE" --bind 10.99.99.99 2>&1)"
+nocheck "位址問題也不丟 traceback" "Traceback" "$out"
+check   "說得出是位址的問題"       "沒有這個位址" "$out"
+
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

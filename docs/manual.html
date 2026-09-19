@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 6d26202c0241</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 04266abff073</span><span class="fact">hangar v1.2.0</span></div>
 </header>
 
 <div class="cols">
@@ -454,6 +454,14 @@ hangar scan --json           區網上看得到的所有東西：IP、MAC、廠�
 <p>有最小間隔擋著：<code>list</code> 5 秒、<code>scan</code> 30 秒（掃描會對 254 個位址各送一個封包， 按住不放不該變成洗 ping）。太快就回 <code>429</code> 並告訴你還要等幾秒：</p>
 <div class="term"><div class="bar">json</div><pre>{ &quot;ok&quot;: false, &quot;refreshed&quot;: [], &quot;throttled&quot;: [ { &quot;source&quot;: &quot;scan&quot;, &quot;retry_after_s&quot;: 22.0 } ] }</pre></div>
 <p><code>GET /api/refresh</code> 是 404 —— 觸發器不該掛在 GET 上，不然任何會預抓網址的東西 都會去戳一次手機。</p>
+<h3 id="起不來的時候">起不來的時候</h3>
+<p>最常見的是埠被自己上一個 hub 佔著：</p>
+<div class="term"><div class="bar">shell</div><pre>127.0.0.1:8787 已經有人在用了
+  多半是另一個 hangar hub 還在跑：
+    pgrep -fl hangar_hub.py       # 看是不是它
+    pkill -f hangar_hub.py        # 收掉
+  或者換一個埠：--port 8788</pre></div>
+<p><code>--port 80</code> 這種 1024 以下的埠會說是權限問題，<code>--bind</code> 給了這台機器上沒有的 位址則會說是位址問題 —— 三件事分開講，因為要做的事完全不同。</p>
 <h3 id="那頁上的狀態是什麼意思">那頁上的狀態是什麼意思</h3>
 <div class="tw"><table><tr><td class="wrap"><code>ready</code></td><td class="wrap">adb 是 <code>device</code>，可以 build 也可以投影</td></tr><tr><td class="wrap"><code>no_adb</code></td><td class="wrap">連得到，但 adb 不是 <code>device</code> —— 幾乎都是手機重開機把 5555 弄丟了</td></tr><tr><td class="wrap"><code>unauthorized</code></td><td class="wrap">這台 hub 還沒被那支手機授權過（要有人在手機上按允許）</td></tr><tr><td class="wrap"><code>offline</code></td><td class="wrap">手機不在線上</td></tr><tr><td class="wrap"><code>unknown</code></td><td class="wrap">只從掃描看到它，<code>hangar list</code> 那邊沒資料（那次輪詢多半失敗了）</td></tr><tr><td class="wrap"><code>unmanaged</code></td><td class="wrap">掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP、MAC、廠商</td></tr></table></div>
 <p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序（見上面的 <a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
@@ -650,7 +658,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 6d26202c0241</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 04266abff073</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>
