@@ -414,11 +414,20 @@ check  "並且教人怎麼查"     "pgrep" "$out"
 check  "也給另一條路"       "--port" "$out"
 hub_stop
 
-# 1024 以下的埠不是「被佔住」，是權限 —— 兩件事要分得出來
-out="$(python3 "$HUB" --hangar "$FAKE" --bind 127.0.0.1 --port 80 2>&1)"
-nocheck "權限問題也不丟 traceback" "Traceback" "$out"
-check   "說得出是權限"             "權限" "$out"
-nocheck "不可以誤報成被佔住"       "已經有人在用" "$out"
+# 1024 以下的埠不是「被佔住」，是權限 —— 兩件事要分得出來。
+#
+# 但 root 沒有這個限制：它綁得上 80 埠，hub 會正常起來然後一直跑，下面這個
+# $(...) 就永遠等不到它結束。那不是一個 FAIL，是整套測試卡死到被 CI 的逾時砍掉
+# ——而 test_hub.sh 後面還有四個 suite，會一起變成「沒跑到」。root 容器是很常見
+# 的 CI 環境，所以這裡要主動跳過，不能賭沒人用 root 跑。
+if [ "$(id -u)" -eq 0 ]; then
+  echo "  SKIP  權限那三項（root 綁得上 80 埠，這個情境在 root 底下重現不了）"
+else
+  out="$(python3 "$HUB" --hangar "$FAKE" --bind 127.0.0.1 --port 80 2>&1)"
+  nocheck "權限問題也不丟 traceback" "Traceback" "$out"
+  check   "說得出是權限"             "權限" "$out"
+  nocheck "不可以誤報成被佔住"       "已經有人在用" "$out"
+fi
 
 # 綁一個這台機器上沒有的位址，又是第三種事
 out="$(python3 "$HUB" --hangar "$FAKE" --bind 10.99.99.99 2>&1)"
