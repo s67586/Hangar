@@ -4,5 +4,9 @@
 # 打包產物
 *.tar.gz
 
+# Python 編譯產物（hub 被 import 時會產生，例如測試裡直接叫 merge()）
+__pycache__/
+*.pyc
+
 # 測試暫存（tests/run.sh 預設寫到 $TMPDIR，這裡是保險）
 hangar-test/
