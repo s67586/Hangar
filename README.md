@@ -222,6 +222,7 @@ hangar scan                        # 掃預設路由所在的那個 /24
 hangar scan --subnet 192.168.1     # 指定網段（也吃 192.168.1.0/24 或網段內任一 IP）
 hangar scan --no-ping              # 不做 ping sweep，只讀現有的 ARP 表（快很多）
 hangar scan --no-probe             # 不去測每台的 5555
+hangar scan --fix-ip               # 把「認得出、但 profile 指著舊 IP」的那幾支修好
 hangar scan --json
 ```
 
@@ -262,8 +263,19 @@ MAC 記進 profile 的 `PHONE_MAC`，之後就改用 MAC 認人。**
 
 ```
  !!  「work」就是 192.168.1.90 這台（MAC 一樣），但 profile 還指著 192.168.1.77
-    改 ~/.config/hangar/profiles/work.conf 裡的 PHONE_IP，或在路由器上把這支手機綁固定 IP
+    hangar scan --fix-ip 直接改掉，或在路由器上把這支手機綁固定 IP
 ```
+
+`--fix-ip` 就是照著做：把那幾支的 `PHONE_IP` 改成現在的位址。
+
+```
+ ok  「work」的 PHONE_IP 已更新：192.168.1.77 → 192.168.1.90
+```
+
+它只動 MAC 對得上的那幾支 —— 那代表這支手機已經被正面認出來，改 IP 是把 profile
+修對而不是猜。第一次靠 IP 對上的（`matched_by` 是 `ip`）本來就沒有東西可修，
+`tailscale` profile 存的 100.x 也不會被改成區網位址。沒有 `--fix-ip` 的話
+`hangar scan` 除了補記 `PHONE_MAC` 之外不會動你的設定檔。
 
 反過來，IP 對得上但 MAC 跟記住的不一樣時，那台**不會**被算成你的手機 ——
 那個位址現在是別台機器的。`hangar scan --json` 裡的 `matched_by` 就是在講
@@ -386,7 +398,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "subnet": "192.168.1.0/24",
   "hosts": [
     {
@@ -398,7 +410,8 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "profile": "work",
       "matched_by": "mac",
       "device_serial": "R58M12345AB",
-      "profile_ip_stale": false
+      "profile_ip_stale": false,
+      "profile_ip_fixed": false
     }
   ],
   "errors": []
@@ -412,7 +425,10 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 `matched_by` 是「這台是靠什麼認出來的」：`mac`（可信）或 `ip`（第一次，還沒記過
 MAC）。`device_serial` 來自對上的那個 profile，是跨 IP、跨連線方式都不變的主鍵。
 `profile_ip_stale` 為 `true` 表示 MAC 認得出是同一支手機，但那個 profile 的
-`PHONE_IP` 已經是舊的了 —— 投影會連到錯的地方。
+`PHONE_IP` 已經是舊的了 —— 投影會連到錯的地方。加上 `--fix-ip` 的話這種會被
+就地改好，那一台的 `profile_ip_fixed` 會是 `true`、`profile_ip_stale` 回到
+`false`。**要注意 `--fix-ip` 會寫設定檔**，所以固定輪詢 `scan --json` 的程式
+（例如之後的 hub）別無條件帶著它跑。
 scan 自己的 error code：
 
 | code | 意思 |
@@ -592,7 +608,7 @@ chmod 600 ~/.config/hangar/profiles/deskphone.conf
 | 需要的工具 | `tailscale` | `nc`（macOS 內建） |
 | 連線路徑 | `tailscale ping` 判斷 direct / relay | 一律當 direct，所以預設走高畫質 |
 | 節點名 | 有，`PHONE_HOST` 用得到 | 沒有，`PHONE_HOST` 留空即可 |
-| 位址會不會變 | Tailscale IP 基本上不變 | DHCP 換位址就要改 `PHONE_IP`，建議在路由器上綁固定 IP。`hangar scan` 靠 MAC 認得出換過位址的手機並提醒你改 |
+| 位址會不會變 | Tailscale IP 基本上不變 | DHCP 換位址就要改 `PHONE_IP`，建議在路由器上綁固定 IP。`hangar scan` 靠 MAC 認得出換過位址的手機，`hangar scan --fix-ip` 直接改好 |
 | 手機重開機後 | 一樣要重跑 `setup`（5555 消失） | 一樣要重下一次 `adb tcpip 5555` |
 
 > **區網直連沒有 ACL 這層保護。** `adb tcpip 5555` 在區網上是全開的，

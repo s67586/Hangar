@@ -155,7 +155,7 @@ require_deps() {
 #     都會帶一份），沒有就老實說廠商不知道
 #   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
 
-SCAN_SCHEMA=2
+SCAN_SCHEMA=3
 SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
 case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
 SCAN_SUBNET=""        # 要掃的 /24 前三段，例如 192.168.1
@@ -165,12 +165,13 @@ SCAN_ERRORS=""        # 一行一筆的「code|給人看的訊息」，格式與
 SCAN_MATCHES=""       # 對回 profile 的結果："ip|profile|靠什麼對上的(mac/ip)"
 SCAN_LEARNED=""       # 這次新記住 MAC 的："profile|mac"
 SCAN_STALE=""         # profile 指著舊 IP 的："profile|舊 IP|現在的 IP"
+SCAN_FIXED=""         # --fix-ip 真的改掉的："profile|舊 IP|新 IP"
 
 scan_add_error() { SCAN_ERRORS="${SCAN_ERRORS}${1}|${2}"$'\n'; }
 
 scan_reset() {
   SCAN_HOSTS=""; SCAN_ERRORS=""; SCAN_SUBNET=""; SCAN_SELF_IP=""
-  SCAN_MATCHES=""; SCAN_LEARNED=""; SCAN_STALE=""
+  SCAN_MATCHES=""; SCAN_LEARNED=""; SCAN_STALE=""; SCAN_FIXED=""
 }
 
 # 讀 ARP 表要用哪個工具。arp 兩邊都有（macOS 內建、Linux 的 net-tools），
@@ -456,6 +457,23 @@ scan_match_profiles() {
       break
     done <<< "$ptab"
   done <<< "$SCAN_HOSTS"
+}
+
+# scan_fix_stale_ips —— 把 SCAN_STALE 裡那些 profile 的 PHONE_IP 改成現在的位址。
+#
+# 只動「MAC 對得上」的那些：那代表這支手機已經被正面認出來，改 IP 是把 profile
+# 修對，不是猜。第一次靠 IP 對上的（matched_by=ip）本來就沒有 IP 可修。
+# 掃描平常是唯讀的，所以這件事要 --fix-ip 明講才會做。
+scan_fix_stale_ips() {
+  local n oldip newip
+  SCAN_FIXED=""
+  while IFS='|' read -r n oldip newip; do
+    [ -n "$n" ] || continue
+    profile_set_field "$n" PHONE_IP "$newip" \
+      && SCAN_FIXED="${SCAN_FIXED}${n}|${oldip}|${newip}"$'\n'
+  done <<< "$SCAN_STALE"
+  # 修過就不再是 stale —— 後面的輸出一律看這兩個變數，不用各自再判斷一次
+  SCAN_STALE=""
 }
 
 # scan_match_for_ip <ip> → "<profile>|<mac 或 ip>"；沒對上就 return 1
@@ -2128,6 +2146,8 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
                                   --probe 只對 --json 有作用，人類版表格欄位是固定的
   hangar scan [--subnet 192.168.1] [--no-ping] [--no-probe]
                                    掃描區網，列出看得到的裝置（不限已設定的）
+  hangar scan --fix-ip            順便把「認得出是同一支手機、但 profile 指著
+                                   舊 IP」的那幾支修好
   hangar scan --json              同上，輸出 JSON
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
@@ -2186,7 +2206,7 @@ EOF
 # 這是 hub 裝置牆的資料來源：它不管手機有沒有設定過、有沒有開偵錯，只回答
 # 「區網上有這些東西」。已經設定過的會標出 profile 名稱，方便對照。
 cmd_scan() {
-  local want="" do_sweep=1 do_probe=1
+  local want="" do_sweep=1 do_probe=1 do_fix=0
   JSON_MODE=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2197,6 +2217,7 @@ cmd_scan() {
       --subnet=*)  want="${1#--subnet=}"; shift ;;
       --no-ping)   do_sweep=0; shift ;;
       --no-probe)  do_probe=0; shift ;;
+      --fix-ip)    do_fix=1; shift ;;
       *) die "scan 不認得參數：$1" ;;
     esac
   done
@@ -2218,26 +2239,29 @@ cmd_scan() {
 
   scan_run "$want" "$do_sweep" "$do_probe"
   local rc=$?
+  [ "$do_fix" -eq 1 ] && scan_fix_stale_ips
 
   if [ "$JSON_MODE" -eq 1 ]; then
-    local errs objs="" ip mac vendor rnd adb m prof kind dser stale
+    local errs objs="" ip mac vendor rnd adb m prof kind dser stale fixed
     errs="$(printf '%s' "$SCAN_ERRORS" | jq -R -s -c \
       '[split("\n")[] | select(length > 0) | split("|")
         | { code: .[0], message: (.[1:] | join("|")) }]')"
     while IFS='|' read -r ip mac vendor rnd adb; do
       [ -n "$ip" ] || continue
       m="$(scan_match_for_ip "$ip")" || m=""
-      prof="${m%%|*}"; kind="${m##*|}"; dser=""; stale=0
+      prof="${m%%|*}"; kind="${m##*|}"; dser=""; stale=0; fixed=0
       if [ -n "$prof" ]; then
         # hub 要的主鍵是序號，不是 IP 也不是 MAC。掃描自己拿不到，但 profile
         # 裡有 —— 對上了就一起附出去，hub 才能把 scan 與 list 兩份資料合起來。
         dser="$(profile_field "$prof" DEVICE_SERIAL)" || dser=""
         case $'\n'"$SCAN_STALE" in *$'\n'"${prof}|"*) stale=1 ;; esac
+        case $'\n'"$SCAN_FIXED" in *$'\n'"${prof}|"*) fixed=1 ;; esac
       fi
       objs="${objs}$(jq -n \
         --arg ip "$ip" --arg mac "$mac" --arg vendor "$vendor" \
         --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" \
-        --arg kind "$kind" --arg dser "$dser" --argjson stale "$stale" '
+        --arg kind "$kind" --arg dser "$dser" --argjson stale "$stale" \
+        --argjson fixed "$fixed" '
         def s: if . == "" then null else . end;
         { ip:               $ip,
           mac:              ($mac | s),
@@ -2247,7 +2271,8 @@ cmd_scan() {
           profile:          ($prof | s),
           matched_by:       ($kind | s),
           device_serial:    ($dser | s),
-          profile_ip_stale: ($stale == 1) }')"$'\n'
+          profile_ip_stale: ($stale == 1),
+          profile_ip_fixed: ($fixed == 1) }')"$'\n'
     done <<< "$SCAN_HOSTS"
     printf '%s' "$objs" | jq -s \
       --argjson schema "$SCAN_SCHEMA" \
@@ -2338,8 +2363,13 @@ cmd_scan() {
   local oldip newip
   while IFS='|' read -r n oldip newip; do
     [ -n "$n" ] || continue
+    ok "「${n}」的 PHONE_IP 已更新：${oldip} → ${newip}"
+  done <<< "$SCAN_FIXED"
+  [ -n "$SCAN_FIXED" ] && echo
+  while IFS='|' read -r n oldip newip; do
+    [ -n "$n" ] || continue
     warn "「${n}」就是 ${newip} 這台（MAC 一樣），但 profile 還指著 ${oldip}"
-    hint "改 $(profile_path "$n") 裡的 PHONE_IP，或在路由器上把這支手機綁固定 IP"
+    hint "hangar scan --fix-ip 直接改掉，或在路由器上把這支手機綁固定 IP"
     echo
   done <<< "$SCAN_STALE"
 }

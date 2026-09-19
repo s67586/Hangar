@@ -11,6 +11,7 @@ export MOCK_STATE="${TMPDIR:-/tmp}/hangar-test/state" PATH="$SP/mockbin:$PATH" \
 PASS=0; FAIL=0
 
 check()  { if printf '%s' "$3" | grep -q -- "$2"; then printf '  PASS  %s\n' "$1"; PASS=$((PASS+1)); else printf '  FAIL  %s\n        期望: %s\n        實際: %s\n' "$1" "$2" "$(printf '%s' "$3"|tr '\n' '|')"; FAIL=$((FAIL+1)); fi; }
+nocheck(){ if printf '%s' "$3" | grep -q -- "$2"; then printf '  FAIL  %s（不該出現 %s）\n' "$1" "$2"; FAIL=$((FAIL+1)); else printf '  PASS  %s\n' "$1"; PASS=$((PASS+1)); fi; }
 assert() { if [ "$2" = "$3" ]; then printf '  PASS  %s\n' "$1"; PASS=$((PASS+1)); else printf '  FAIL  %s（期望「%s」實際「%s」）\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi; }
 q()      { printf '%s' "$2" | jq -r "$1" 2>/dev/null; }
 lines()  { grep -c . "$1" 2>/dev/null || echo 0; }
@@ -42,7 +43,7 @@ out="$("$PM" scan --json 2>/dev/null)"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
   && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
-assert "有 schema 版本"      "2"                "$(q '.schema' "$out")"
+assert "有 schema 版本"      "3"                "$(q '.schema' "$out")"
 assert "掃的網段寫在結果裡"  "192.168.1.0/24"   "$(q '.subnet' "$out")"
 assert "hosts 是陣列"        "array"            "$(q '.hosts | type' "$out")"
 assert "errors 是空陣列"     "0"                "$(q '.errors | length' "$out")"
@@ -283,7 +284,7 @@ assert "沒換 IP 的不該被標成 stale" "false" \
 out="$("$PM" scan 2>&1)"
 check "人類模式要講舊 IP 已經不對" "192.168.1.250" "$out"
 check "也要講手機現在在哪"         "就是 192.168.1.77 這台" "$out"
-check "並且指出 profile 要改哪裡"  "PHONE_IP"   "$out"
+check "並且講得出怎麼修"          "scan --fix-ip" "$out"
 
 # (3) 舊 IP 被別台機器拿走時，不可以把那台誤認成這支手機
 lan_env
@@ -347,6 +348,54 @@ rows="$(bash -c '
   TRANSPORT=lan transport_list_candidates
 ' 2>/dev/null)"
 check "候選清單標出 profile 名稱" "|work|192.168.1.77|android|online" "$rows"
+
+echo "=== S13. --fix-ip：認得出是同一支手機，就把 profile 的 IP 修對 ==="
+# 掃描平常是唯讀的，改設定檔要 --fix-ip 明講才做。
+lan_env
+mkprofile work 192.168.1.250 a4:03:e7:01:02:03
+out="$("$PM" scan --json 2>/dev/null)"
+assert "沒給旗標就不動 profile" "192.168.1.250" "$(pfield work PHONE_IP)"
+assert "而且照樣標成 stale"     "true" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_stale' "$out")"
+assert "沒給旗標 fixed 是 false" "false" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_fixed' "$out")"
+
+lan_env
+mkprofile work 192.168.1.250 a4:03:e7:01:02:03
+out="$("$PM" scan --json --fix-ip 2>/dev/null)"
+assert "--fix-ip 把 IP 改成現在的"  "192.168.1.77" "$(pfield work PHONE_IP)"
+assert "修好了就不再是 stale"       "false" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_stale' "$out")"
+assert "而且說得出這支被修過"       "true" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_fixed' "$out")"
+assert "MAC 沒被動到"               "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
+assert "改檔案不影響 JSON 純淨度"   "3" "$(q '.schema' "$out")"
+# 只改該改的那一行，其他欄位不能被洗掉
+assert "TRANSPORT 還在"             "lan"  "$(pfield work TRANSPORT)"
+
+# 沒有 MAC 只靠 IP 對上的，本來就沒有 IP 可修，不該亂動別人
+lan_env
+mkprofile work 192.168.1.77
+mkprofile other 192.168.1.1
+"$PM" scan --json --fix-ip >/dev/null 2>&1
+assert "IP 本來就對的不會被改" "192.168.1.77" "$(pfield work PHONE_IP)"
+assert "別支也不會被波及"      "192.168.1.1"  "$(pfield other PHONE_IP)"
+
+# tailscale profile 的 100.x 不是「舊 IP」，不可以被 --fix-ip 改成區網 IP
+lan_env
+printf 'PHONE_HOST="pixel"\nPHONE_IP="100.101.102.77"\nTRANSPORT="tailscale"\nPHONE_MAC="a4:03:e7:01:02:03"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/pixel.conf"
+"$PM" scan --json --fix-ip >/dev/null 2>&1
+assert "tailscale profile 的 IP 不准動" "100.101.102.77" "$(pfield pixel PHONE_IP)"
+
+# 人類模式要講改了什麼；修過一次之後再掃就沒有東西可報了
+lan_env
+mkprofile work 192.168.1.250 a4:03:e7:01:02:03
+out="$("$PM" scan --fix-ip 2>&1)"
+check "說出改了哪一支"   "「work」的 PHONE_IP 已更新" "$out"
+check "說出新舊位址"     "192.168.1.250 → 192.168.1.77" "$out"
+out="$("$PM" scan --fix-ip 2>&1)"
+nocheck "已經修好就不再重複報" "PHONE_IP 已更新" "$out"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
