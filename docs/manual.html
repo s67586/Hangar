@@ -555,7 +555,7 @@ WantedBy=default.target</pre></div>
 <p>按下去之後 helper 會等到其中一件事發生才回話：</p>
 <div class="tw"><table><tr><th>發生的事</th><th>牆上顯示</th></tr><tr><td class="wrap">process 變成 scrcpy 了</td><td class="wrap"><code>投影視窗開了（你的電腦名）</code></td></tr><tr><td class="wrap"><code>hangar</code> 中途失敗</td><td class="wrap">它自己的錯誤與提示，例如 <code>手機不在線上 —— 去看看它有沒有開機</code></td></tr><tr><td class="wrap">等超過 <code>--grace</code>（預設 30 秒）</td><td class="wrap"><code>還在跑，但等了 30 秒沒看到 scrcpy 接手</code></td></tr></table></div>
 <p>「真的起來了」判斷的是 <code>hangar</code> 最後那一步 <code>exec scrcpy</code> 把 process 換掉 —— 不是解析任何訊息文字，也不是「叫過了就算成功」。</p>
-<div class="note"><p>卡片上的「&lt;hub 的機器名&gt; 上有 scrcpy 開著」講的是 <strong>hub 那一台</strong>，不是你 （hub 剛好就是你這台時會多寫一句「你這台」）。 同事在自己電腦上按的投影，牆上看不到 —— 那個欄位是 <code>hangar list</code> 在 hub 上 <code>pgrep</code> 出來的。誰在用哪一支還沒有任何佔用機制，三個人同時按同一支會各投各的。</p></div>
+<div class="note"><p>卡片上的「這支手機的畫面正開在 &lt;hub 的機器名&gt; 上」講的是 <strong>hub 那一台電腦</strong>，不是你 （hub 剛好就是你這台時會多寫一句「你這台電腦」）。 同事在自己電腦上按的投影，牆上看不到 —— 那個欄位是 <code>hangar list</code> 在 hub 上 <code>pgrep</code> 出來的。誰在用哪一支還沒有任何佔用機制，三個人同時按同一支會各投各的。</p></div>
 <h3 id="三道鎖">三道鎖</h3>
 <p>「網頁叫得動本機程式」本來就是要小心的事：</p>
 <div class="tw"><table><tr><td class="wrap">只綁 <code>127.0.0.1</code></td><td class="wrap">別台電腦連不到。<strong>沒有 <code>--bind</code> 可以改</strong></td></tr><tr><td class="wrap">Origin 白名單</td><td class="wrap">只有 <code>--hub</code> 給的那些網址上的頁面叫得動。Origin 是瀏覽器自己填的，頁面上的 JS 偽造不了</td></tr><tr><td class="wrap">token</td><td class="wrap">擋掉這台電腦上其他不是從那頁來的呼叫。放在 <code>~/.config/hangar/helper.token</code>（0600），換一把用 <code>--new-token</code></td></tr></table></div>

@@ -416,14 +416,15 @@ function card(d) {
   if (d.state === "agent_only")
     notes.push("adb 進不去，這些資料是手機裡的 agent 回報的");
   if (d.profile_ip_stale) notes.push("profile 指著舊 IP（hangar scan --fix-ip 可以修）");
-  // 這個欄位是 hangar 在 hub 那台機器上 pgrep 出來的，不是「有人在投影」——
-  // 同事在自己電腦上按的投影，這裡看不到。名字講出來才認得出是哪一台；
-  // hub 剛好就是你這台的時候（自己的 Mac 跑 hub 很常見）更要講，不然會以為
-  // 是別人開的
+  // 這個欄位是 hangar 在 hub 那台電腦上 pgrep 出來的，不是「有人在投影」——
+  // 同事在自己電腦上按的投影，這裡看不到。話講成「手機的畫面開在某台電腦上」
+  // 是因為只寫機器名的話，讀的人得自己推敲那個名字跟這支手機是什麼關係。
+  // 名字講出來才認得出是哪一台；hub 剛好就是你這台的時候（自己的 Mac 跑 hub
+  // 很常見）更要講，不然會以為是別人開的
   if (d.mirroring) {
-    const who = (latest && latest.host) || "hub 那台機器";
+    const who = (latest && latest.host) || "跑 hub 的那台電腦";
     const me = helper.status === "ok" && helper.host === (latest && latest.host);
-    notes.push(`${who}${me ? "（你這台）" : ""} 上有 scrcpy 開著`);
+    notes.push(`這支手機的畫面正開在 ${who}${me ? "（你這台電腦）" : ""} 上`);
   }
   for (const e of d.errors || []) if (e.message) notes.push(e.message);
 
