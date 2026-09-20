@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 ca22dc1497a3</span><span class="fact">hangar v1.3.0</span></div>
+  <div class="facts"><span class="fact">README sha256 5163570bfaac</span><span class="fact">hangar v1.4.0</span></div>
 </header>
 
 <div class="cols">
@@ -142,6 +142,7 @@ hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
+hangar usb                  # 這台電腦上 USB 接著的（含沒按授權的）
 hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
 hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自己開回來）
@@ -236,6 +237,7 @@ hangar forget work      <span class="c"># 刪掉該手機的設定</span>
 hangar all              <span class="c"># 同時投影所有手機</span>
 hangar all --screen-on  <span class="c"># 同上，但不關手機螢幕</span>
 hangar scan             <span class="c"># 掃描區網，列出看得到的裝置</span>
+hangar usb              <span class="c"># 這台電腦上 USB 接著的裝置（含 unauthorized）</span>
 hangar enroll           <span class="c"># 用 USB 或網路 ADB 安裝並入伍 agent</span>
 hangar enroll -p work --reinstall   <span class="c"># 只換一支新版 APK（升級舊版 agent）</span>
 hangar ring -p work     <span class="c"># 響鈴識別一支在線上的手機</span>
@@ -515,13 +517,16 @@ cd .. &amp;&amp; hangar enroll -p work --reinstall</pre></div>
 </section>
 <section id="hub裝置牆網頁">
 <h2 id="hub裝置牆網頁">hub（裝置牆網頁）</h2>
-<p>一台常駐機器跑 <code>hub/hangar_hub.py</code>，定期問 hangar 兩件事，然後把結果合成一頁 裝置牆：</p>
+<p>一台常駐機器跑 <code>hub/hangar_hub.py</code>，定期問 hangar 三件事，然後把結果合成一頁 裝置牆：</p>
 <div class="term"><div class="bar">shell</div><pre>hangar list --json --probe   已經設定過的手機：adb 狀態、機型、電量
-hangar scan --json           區網上看得到的所有東西：IP、MAC、廠商、5555</pre></div>
+hangar scan --json           區網上看得到的所有東西：IP、MAC、廠商、5555
+hangar usb  --json           插在 hub 這台機器上的 USB 裝置（含未授權的）</pre></div>
+<p>三份資料用 <code>DEVICE_SERIAL</code> &gt; MAC &gt; IP 的順序合併，所以同一支手機不會變成三張卡。</p>
+<div class="note"><p><strong>第三份為什麼需要</strong>：一支剛到的手機插著 USB、偵錯開了、<code>adb devices</code> 也是 <code>device</code>，在牆上卻是匿名的一列 —— 因為 <code>list</code> 只看 profile，而 <code>scan</code> 探的是 TCP 5555，那要 <code>hangar setup</code> 才會打開。<strong>授權的是 USB 那把金鑰，跟 5555 是 兩件不相干的事。</strong> 沒有這一份的話，「我明明都開好了」會讓人往錯的方向查很久。</p><p>看得到的是<strong>插在 hub 那台機器上</strong>的 USB，不是插在每個人筆電上的 —— 跟掃描 是同一個視角問題（掃的也一直是 hub 所在的網段）。</p></div>
 <div class="term"><div class="bar">bash</div><pre>./hub/hangar_hub.py                       <span class="c"># 只綁 127.0.0.1:8787</span>
 ./hub/hangar_hub.py --bind 0.0.0.0 --port 8787   <span class="c"># 要給同事看才這樣開</span></pre></div>
 <p>用的是 Python 3 的標準函式庫，<strong>沒有任何套件要裝</strong> —— 常駐機器上不該為了看一頁 網頁而先裝一套生態系，跟 <code>hangar</code> 自己是一支無相依 bash script 是同一個理由。</p>
-<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--bind</code> / <code>--port</code></td><td class="wrap"><code>127.0.0.1</code> / <code>8787</code></td><td class="wrap">預設只有本機看得到</td></tr><tr><td class="wrap"><code>--list-interval</code></td><td class="wrap">30 秒</td><td class="wrap">多久問一次 <code>hangar list</code></td></tr><tr><td class="wrap"><code>--scan-interval</code></td><td class="wrap">300 秒</td><td class="wrap">多久掃一次區網（ping 整個 /24 不便宜）</td></tr><tr><td class="wrap"><code>--subnet</code></td><td class="wrap">自動偵測</td><td class="wrap">同 <code>hangar scan --subnet</code></td></tr><tr><td class="wrap"><code>--no-scan</code></td><td class="wrap"></td><td class="wrap">完全不掃區網，只看已設定的手機</td></tr></table></div>
+<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--bind</code> / <code>--port</code></td><td class="wrap"><code>127.0.0.1</code> / <code>8787</code></td><td class="wrap">預設只有本機看得到</td></tr><tr><td class="wrap"><code>--list-interval</code></td><td class="wrap">30 秒</td><td class="wrap">多久問一次 <code>hangar list</code></td></tr><tr><td class="wrap"><code>--scan-interval</code></td><td class="wrap">300 秒</td><td class="wrap">多久掃一次區網（ping 整個 /24 不便宜）</td></tr><tr><td class="wrap"><code>--usb-interval</code></td><td class="wrap">15 秒</td><td class="wrap">多久問一次本機 USB（只問本機 adb，很便宜）</td></tr><tr><td class="wrap"><code>--subnet</code></td><td class="wrap">自動偵測</td><td class="wrap">同 <code>hangar scan --subnet</code></td></tr><tr><td class="wrap"><code>--no-scan</code></td><td class="wrap"></td><td class="wrap">完全不掃區網，只看已設定的手機</td></tr><tr><td class="wrap"><code>--no-usb</code></td><td class="wrap"></td><td class="wrap">不回報這台機器上 USB 接著的裝置</td></tr></table></div>
 <p>端點：<code>/</code>（裝置牆）、<code>/api/devices</code>（合併後的 JSON）、<code>/api/refresh</code>（POST，見下面）、<code>/healthz</code>。</p>
 <h3 id="多久更新一次">多久更新一次</h3>
 <p>三層，各自獨立：</p>
@@ -785,7 +790,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 ca22dc1497a3</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 5163570bfaac</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>

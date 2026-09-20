@@ -29,6 +29,7 @@ hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
+hangar usb                  # 這台電腦上 USB 接著的（含沒按授權的）
 hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
 hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自己開回來）
@@ -285,6 +286,7 @@ hangar forget work      # 刪掉該手機的設定
 hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
 hangar scan             # 掃描區網，列出看得到的裝置
+hangar usb              # 這台電腦上 USB 接著的裝置（含 unauthorized）
 hangar enroll           # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar enroll -p work --reinstall   # 只換一支新版 APK（升級舊版 agent）
 hangar ring -p work     # 響鈴識別一支在線上的手機
@@ -934,13 +936,24 @@ agent 現在叫不動** —— 現在可能還沒事（adb 還通），但下次
 
 ## hub（裝置牆網頁）
 
-一台常駐機器跑 `hub/hangar_hub.py`，定期問 hangar 兩件事，然後把結果合成一頁
+一台常駐機器跑 `hub/hangar_hub.py`，定期問 hangar 三件事，然後把結果合成一頁
 裝置牆：
 
 ```
 hangar list --json --probe   已經設定過的手機：adb 狀態、機型、電量
 hangar scan --json           區網上看得到的所有東西：IP、MAC、廠商、5555
+hangar usb  --json           插在 hub 這台機器上的 USB 裝置（含未授權的）
 ```
+
+三份資料用 `DEVICE_SERIAL` > MAC > IP 的順序合併，所以同一支手機不會變成三張卡。
+
+> **第三份為什麼需要**：一支剛到的手機插著 USB、偵錯開了、`adb devices` 也是
+> `device`，在牆上卻是匿名的一列 —— 因為 `list` 只看 profile，而 `scan` 探的是
+> TCP 5555，那要 `hangar setup` 才會打開。**授權的是 USB 那把金鑰，跟 5555 是
+> 兩件不相干的事。** 沒有這一份的話，「我明明都開好了」會讓人往錯的方向查很久。
+>
+> 看得到的是**插在 hub 那台機器上**的 USB，不是插在每個人筆電上的 —— 跟掃描
+> 是同一個視角問題（掃的也一直是 hub 所在的網段）。
 
 ```bash
 ./hub/hangar_hub.py                       # 只綁 127.0.0.1:8787
@@ -956,8 +969,10 @@ hangar scan --json           區網上看得到的所有東西：IP、MAC、廠�
 | `--bind` / `--port` | `127.0.0.1` / `8787` | 預設只有本機看得到 |
 | `--list-interval` | 30 秒 | 多久問一次 `hangar list` |
 | `--scan-interval` | 300 秒 | 多久掃一次區網（ping 整個 /24 不便宜） |
+| `--usb-interval` | 15 秒 | 多久問一次本機 USB（只問本機 adb，很便宜） |
 | `--subnet` | 自動偵測 | 同 `hangar scan --subnet` |
 | `--no-scan` | | 完全不掃區網，只看已設定的手機 |
+| `--no-usb` | | 不回報這台機器上 USB 接著的裝置 |
 
 端點：`/`（裝置牆）、`/api/devices`（合併後的 JSON）、`/api/refresh`（POST，見下面）、`/healthz`。
 

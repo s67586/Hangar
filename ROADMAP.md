@@ -62,7 +62,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
-| M2c | 裝置牆的第三個資料來源：`hangar usb --json`，讓插在 hub 那台上的手機（含 `unauthorized`）看得見 | 待做（見「[USB 也是一個來源](#usb-也是一個來源m2c插著的手機在牆上是隱形的)」）|
+| M2c | 裝置牆的第三個資料來源：`hangar usb --json`，讓插在 hub 那台上的手機（含 `unauthorized`）看得見 | **已完成**（見「[USB 也是一個來源](#usb-也是一個來源m2c插著的手機在牆上是隱形的)」）|
 | M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成，而且在 Pixel 4 / Android 13 上實機驗過** |
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | **已完成**（電腦端兩條路都有測試；手機端的 `NsdManager` 廣播還沒在實機上看過 —— 見待確認清單 B3）|
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
@@ -100,10 +100,11 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 
 | | 現在是 | 在哪裡 |
 |---|---|---|
-| `hangar` 版本 | `1.3.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2437` |
+| `hangar` 版本 | `1.4.0` | `hangar:20` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2453` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
-| hub `/api/devices` | schema **7** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
+| `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:181` |
+| hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
 | agent 協定 | schema **3**，版本 `0.1.2` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
@@ -195,8 +196,10 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 
 ## USB 也是一個來源（M2c）：插著的手機在牆上是隱形的
 
-> **待做。** 症狀是「新手機掃不到」，但掃描沒有壞 —— 是裝置牆的資料來源
-> 少了一個，而少掉的那個正好就是「新手機剛到」的那個。
+> **已完成**（`hangar` v1.4.0 / `USB_SCHEMA` 1 / hub `API_SCHEMA` 8）。
+> 症狀是「新手機掃不到」，但掃描沒有壞 —— 是裝置牆的資料來源少了一個，
+> 而少掉的那個正好就是「新手機剛到」的那個。下面留著當時的分析，因為那個
+> 認知落差（「開了偵錯」≠「牆上看得見」）本身不會因為多一個來源就消失。
 
 一支剛到的 Samsung A34：USB 插著、偵錯開了、`adb devices` 是 `device`（授權過了），
 在裝置牆上找不到。實際查下來，它其實**掃到了**，是那一列匿名的
@@ -237,6 +240,24 @@ profile）與 `hangar scan --json`（區網 ARP）。**`adb devices` 不在裡�
 現在是查不出來的 —— 而 `merge()` 的排序表裡 `unauthorized` 本來就排第一位，
 位置早就留好了。這一格也正好是「待實測 2」（hub 代按那個對話框）要盯的狀態，
 兩條線看的是同一個東西。
+
+### 做出來之後長這樣
+
+`hangar usb --json` 吐 `{schema, devices[], errors[]}`，每一筆有 `adb_serial`、
+`adb_state`、`device_serial`、`model`、`profile`。`unauthorized` 的手機問不到
+`ro.serialno`，但 adb 的 USB serial 本來就是硬體序號，拿它當 `device_serial`
+仍然對得起 merge —— **而「問不到」正是那一格最該被看見的時候，不能因此讓它
+從牆上消失**。
+
+一個併不起來的情況，已知並且刻意留著：一支還沒 setup 的手機**同時**會在掃描
+那份裡出現一列匿名的 ARP 紀錄（隨機 MAC、沒有廠商、5555 關著）。那一列沒有
+序號也沒有任何跟 USB 這份共通的鍵，所以牆上會同時有兩張卡。硬猜「同一個網段
+上唯一一台匿名的就是它」會在有兩支的時候配錯人，寧可多一張卡。
+
+牆上那張 USB 卡給的動作是**複製 `hangar setup` 指令**，不是「註冊 agent」——
+helper 的 `/enroll` 吃的是 profile 名稱，而這支手機還沒有 profile；它缺的第一步
+是 `setup`，而 `setup` 是互動的（要選裝置、可能要輸入配對碼），不是 helper 代跑
+得了的。不假裝有一顆按得完的按鈕。
 
 ### 三個刻意不做的決定
 
