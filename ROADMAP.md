@@ -1149,8 +1149,8 @@ CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是�
 
 | 腿 | 跑什麼 | 抓得到什麼 |
 |---|---|---|
-| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（746 項），不是 SKIP |
-| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（738 項）|
+| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（799 項），不是 SKIP |
+| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（791 項）|
 | `macos` | `macos-latest` | 修 Linux 的時候不要把開發機那邊弄壞 |
 
 三條腿都設 `timeout-minutes`。預設是 6 小時，而這個專案已經有過「卡住而不是失敗」
