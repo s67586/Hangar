@@ -17,7 +17,7 @@
 #
 set -uo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 ADB_PORT=5555
 # 手機端 agent 聽的埠（見 ROADMAP 的「M3 協定」）
 AGENT_PORT_DEFAULT=5599
@@ -1104,10 +1104,21 @@ agent_gen_token() {
 }
 
 # APK 要從哪裡找。--apk 指定的優先，其次是這個 repo 裡 build 出來的那份。
+# APK 在 repo 裡，所以要找的是「這支腳本真正放在哪」，不是「它被叫的時候叫做什
+# 麼」。hangar_install.sh 裝的是 symlink（/usr/local/bin/hangar → repo/hangar），
+# 不解開就會去 /usr/local/bin/agent/ 底下找 —— 照著 README 裝的人一跑 enroll 就
+# 被告知「找不到 APK」，而 APK 明明就在。macOS 的 readlink 沒有 -f，自己走完
+# 整條鏈（symlink 可以指向另一個 symlink，也可以是相對路徑）。
 agent_find_apk() {
   [ -n "${1:-}" ] && { [ -f "$1" ] && printf '%s' "$1" && return 0; return 1; }
-  local here f
-  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local here f src dir
+  src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+  done
+  here="$(cd -P "$(dirname "$src")" && pwd)"
   for f in "$here"/agent/app/build/outputs/apk/release/*.apk \
            "$here"/agent/app/build/outputs/apk/debug/*.apk; do
     [ -f "$f" ] && { printf '%s' "$f"; return 0; }
@@ -2931,10 +2942,23 @@ enroll_handoff() { # <port>
           --es name "$PROFILE" 2>&1)"
   if printf '%s' "$out" | grep -q 'already_enrolled'; then
     err "這支手機已經入伍過了"
-    hint "只是想換一支新版 agent 的話（舊版不會響鈴之類的），用："
-    hint "  hangar enroll -p $PROFILE --reinstall"
-    hint "真的要重新入伍才先清掉它的狀態："
-    hint "  adb -s $SERIAL shell pm clear com.hangar.agent"
+    # 同一個 already_enrolled，底下是兩種完全不同的處境，給錯提示會把人帶去
+    # 一條走不通的路。分界線是「這台電腦手上有沒有 token」。
+    if [ -n "${AGENT_TOKEN:-}" ]; then
+      hint "只是想換一支新版 agent 的話（舊版不會響鈴之類的），用："
+      hint "  hangar enroll -p $PROFILE --reinstall"
+      hint "真的要重新入伍才先清掉它的狀態："
+      hint "  adb -s $SERIAL shell pm clear com.hangar.agent"
+    else
+      # token 遺失、但 adb 還通。token 存在 app 的私有資料裡，adb 這一側讀不
+      # 回來（release 版連 run-as 都沒有），所以沒有「把它要回來」這條路 ——
+      # 只有清掉重來。那件事有代價，所以它是一個要自己打出來的旗標。
+      hint "手機記得自己入伍過，但這台電腦手上沒有它的 token"
+      hint "profile 重建過、或這支手機本來就是別台電腦入伍的，都會長這樣"
+      hint "要讓這台電腦接手（等同 pm clear 之後重新入伍一次）："
+      hint "  hangar enroll -p $PROFILE --takeover"
+      hint "代價：手機上的入伍狀態會被清掉，其他電腦手上的 token 一起失效"
+    fi
     exit 1
   fi
   printf '%s' "$out" | grep -q 'data="enrolled"' || {
@@ -2955,6 +2979,64 @@ enroll_wake_agent() {
   sleep 2
 }
 
+# 清掉手機上那支 agent 的入伍狀態。這是「手機已經入伍，但沒有任何一台電腦手上
+# 有它的 token」唯一的出路 —— 而它需要 adb，也就是需要有人實體碰過這支手機。
+#
+# 為什麼不在 app 那一側加一個「重新入伍」廣播：EnrollReceiver 必須是 exported
+# 的（發廣播的是 shell uid，不是那支 app），同一支手機上的任何 app 都發得出那
+# 個廣播。真有那條路，等於誰都能把別人的手機搶走。擋法就是「第一次入伍者得
+# 之」，而 pm clear 需要 adb —— 那道門檻本身就是保護，不要繞過它，要走進去。
+enroll_pm_clear() {
+  local out
+  out="$(run_timeout 30 adb -s "$SERIAL" shell pm clear com.hangar.agent 2>&1)" || true
+  if printf '%s' "$out" | grep -qi 'success'; then
+    ok "手機上的入伍狀態已清掉"
+    return 0
+  fi
+  printf '%s\n' "$out"
+  die "清不掉手機上的入伍狀態（pm clear 沒有回 Success）"
+}
+
+# 接手要當面點頭。它拿走的是「其他電腦問這支手機的能力」，而那件事在這台電腦
+# 上完全看不出來：沒有任何一份資料知道還有誰入伍過這支手機。看不見的代價，只
+# 能用問的。
+enroll_confirm_takeover() { # <有沒有帶 --yes>
+  echo
+  warn "接手會清掉手機上那支 agent 的入伍狀態"
+  hint "其他也入伍過這支手機的電腦，手上的 token 會一起失效，要重新入伍才問得到它"
+  hint "只是想換一支新版 APK 的話，要的是 --reinstall，不是這個"
+  if [ "$1" -eq 1 ]; then
+    info "帶了 --yes，不再問一次"
+    return 0
+  fi
+  # helper 那條路（網頁按鈕）是沒有終端機的。這裡刻意不預設「沒問到就當同意」：
+  # 沒有人點頭就不動手機，要嘛回到終端機，要嘛自己把 --yes 打出來。
+  [ -t 0 ] || die "沒有終端機可以確認。確定的話：hangar enroll -p ${PROFILE} --takeover --yes"
+  local ans
+  printf '%s' "  確定要讓這台電腦接手「${PROFILE}」？輸入 yes ＞ " >&2
+  read -r ans || die "已取消"
+  [ "$(printf '%s' "$ans" | tr -d '[:space:]')" = "yes" ] || die "已取消"
+}
+
+# 收尾：用剛寫進 profile 的那組 token 直接問一次 agent。正規入伍與接手共用 ——
+# 兩條路寫進去的都是新 token，驗證方式一模一樣，只有最後那句話不同。
+enroll_verify() { # <成功時收尾那一句>
+  agent_reset
+  if agent_probe "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN"; then
+    ok "agent ${AGENT_VERSION:-} 回應正常"
+    [ -n "$DEV_MODEL" ]     && kv "機型" "$DEV_MODEL"
+    [ -n "$BATTERY_LEVEL" ] && kv "電量" "$(battery_human)"
+    echo
+    ok "$1"
+    return 0
+  fi
+  echo
+  warn "profile 寫好了，但現在問不到 agent（${PHONE_IP}:${AGENT_PORT}）"
+  hint "手機與這台電腦要在同一個區網；也可能是 agent 還沒起來"
+  hint "在手機上打開一次 Hangar Agent，然後：hangar status -p $PROFILE"
+  return 1
+}
+
 # 能力宣告攤成人看得懂的一行。欄位是空的 = 那個版本根本沒有宣告這件事。
 agent_can_human() {
   local out=""
@@ -2965,7 +3047,7 @@ agent_can_human() {
 }
 
 cmd_enroll() {
-  local want="" apk_arg="" port="$AGENT_PORT_DEFAULT" reinstall=0
+  local want="" apk_arg="" port="$AGENT_PORT_DEFAULT" reinstall=0 takeover=0 assume_yes=0
   while [ $# -gt 0 ]; do
     case "$1" in
       -p)          want="${2:-}"; shift 2 ;;
@@ -2974,9 +3056,18 @@ cmd_enroll() {
       # 舊版 agent 升級用。名字刻意不是 --force：它不繞過任何保護，它是
       # 「同一支手機、同一組 token，只把 APK 換成新的」。
       --reinstall) reinstall=1; shift ;;
+      # token 遺失、但 adb 還通：手機上那支 agent 還入伍著，這台電腦卻沒有
+      # 它的 token。名字是「接手」而不是 --force：它不繞過手機端那道
+      # 「第一次入伍者得之」，它是光明正大地把狀態清掉再重新入伍一次。
+      --takeover)  takeover=1; shift ;;
+      -y|--yes)    assume_yes=1; shift ;;
       *) die "enroll 不認得參數：$1" ;;
     esac
   done
+
+  if [ "$reinstall" -eq 1 ] && [ "$takeover" -eq 1 ]; then
+    die "--reinstall 與 --takeover 不能一起用：一個刻意不動 token，一個把它整組換掉"
+  fi
 
   migrate_legacy
   resolve_profile "$want"
@@ -2989,6 +3080,8 @@ cmd_enroll() {
   if [ "$reinstall" -eq 1 ] && [ -z "${AGENT_TOKEN:-}" ]; then
     err "這台電腦上沒有「${PROFILE}」的 agent token，沒辦法只換 APK"
     hint "這支手機還沒在這台電腦入伍過，直接跑：hangar enroll -p $PROFILE"
+    hint "如果它其實已經入伍過（別台電腦裝的、或這裡的 profile 重建過），要接手："
+    hint "  hangar enroll -p $PROFILE --takeover"
     exit 1
   fi
 
@@ -3014,6 +3107,7 @@ cmd_enroll() {
     exit 1; }
 
   [ "$reinstall" -eq 1 ] && { enroll_reinstall "$apk" "$port"; return; }
+  [ "$takeover" -eq 1 ] && { enroll_takeover "$apk" "$port" "$assume_yes"; return; }
 
   echo
   info "1/5 安裝 agent"
@@ -3029,19 +3123,44 @@ cmd_enroll() {
   enroll_wake_agent
 
   info "5/5 驗證：直接問 agent"
-  agent_reset
-  if agent_probe "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN"; then
-    ok "agent ${AGENT_VERSION:-} 回應正常"
-    [ -n "$DEV_MODEL" ]     && kv "機型" "$DEV_MODEL"
-    [ -n "$BATTERY_LEVEL" ] && kv "電量" "$(battery_human)"
-    echo
-    ok "入伍完成。這支手機之後不開偵錯也看得到機型與電量。"
-  else
-    echo
-    warn "profile 寫好了，但現在問不到 agent（${PHONE_IP}:${AGENT_PORT}）"
-    hint "手機與這台電腦要在同一個區網；也可能是 agent 還沒起來"
-    hint "在手機上打開一次 Hangar Agent，然後：hangar status -p $PROFILE"
-  fi
+  enroll_verify "入伍完成。這支手機之後不開偵錯也看得到機型與電量。" || true
+}
+
+# --takeover：手機上那支 agent 還在、也還入伍著，但**這台電腦手上沒有它的
+# token**（profile 重建過，或它是別台電腦入伍的）。這種狀態以前是條死路：
+# --reinstall 會說「沒有 token，沒辦法只換 APK」，正規入伍會被手機端的
+# already_enrolled 擋下來 —— 兩邊都對，但人就卡在中間。
+#
+# 這條路把那道門從外面打開：清掉手機上的入伍狀態，再走一次完整入伍。
+#
+# 步驟順序是有理由的：
+#   先裝 APK 再清資料 —— 簽章對不上這種失敗要發生在「還沒破壞任何東西」之前。
+#   清完才授權 —— pm clear 會把 pm grant 給過的權限一起收回去，先授權等於白做。
+enroll_takeover() { # <apk> <port> <有沒有帶 --yes>
+  local apk="$1" port="$2" assume_yes="$3"
+
+  enroll_confirm_takeover "$assume_yes"
+
+  echo
+  info "1/6 安裝 agent"
+  enroll_install_apk "$apk"
+
+  info "2/6 清掉手機上的入伍狀態"
+  enroll_pm_clear
+
+  info "3/6 授予 WRITE_SECURE_SETTINGS"
+  enroll_grant_secure_settings
+
+  # 清完之後手機上那支是一支空的 agent，所以這裡走的就是正規入伍的那一步，
+  # 不是什麼特別的覆蓋 —— already_enrolled 這時候不會再擋。
+  info "4/6 交出 profile 名字、裝置序號與 token"
+  enroll_handoff "$port"
+
+  info "5/6 把 agent 叫起來"
+  enroll_wake_agent
+
+  info "6/6 驗證：直接問 agent"
+  enroll_verify "接手完成。這台電腦有自己的 token 了 —— 其他電腦要重新入伍才問得到這支手機。" || true
 }
 
 # --reinstall：手機上那支 agent 還在、也還入伍著，只是版本太舊 —— 例如牆上那句
@@ -3106,10 +3225,9 @@ enroll_reinstall() { # <apk> <port>
   # ping 得到、卻問不出 status：新版在跑，但它不認這台電腦手上那組 token。
   echo
   err "新版 agent 在跑，但它不接受這台電腦的 token"
-  hint "手機上那支多半是別台電腦入伍的。要讓這台電腦接手，得清掉它的狀態："
-  hint "  adb -s $SERIAL shell pm clear com.hangar.agent"
-  hint "  hangar enroll -p $PROFILE"
-  hint "注意：清掉之後，其他電腦手上的 token 也會一起失效"
+  hint "手機上那支多半是別台電腦入伍的。要讓這台電腦接手："
+  hint "  hangar enroll -p $PROFILE --takeover"
+  hint "注意：接手會清掉手機上的入伍狀態，其他電腦手上的 token 也會一起失效"
   exit 1
 }
 
@@ -3183,6 +3301,10 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
   hangar enroll [-p 手機] --reinstall
                                    更新舊版 agent，只換新版 APK，token
                                    與入伍狀態都留著，其他電腦不會被踢掉
+  hangar enroll [-p 手機] --takeover [--yes]
+                                   手機已入伍、但這台電腦沒有它的 token 時，
+                                   清掉手機上的入伍狀態再重新入伍一次
+                                   （其他電腦手上的 token 會一起失效）
   hangar ring [-p 手機] [--seconds 秒]
                                    讓已入伍的手機響鈴識別（0 或 --stop = 停）
   hangar adb [-p 手機] --on|--off

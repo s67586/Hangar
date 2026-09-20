@@ -56,8 +56,15 @@ hangar enroll -p <這台電腦上的 profile>
 它使用的仍然是 CLI 原本的 enrollment 流程：安裝 APK、授予
 `WRITE_SECURE_SETTINGS`、寫入 profile 名字、序號與 token，再驗證 agent。hub 不會直接執行這個
 指令，也不會代替 helper 操作手機；因此這台電腦仍然必須先有可用的 ADB 連線與
-profile。若 agent 其實還在手機上、只是暫時沒有回應，Android 端會拒絕重複入伍並提示
-先清除 app 狀態，不會默默覆蓋原本的 token。
+profile。若 agent 其實還在手機上、只是暫時沒有回應，Android 端會拒絕重複入伍，
+不會默默覆蓋原本的 token；這時候卡片上會帶回 CLI 的提示 —— 手上有 token 就用
+`--reinstall`，沒有 token 就是
+[`--takeover`](agent.md#接手一支已入伍的手機--takeover)。
+
+**接手沒有做成按鈕，是刻意的。** `--takeover` 會讓其他電腦手上的 token 一起失效，
+而那件事在裝置牆上完全看不出來（沒有任何一份資料知道還有誰入伍過這支手機）。
+helper 的 `/enroll` 只走正規入伍與 `--reinstall` 這兩條不會踢掉別人的路；要接手，
+就把卡片上那行指令複製到終端機，當面點一次頭。
 
 如果 helper 沒有啟動，按鈕會改成「複製註冊指令」，讓你貼到終端機執行。入伍需要
 安裝好的 agent APK；找不到 APK 時，helper 會把 CLI 的 build 提示帶回裝置牆。

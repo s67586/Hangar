@@ -34,9 +34,9 @@ agent 確認活著。成功之後 token 寫進 profile，手機上的 agent 頁�
 
 `--apk` 可以指定別的檔案；不給的話會找這個 repo 裡 build 出來的那份。
 
-**一台手機只入伍一次。** 已經入伍過的會直接拒絕，要重來得先
-`adb shell pm clear com.hangar.agent` —— 那本來就需要 adb。理由見
-[agent/README.md](../agent/README.md)。
+**一台手機只入伍一次。** 已經入伍過的會直接拒絕；要重來得先清掉手機上的入伍
+狀態，而那需要 adb。理由見 [agent/README.md](../agent/README.md)，這台電腦手上
+沒有 token 時怎麼辦見 [`--takeover`](#接手一支已入伍的手機--takeover)。
 
 ## 升級舊版 agent：`--reinstall`
 
@@ -75,7 +75,63 @@ cd .. && hangar enroll -p work --reinstall
   token，不會丟一個錯誤要你再跑一次別的指令。
 
 裝得上去、但新版不認這台電腦的 token（手機上那支是別台電腦入伍的），指令會停下來
-講清楚，不會假裝成功。這種情況只能 `pm clear` 之後重新入伍，代價就是上面那句。
+講清楚，不會假裝成功。那種情況要的是下一節的 `--takeover`。
+
+## 接手一支已入伍的手機：`--takeover`
+
+手機上那支 agent 還在、也還入伍著，但**這台電腦手上沒有它的 token**：
+
+- 這裡的 profile 重建過（`AGENT_TOKEN` 是空的），或
+- 這支手機本來就是別台電腦入伍的。
+
+這種狀態以前是條死路：正規入伍會被手機端的 `already_enrolled` 擋下來，
+`--reinstall` 又會說「沒有 token，沒辦法只換 APK」——兩邊都對，人卡在中間。
+`hangar enroll --takeover` 就是那條出路：
+
+```bash
+hangar enroll -p work --takeover
+```
+
+```
+ !! 接手會清掉手機上那支 agent 的入伍狀態
+    其他也入伍過這支手機的電腦，手上的 token 會一起失效，要重新入伍才問得到它
+    只是想換新版 APK 的話，要的是 --reinstall，不是這個
+  確定要讓這台電腦接手「work」？輸入 yes ＞ yes
+
+==> 1/6 安裝 agent
+ ok  安裝完成
+==> 2/6 清掉手機上的入伍狀態
+ ok  手機上的入伍狀態已清掉
+==> 3/6 授予 WRITE_SECURE_SETTINGS
+ ok  已授予
+==> 4/6 交出 profile 名字、裝置序號與 token
+ ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
+==> 5/6 把 agent 叫起來
+==> 6/6 驗證：直接問 agent
+ ok  agent 0.1.2 回應正常
+     機型  Pixel 7 Pro
+     電量  78%  放電中  27.5°C
+
+ ok  接手完成。這台電腦有自己的 token 了 —— 其他電腦要重新入伍才問得到這支手機。
+```
+
+幾件事值得先知道：
+
+- **token 要不回來。** 它存在 app 的私有資料裡，adb 這一側讀不出來，所以沒有
+  「把原本那組拿回來」這種選項，只有清掉重來。
+- **代價是別台電腦。** `pm clear` 之後，其他也入伍過這支手機的電腦手上那組
+  token 全部失效，而**這台電腦看不出來還有誰入伍過** —— 看不見的代價只能用問的，
+  所以它會停下來要你打一次 `yes`。沒有終端機的時候（例如從 helper 執行）它不會
+  自己點頭，而是要求把 `--yes` 明確打出來。
+- **步驟順序是有理由的。** 先裝 APK 再清資料：簽章對不上這種失敗要發生在還沒
+  破壞任何東西之前。清完才授權：`pm clear` 會把 `pm grant` 給過的權限一起收回去。
+- **不要拿它當升級用。** 只是版本太舊的話，`--reinstall` 不會動 token，也就不會
+  把別台電腦踢掉。
+
+為什麼不在 agent 那一側做一個「重新入伍」廣播：`EnrollReceiver` 必須是 exported 的
+（發廣播的是 shell uid），同一支手機上的任何 app 都發得出那個廣播。真有那條路，
+等於誰都能把別人的手機搶走。門檻就是 `pm clear` 需要 adb —— 這條指令是走進那道門，
+不是繞過它。
 
 ## 入伍之後有什麼不一樣
 

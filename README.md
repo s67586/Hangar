@@ -312,6 +312,7 @@ hangar scan             # 掃描區網，列出看得到的裝置
 hangar usb              # 這台電腦上 USB 接著的裝置（含 unauthorized）
 hangar enroll           # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar enroll -p work --reinstall   # 只換一支新版 APK（升級舊版 agent）
+hangar enroll -p work --takeover    # 手機已入伍、但這台電腦沒有它的 token
 hangar ring -p work     # 響鈴識別一支在線上的手機
 hangar adb -p work --off  # 關閉偵錯（要開回來就 --on，沒有人按就不會變）
 ```

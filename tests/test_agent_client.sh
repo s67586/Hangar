@@ -74,6 +74,22 @@ t2="$(pfield work AGENT_TOKEN)"
 if [ -n "$t1" ] && [ "$t1" != "$t2" ]; then echo "  PASS  每次入伍都是新 token"; PASS=$((PASS+1));
 else echo "  FAIL  token 沒有變（$t1 / ${t2}）"; FAIL=$((FAIL+1)); fi
 
+echo "=== C1b. 從 PATH 上的 symlink 執行也要找得到 APK ==="
+# hangar_install.sh 裝的是 symlink（/usr/local/bin/hangar → repo/hangar）。找
+# APK 要相對於「腳本真正在哪」，不是相對於那個 symlink —— 不解開的話，照著
+# README 裝的人跑 enroll 一律會被告知「找不到 APK」，而 APK 明明就在 repo 裡。
+env_one
+mkdir -p "$MOCK_STATE/repo/agent/app/build/outputs/apk/debug" "$MOCK_STATE/bin/deep"
+cp "$PM" "$MOCK_STATE/repo/hangar"
+: > "$MOCK_STATE/repo/agent/app/build/outputs/apk/debug/app-debug.apk"
+ln -sf "$MOCK_STATE/repo/hangar" "$MOCK_STATE/bin/deep/hangar"
+# 再套一層，而且是相對路徑的 symlink：Homebrew 那種 bin/hangar → ../deep/hangar
+ln -sf "deep/hangar" "$MOCK_STATE/bin/hangar"
+out="$("$MOCK_STATE/bin/hangar" enroll -p work 2>&1)"
+check "symlink 也找得到 APK" "repo/agent/app/build/outputs/apk/debug/app-debug.apk" "$out"
+nocheck "不會說找不到"       "找不到 agent 的 APK" "$out"
+check "而且真的裝下去了"     "install .*app-debug.apk" "$(cat "$MOCK_STATE/adb_log")"
+
 echo "=== C2. 入伍失敗的幾種樣子 ==="
 env_one; : > "$MOCK_STATE/fake.apk"; touch "$MOCK_STATE/enroll_already"
 out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"
@@ -138,6 +154,72 @@ out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --reinstall 2>&1)"; rc=
 check "token 不對要說清楚"    "不接受這台電腦的 token" "$out"
 check "並且說清楚代價"        "其他電腦手上的 token 也會一起失效" "$out"
 assert "離開碼不是 0"         "1" "$rc"
+
+echo "=== C2c. hangar enroll --takeover：token 遺失但 adb 還通 ==="
+# 這支手機已經入伍過（別台電腦裝的，或這裡的 profile 重建過），所以正規入伍會
+# 被 already_enrolled 擋下來，而 --reinstall 沒有 token 可用。以前這是死路。
+env_one; : > "$MOCK_STATE/fake.apk"
+touch "$MOCK_STATE/enroll_already"; printf 'someone-elses-token' > "$MOCK_STATE/agent_token"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"
+check "沒有 token 時要指向接手"   "\-\-takeover" "$out"
+check "並且講清楚代價"           "其他電腦手上的 token 一起失效" "$out"
+nocheck "不要叫人去 --reinstall"  "hangar enroll -p work --reinstall" "$out"
+
+# 反過來：手上有 token 的那台電腦看到 already_enrolled，要的是 --reinstall，
+# 不是接手 —— 接手會把自己的 token 也換掉，代價完全沒有必要。
+env_one; : > "$MOCK_STATE/fake.apk"
+"$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
+touch "$MOCK_STATE/enroll_already"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"
+check "有 token 時指向就地升級" "hangar enroll -p work --reinstall" "$out"
+nocheck "不要叫人去接手"        "\-\-takeover" "$out"
+
+env_one; : > "$MOCK_STATE/fake.apk"
+touch "$MOCK_STATE/enroll_already"; printf 'someone-elses-token' > "$MOCK_STATE/agent_token"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --takeover --yes 2>&1)"
+check "接手會清掉入伍狀態"   "pm clear com.hangar.agent" "$(cat "$MOCK_STATE/adb_log")"
+check "然後重新入伍一次"     "com.hangar.agent/.EnrollReceiver" "$(cat "$MOCK_STATE/adb_log")"
+check "說得出這是接手"       "接手完成" "$out"
+assert "profile 記下新 token" "64" "$(printf '%s' "$(pfield work AGENT_TOKEN)" | wc -c | tr -d ' ')"
+assert "手機上換成同一組"     "$(pfield work AGENT_TOKEN)" "$(cat "$MOCK_STATE/agent_token")"
+assert "埠也記下來了"         "5599" "$(pfield work AGENT_PORT)"
+# 順序不是隨便排的：簽章對不上這種失敗要發生在「還沒清掉任何東西」之前，
+# 而 pm clear 會把 pm grant 給過的權限收回去，所以授權一定在清除之後。
+i_install="$(grep -n "install" "$MOCK_STATE/adb_log" | head -1 | cut -d: -f1)"
+i_clear="$(grep -n "pm clear" "$MOCK_STATE/adb_log" | head -1 | cut -d: -f1)"
+i_grant="$(grep -n "WRITE_SECURE_SETTINGS" "$MOCK_STATE/adb_log" | head -1 | cut -d: -f1)"
+if [ "$i_install" -lt "$i_clear" ] && [ "$i_clear" -lt "$i_grant" ]; then
+  echo "  PASS  先裝、再清、最後授權"; PASS=$((PASS+1))
+else
+  echo "  FAIL  步驟順序不對（install=${i_install} clear=${i_clear} grant=${i_grant}）"; FAIL=$((FAIL+1))
+fi
+
+# 沒有終端機又沒帶 --yes：不准自己點頭。helper 那條路（網頁按鈕）就是這種。
+env_one; : > "$MOCK_STATE/fake.apk"
+touch "$MOCK_STATE/enroll_already"; printf 'someone-elses-token' > "$MOCK_STATE/agent_token"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --takeover < /dev/null 2>&1)"; rc=$?
+check "沒人點頭就不動手機" "沒有終端機可以確認" "$out"
+assert "離開碼不是 0"      "1" "$rc"
+assert "真的沒有清掉"      "0" "$(nlines "$MOCK_STATE/adb_log" "pm clear")"
+assert "也沒有重新入伍"    "0" "$(nlines "$MOCK_STATE/adb_log" "EnrollReceiver")"
+
+# 清不掉就停下來。半路失敗要停在「手機還是原來那樣」，不能接著寫一組
+# 這支手機根本不認的 token 進 profile。
+env_one; : > "$MOCK_STATE/fake.apk"
+touch "$MOCK_STATE/enroll_already"; printf 'someone-elses-token' > "$MOCK_STATE/agent_token"
+touch "$MOCK_STATE/pm_clear_fail"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --takeover --yes 2>&1)"; rc=$?
+check "清不掉要講出來"  "清不掉手機上的入伍狀態" "$out"
+assert "離開碼不是 0"   "1" "$rc"
+assert "沒有發入伍廣播" "0" "$(nlines "$MOCK_STATE/adb_log" "EnrollReceiver")"
+assert "profile 沒被寫壞" "" "$(pfield work AGENT_TOKEN)"
+
+# 兩個旗標講的是相反的事，一起用一定有一邊是誤會
+env_one; : > "$MOCK_STATE/fake.apk"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --reinstall --takeover 2>&1)"; rc=$?
+check "互斥要擋下來" "不能一起用" "$out"
+assert "離開碼不是 0" "1" "$rc"
+assert "什麼都沒做"   "0" "$(nlines "$MOCK_STATE/adb_log" ".")"
 
 echo "=== C3. list --json：adb 通的時候，agent 只是附帶資訊 ==="
 env_one; : > "$MOCK_STATE/fake.apk"

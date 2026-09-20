@@ -100,8 +100,8 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 
 | | 現在是 | 在哪裡 |
 |---|---|---|
-| `hangar` 版本 | `1.4.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2453` |
+| `hangar` 版本 | `1.5.0` | `hangar:20` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2464` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:181` |
 | hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
@@ -397,11 +397,40 @@ hangar enroll [-p 手機] [--apk agent.apk]
 | **不 `pm clear` 再重新入伍** | token 是每台電腦各自保管的。清一次就等於把所有入伍過這支手機的電腦一起鎖在門外 —— 升級不該有這種代價 |
 | 第二步「再授一次權限」是刻意的 | 就地升級後權限本來就還在。這一步救的是另一種人：上次入伍時這一步失敗（手機沒解鎖、OEM 擋掉），那支 agent 從此切不了偵錯 |
 | 新裝上去的 agent 說自己沒入伍 → 直接補完整入伍 | 有人 `pm clear` 過，或 app 曾被解除安裝。那一刻 adb 就在手上，不要丟一個錯誤叫人再跑一個指令 |
-| 裝得上去、但新版不認這台電腦的 token → 停下來講清楚 | 手機上那支是別台電腦入伍的。唯一的解法（`pm clear` + 重新入伍）有代價，那個代價要由人決定，不是由指令順手做掉 |
+| 裝得上去、但新版不認這台電腦的 token → 停下來講清楚 | 手機上那支是別台電腦入伍的。解法有代價（見下一節的 `--takeover`），那個代價要由人決定，不是由指令順手做掉 |
 | 沒有 token 的 profile 不給用這條 | 「只換 APK」對還沒入伍過的手機沒有意義：裝上去也問不到話。那條路本來就叫 `enroll` |
 | 判斷「是不是舊版」看 agent 版號，不用能力欄位推測 | 裝置牆以 `0.1.2` 為目前標準，數字比較後只標出低於標準的版本；`can.ring` 只代表響鈴能力，`can.toggle_adb` 也不能拿來判斷版本 |
 | helper 沿用 `POST /enroll`，只多一個 `reinstall` 布林 | 同一條 adb、同一套三道鎖、同一支 CLI。為了一個旗標開第二個端點只會多一份要一起維護的東西 |
 | hub 一行都不用改 | 「hub 維持唯讀」那條規矩不因為多一顆按鈕就破例 |
+
+### 接手（`--takeover`）：token 遺失、但 adb 還通
+
+> **已實作。** `hangar enroll -p <手機> --takeover [--yes]`。裝置牆上**刻意沒有**
+> 對應的按鈕。
+
+上面兩條路中間有一個洞：手機上那支 agent 還入伍著，但**這台電腦手上沒有它的
+token** —— 這裡的 profile 重建過，或它本來就是別台電腦入伍的。正規入伍撞
+`already_enrolled`，`--reinstall` 說「沒有 token，沒辦法只換 APK」。兩個訊息都對，
+人卻沒有下一步可走。
+
+六個步驟，比正規入伍多的就是中間那一步：
+
+1. `adb install -r <APK>`
+2. `adb shell pm clear com.hangar.agent` —— 清掉手機上的入伍狀態
+3. `adb shell pm grant … WRITE_SECURE_SETTINGS`
+4. 入伍廣播：profile 名字、序號、一組新 token
+5. `am start` 把 app 叫到前景
+6. 用剛寫下的 token 打一次 `GET /status`
+
+| 決定 | 為什麼 |
+|---|---|
+| **token 不從手機讀回來** | 它在 app 的私有資料裡，adb 這一側讀不出來（release 版連 `run-as` 都沒有）。「清掉重來」不是偷懶，是唯一成立的做法 |
+| **不在 agent 那側加「重新入伍」廣播** | `EnrollReceiver` 必須 exported（發廣播的是 shell uid），同機任何 app 都發得出。真有那條路，誰都能把別人的手機搶走。`pm clear` 需要 adb，那道門檻本身就是保護 |
+| 要當面點頭（輸入 `yes`），沒終端機就要 `--yes` | 代價落在**別台電腦**上，而這台電腦看不出來還有誰入伍過。看不見的代價只能用問的 |
+| 先裝 APK、再清資料 | 簽章對不上這種失敗，要發生在還沒破壞任何東西之前 |
+| 清完才授權 | `pm clear` 會把 `pm grant` 給過的權限一起收回去，先授等於白做 |
+| 與 `--reinstall` 互斥 | 一個刻意不動 token，一個把它整組換掉。同時出現一定有一邊是誤會 |
+| **裝置牆不給按鈕** | helper 的 `/enroll` 只走不會踢掉別人的兩條路。要接手就複製卡片上那行指令，回終端機點頭 —— 這條規矩跟「hub 維持唯讀」是同一個理由 |
 
 ### 找得到 agent：mDNS 是加速器，不是必要條件
 
@@ -1149,8 +1178,8 @@ CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是�
 
 | 腿 | 跑什麼 | 抓得到什麼 |
 |---|---|---|
-| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（799 項），不是 SKIP |
-| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（791 項）|
+| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（825 項），不是 SKIP |
+| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（817 項）|
 | `macos` | `macos-latest` | 修 Linux 的時候不要把開發機那邊弄壞 |
 
 三條腿都設 `timeout-minutes`。預設是 6 小時，而這個專案已經有過「卡住而不是失敗」
@@ -1179,7 +1208,7 @@ CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是�
 | `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳、`POST /api/refresh` 的節流（剛問過回 429 並說還要等幾秒）、`GET /api/refresh` 是 404、不認得的 `what` 回 400 |
 | `test_agent_protocol.sh` | `/hello` 不需要 token 也不吐序號、`/status` 要 token、status 的每個欄位型別（電量是 0-100 整數、充電狀態用小寫那一套、`wifi_enabled` 可以是 null 但不能用 false 混充、拿不到的東西回 null 不塞假值、協定裡根本沒有 MAC 這一欄）、501 與 404 要分得出來、沒入伍是 409 不是 401。**帶 `HANGAR_AGENT_URL` 就直接打真的手機** |
 | `test_manual.sh` | `tools/make_manual.py`：Markdown 轉乾淨了沒（讀者不該看到 `**這樣**` 或一整列 `| --- |`）、區段與表格有沒有整段掉、`docs/` 每一份都接進手冊了沒（標題降級、跨檔連結變頁內錨點、沒被 README 連到的就是孤兒）、README 與 `docs/` 之間有沒有死錨點、同一份來源跑兩次印記要一模一樣（`--check` 才有意義） |
-| `test_agent_client.sh` | `hangar enroll` 的四個步驟與三種失敗（沒 APK、已入伍過、安裝失敗）、每次入伍都是新 token、廣播帶的序號與 profile 名字都一致、adb 通時用 adb 的資料、**adb 不通時改問 agent 拿電量與機型**、入伍過但 agent 死掉看得出來、掃描只對探得到 5599 的發 HTTP、缺 `curl` 時安靜降級但入伍要明講 |
+| `test_agent_client.sh` | `hangar enroll` 的四個步驟與三種失敗（沒 APK、已入伍過、安裝失敗）、`--takeover`（清了才重新入伍、順序是裝→清→授權、沒點頭不動手機、清不掉就停下來、與 `--reinstall` 互斥）、每次入伍都是新 token、廣播帶的序號與 profile 名字都一致、adb 通時用 adb 的資料、**adb 不通時改問 agent 拿電量與機型**、入伍過但 agent 死掉看得出來、掃描只對探得到 5599 的發 HTTP、缺 `curl` 時安靜降級但入伍要明講 |
 | `test_versions.sh` | ROADMAP「現況速查」裡的 hangar／hub／helper／agent 版本與 schema 對上程式宣告、行號參照沒有漂移、Android 與 fake agent 的協定 schema 一致 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
