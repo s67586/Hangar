@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
-"""從 README.md 產生一頁可讀的使用手冊（HTML）。
+"""從 README.md 與 docs/*.md 產生一頁可讀的使用手冊（HTML）。
 
 為什麼要有這支：手冊如果是手寫的第二份文件，它跟 README 一定會走岔，而讀的人
-分不出哪份是對的。**一份來源、兩種輸出**才是唯一不會過期的做法。
+分不出哪份是對的。**每段內容只有一個來源檔**才是唯一不會過期的做法。
+
+README 只留「裝起來、設定一支手機、每天投影」那條路，各個題目的完整說明分在
+`docs/` 底下。手冊要的則是全部 —— 所以這支把它們接成一份再轉：
+
+    README 的 <!-- manual:docs --> 那一行 → 換成 docs/ 那幾份的內容
+    接哪幾份、什麼順序                    → 看 README 連到誰、先連到誰
+    docs/x.md 的標題 `#`                  → 手冊裡降成章節 `##`
+    跨檔連結 docs/x.md#y                  → 頁內錨點 #y
+
+「README 連到誰誰就進手冊」是刻意的：不要有第二份需要同步維護的清單，而沒有
+被 README 連到的 docs/ 檔案本來就是孤兒，不該出現在手冊裡。
 
     tools/make_manual.py                  # → docs/manual.html
     tools/make_manual.py --out /tmp/a.html
     tools/make_manual.py --check          # 產出跟現有檔案不一樣就回非 0
 
 只用 Python 3 標準函式庫（跟 hub 一樣的理由：不為了一頁 HTML 裝一套生態系），
-所以這裡有一份很小的 Markdown 轉換器 —— 它只認 README 真的用到的那些構造：
+所以這裡有一份很小的 Markdown 轉換器 —— 它只認這些文件真的用到的那些構造：
 
     標題 # ## ### ####      → 區段（## 會進目錄）
     圍籬程式區塊 ```lang    → 終端機樣式的區塊，bar 顯示語言
@@ -243,6 +254,116 @@ def convert(md):
     return doc
 
 
+# ------------------------------------------------------------------ 來源 ----
+
+MARKER = re.compile(r"^<!-- manual:docs[^\n]*-->[ \t]*$", re.M)
+DOC_LINK = re.compile(r"\]\((?:\.\./|docs/)?([\w.-]+\.md)(#[^)\s]*)?\)")
+
+
+def demote(md):
+    """把一份 docs/*.md 的標題整體降一級。
+
+    那些檔案自己是一份文件（`#` 是它的標題），接進手冊時則是一個章節（`##`）。
+    整份降一級之後，接起來的結構跟這些內容還在 README 裡時一模一樣 —— 章節照樣
+    進目錄，小節照樣是 h3。圍籬裡的 `#` 是 shell 註解，不能動。
+    """
+    out, fence = [], False
+    for line in md.split("\n"):
+        if line.startswith("```"):
+            fence = not fence
+        elif not fence and re.match(r"^#{1,5} ", line):
+            line = "#" + line
+        out.append(line)
+    return "\n".join(out)
+
+
+def doc_title(md):
+    """一份 docs/*.md 的標題（第一個 `#`）—— 也就是它在手冊裡的章節名。"""
+    for line in md.split("\n"):
+        m = re.match(r"^#\s+(.*)$", line)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def doc_order(readme_md):
+    """要接哪幾份、照什麼順序：README 連到誰，誰就進來，先連到的先接。"""
+    names = []
+    for m in re.finditer(r"\]\(docs/([\w.-]+)\.md[^)]*\)", readme_md):
+        if m.group(1) not in names:
+            names.append(m.group(1))
+    return names
+
+
+def rewrite_links(md, anchors):
+    """跨檔連結在一頁式手冊裡要變成頁內錨點，否則全是死連結。
+
+        docs/hub.md#多久更新一次 → #多久更新一次   （那個小節就在這一頁上）
+        docs/hub.md              → #hub裝置牆網頁  （那一份的標題）
+        ../README.md#安裝        → #安裝
+
+    不認得的檔案維持原樣 —— ROADMAP.md 與 agent/README.md 在 repo 裡，手冊
+    這一頁沒有它們，指回檔案才是對的。
+    """
+    def repl(m):
+        base, frag = m.group(1), m.group(2)
+        if base not in anchors:
+            return m.group(0)
+        if frag:
+            return "](%s)" % frag
+        if not anchors[base]:
+            return "](#)"                      # README 自己 → 回到這一頁最上面
+        return "](#%s)" % anchors[base]
+    return DOC_LINK.sub(repl, md)
+
+
+def relativize(md):
+    """README 的相對連結指的是 repo 根目錄，但手冊產在 docs/ 底下 —— 差一層。
+
+    `[hangar](hangar)` 在 GitHub 上是對的，在 docs/manual.html 裡卻會指到
+    docs/hangar。docs/ 那幾份本來就寫成 `../ROADMAP.md`，所以只有 README 這一份
+    要補。網址、頁內錨點與已經是 `../` 的不動。
+    """
+    def repl(m):
+        target = m.group(1)
+        if re.match(r"^(?:[A-Za-z][\w+.-]*:|//|#|\.\./)", target):
+            return m.group(0)
+        return "](../%s)" % target
+    return re.sub(r"\]\(([^)\s]+)\)", repl, md)
+
+
+def load(readme_path):
+    """README ＋ 它連到的那幾份 docs/*.md，接成手冊要轉的那一份 Markdown。"""
+    root = os.path.dirname(os.path.abspath(readme_path))
+    with open(readme_path, encoding="utf-8") as f:
+        readme = f.read()
+
+    anchors = {os.path.basename(readme_path): ""}
+    bodies = []
+    for name in doc_order(readme):
+        path = os.path.join(root, "docs", name + ".md")
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as f:
+            body = f.read()
+        anchors[name + ".md"] = slug(doc_title(body))
+        bodies.append(body)
+
+    # 先把跨檔連結換成頁內錨點，再補 README 少的那一層 —— 順序反過來的話，
+    # `docs/hub.md` 會先變成 `../docs/hub.md` 而對不上任何一份。
+    readme = relativize(rewrite_links(readme, anchors))
+    chunks = [rewrite_links(demote(b).strip(), anchors) for b in bodies]
+
+    docs_md = "\n\n".join(chunks)
+    if MARKER.search(readme):
+        # 標記那一行換成接起來的內容 —— 用 lambda 是因為內容裡的反斜線不該被
+        # 當成替換語法。
+        readme = MARKER.sub(lambda _: docs_md, readme, count=1)
+    elif chunks:
+        readme = readme.rstrip() + "\n\n" + docs_md + "\n"
+    return readme
+
+
 # ------------------------------------------------------------------ 版型 ----
 
 CSS = """
@@ -383,10 +504,11 @@ PAGE = """<title>{title}</title>
 <main>
 {body}
 <footer class="end">
-  <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
-     內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
+  <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
+     （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
+     在 <strong>ROADMAP.md</strong>。</p>
   <p style="margin-top:12px">{stamp}
-     —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
+     —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
 </div>
@@ -397,11 +519,12 @@ PAGE = """<title>{title}</title>
 def stamp_facts(md):
     """蓋上來源的指紋 —— 落後了要看得出來，而不是安靜地過期。
 
-    這裡蓋的是 **README 內容的 sha256**，不是日期也不是 git commit。理由很實際：
-    產出必須是可決定的，`--check` 才有意義。蓋日期的話這一頁每天都「不一樣」，
-    蓋 commit 的話每次提交都不一樣 —— 那種檢查每次都失敗，等於沒有檢查。
+    這裡蓋的是 **接起來那份內容的 sha256**（README 加上 docs/ 那幾份），不是日期
+    也不是 git commit。理由很實際：產出必須是可決定的，`--check` 才有意義。蓋日期
+    的話這一頁每天都「不一樣」，蓋 commit 的話每次提交都不一樣 —— 那種檢查每次
+    都失敗，等於沒有檢查。
 
-    指紋對得上 = 這一頁就是現在這份 README 產生的。對不上就是該重跑了。
+    任何一份來源改了指紋就會變，所以「改了 docs/hub.md 但忘了重跑」一樣抓得到。
     """
     digest = hashlib.sha256(md.encode("utf-8")).hexdigest()[:12]
     version = "?"
@@ -414,7 +537,7 @@ def stamp_facts(md):
                     break
     except OSError:
         pass
-    return ["README sha256 %s" % digest, "hangar v%s" % version]
+    return ["來源 sha256 %s" % digest, "hangar v%s" % version]
 
 
 def build(md):
@@ -434,15 +557,15 @@ def build(md):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="從 README.md 產生一頁使用手冊")
-    ap.add_argument("--readme", default=os.path.join(ROOT, "README.md"))
+    ap = argparse.ArgumentParser(description="從 README.md 與 docs/*.md 產生一頁使用手冊")
+    ap.add_argument("--readme", default=os.path.join(ROOT, "README.md"),
+                    help="入口那一份；docs/ 是相對它的位置找的")
     ap.add_argument("--out", default=os.path.join(ROOT, "docs", "manual.html"))
     ap.add_argument("--check", action="store_true",
                     help="只比對，產出跟現有檔案不一樣就回非 0（不寫檔）")
     args = ap.parse_args(argv)
 
-    with open(args.readme, encoding="utf-8") as f:
-        page = build(f.read())
+    page = build(load(args.readme))
 
     if args.check:
         try:

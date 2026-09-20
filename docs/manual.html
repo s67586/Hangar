@@ -126,17 +126,17 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 b7a141139f41</span><span class="fact">hangar v1.5.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 c5b21a0d4049</span><span class="fact">hangar v1.5.0</span></div>
 </header>
 
 <div class="cols">
-<nav class="toc" aria-label="目錄"><ol><li><a href="#它解決了什麼">它解決了什麼</a></li><li><a href="#安裝">安裝</a></li><li><a href="#環境前提">環境前提</a></li><li><a href="#使用">使用</a></li><li><a href="#多台手機">多台手機</a></li><li><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></li><li><a href="#手機端-agent">手機端 agent</a></li><li><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></li><li><a href="#從裝置牆上按投影">從裝置牆上按投影</a></li><li><a href="#手機重開機後">手機重開機後</a></li><li><a href="#tailscale-acl強烈建議">Tailscale ACL（強烈建議）</a></li><li><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑（FLAG_SECURE）</a></li><li><a href="#疑難排解">疑難排解</a></li><li><a href="#參與開發">參與開發</a></li><li><a href="#授權">授權</a></li></ol></nav>
+<nav class="toc" aria-label="目錄"><ol><li><a href="#這份文件怎麼讀">這份文件怎麼讀</a></li><li><a href="#它解決了什麼">它解決了什麼</a></li><li><a href="#安裝">安裝</a></li><li><a href="#環境前提">環境前提</a></li><li><a href="#使用">使用</a></li><li><a href="#多台手機">多台手機</a></li><li><a href="#手機重開機後">手機重開機後</a></li><li><a href="#區網掃描">區網掃描</a></li><li><a href="#機器可讀的輸出--json">機器可讀的輸出（--json）</a></li><li><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></li><li><a href="#手機端-agent">手機端 agent</a></li><li><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></li><li><a href="#從裝置牆上按投影">從裝置牆上按投影</a></li><li><a href="#tailscale-acl強烈建議">Tailscale ACL（強烈建議）</a></li><li><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑（FLAG_SECURE）</a></li><li><a href="#疑難排解">疑難排解</a></li><li><a href="#參與開發">參與開發</a></li><li><a href="#授權">授權</a></li></ol></nav>
 <main>
 <p>一整隊 Android 測試機的停放、維護與調度。</p>
 <p>主場是<strong>同一個區網</strong>：掃得出網段上有哪些裝置、用 <strong>scrcpy</strong> 投影畫面，並且管得到 那些<strong>沒開偵錯、adb 碰不到</strong>的手機。</p>
 <p>手機不在同一個區網時（4G/5G、在別的網段、在公司 NAT 後面），加上 <strong>Tailscale</strong> 就照樣投得到 —— 那是<strong>建議的加值選項，不是前提</strong>。裝置牆的掃描（ARP）與 agent 的 mDNS 廣播則本來就只在區網成立。</p>
-<div class="tw"><table><tr><td class="wrap"><a href="hangar"><code>hangar</code></a></td><td class="wrap">CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源</td></tr><tr><td class="wrap"><a href="hub"><code>hub/</code></a></td><td class="wrap">常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）</td></tr><tr><td class="wrap"><a href="helper"><code>helper/</code></a></td><td class="wrap">跑在<strong>你自己那台電腦</strong>上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動</td></tr><tr><td class="wrap"><a href="agent"><code>agent/</code></a></td><td class="wrap">手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型</td></tr></table></div>
-<div class="note"><p>專案方向、程式分層、測試涵蓋範圍與待確認清單見 <a href="ROADMAP.md">ROADMAP.md</a>。</p></div>
+<div class="tw"><table><tr><td class="wrap"><a href="../hangar"><code>hangar</code></a></td><td class="wrap">CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源</td></tr><tr><td class="wrap"><a href="../hub"><code>hub/</code></a></td><td class="wrap">常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）</td></tr><tr><td class="wrap"><a href="../helper"><code>helper/</code></a></td><td class="wrap">跑在<strong>你自己那台電腦</strong>上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動</td></tr><tr><td class="wrap"><a href="../agent"><code>agent/</code></a></td><td class="wrap">手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型</td></tr></table></div>
+<div class="note"><p>專案方向、程式分層、測試涵蓋範圍與待確認清單見 <a href="../ROADMAP.md">ROADMAP.md</a>。</p></div>
 <div class="term"><div class="bar">shell</div><pre>hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
 hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
@@ -151,6 +151,13 @@ hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自�
 <p><code>setup</code> 預設建立的是<strong>區網直連</strong>的 profile。手機要拿去別的網段、4G/5G 或 NAT 後面才需要 Tailscale：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar setup --transport tailscale --name work</pre></div>
 <p>兩者的差別見「<a href="#兩種連線方式">兩種連線方式</a>」。</p>
+<section id="這份文件怎麼讀">
+<h2 id="這份文件怎麼讀">這份文件怎麼讀</h2>
+<p>README 走的是<strong>裝起來 → 設定一支手機 → 每天投影</strong>這條路，從頭讀到尾就夠用了：</p>
+<p><a href="#它解決了什麼">它解決了什麼</a> · <a href="#安裝">安裝</a> · <a href="#環境前提">環境前提</a> · <a href="#使用">使用</a> · <a href="#多台手機">多台手機</a> · <a href="#手機重開機後">手機重開機後</a> · <a href="#疑難排解">疑難排解</a></p>
+<p>每個題目再往下挖的部分放在 <a href="../docs"><code>docs/</code></a>，一份一個題目，需要時再跳過去：</p>
+<div class="tw"><table><tr><th></th><th>什麼時候看</th></tr><tr><td class="wrap"><a href="#區網掃描">區網掃描</a></td><td class="wrap"><code>hangar scan</code> 的完整說明：怎麼認出哪一台是哪支手機、<code>--fix-ip</code>、掃描拿不到什麼</td></tr><tr><td class="wrap"><a href="#機器可讀的輸出--json">機器可讀的輸出（<code>--json</code>）</a></td><td class="wrap"><code>list</code> / <code>status</code> / <code>scan</code> 的 schema 與 error code。要拿 hangar 當資料來源就看這份</td></tr><tr><td class="wrap"><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></td><td class="wrap">第二台電腦怎麼接上同一支手機，RD 怎麼把 app build 進去</td></tr><tr><td class="wrap"><a href="#手機端-agent">手機端 agent</a></td><td class="wrap">讓<strong>沒開偵錯</strong>的手機也回報得了電量與機型的那支 app：入伍、升級、限制</td></tr><tr><td class="wrap"><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></td><td class="wrap">常駐服務與那頁裝置牆：參數、更新頻率、狀態的意思、換一台 hub</td></tr><tr><td class="wrap"><a href="#從裝置牆上按投影">從裝置牆上按投影</a></td><td class="wrap">牆上那幾顆按鈕（投影、響鈴、切偵錯、入伍）怎麼運作，以及 helper 的三道鎖</td></tr><tr><td class="wrap"><a href="#tailscale-acl強烈建議">Tailscale ACL</a></td><td class="wrap">走 Tailscale 時<strong>強烈建議</strong>設的白名單</td></tr><tr><td class="wrap"><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑</a></td><td class="wrap">投影某些畫面時整片黑掉（<code>FLAG_SECURE</code>）的處理方式</td></tr></table></div>
+</section>
 <section id="它解決了什麼">
 <h2 id="它解決了什麼">它解決了什麼</h2>
 <p><code>adb</code> 本來只能走 USB 或同一個區網。就算只在自己的區網裡用，狀態也一堆要處理； 跨網路再多兩條。下面這張表預設講的是區網，標<strong>（跨網路）</strong>的那兩列只有走 Tailscale 時才碰得到：</p>
@@ -214,7 +221,7 @@ brew install scrcpy jq</pre></div>
 <div class="term"><div class="bar">bash</div><pre>hangar setup --existing 192.168.1.50                     <span class="c"># 區網</span>
 hangar setup --transport tailscale --existing pixel-4    <span class="c"># Tailscale</span></pre></div>
 <p>區網這條沒有 adb 可以問位址，所以不給 IP 的話 <code>setup</code> 會跑一次 <code>hangar scan</code>， 把區網上看得到的裝置列出來讓你挑。</p>
-<p>細節見下面「<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>」。</p>
+<p>細節見「<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>」。</p>
 <h3 id="日常投影">日常投影</h3>
 <div class="term"><div class="bar">bash</div><pre>hangar                  <span class="c"># 預設手機</span>
 hangar -p work          <span class="c"># 指定手機</span>
@@ -247,13 +254,79 @@ hangar adb -p work --off  <span class="c"># 關閉偵錯（要開回來就 --on�
 hangar help             <span class="c"># 或 -h / --help</span></pre></div>
 <p>指令別名：<code>status</code> = <code>st</code>、<code>list</code> = <code>ls</code>、<code>forget</code> = <code>rm</code>。</p>
 <p>吃 <code>-p</code> 的只有投影、<code>status</code>、<code>reset</code> 這三個；<code>list</code> / <code>all</code> 本來就是看全部， <code>use</code> / <code>forget</code> 則是把手機名稱當第一個參數（<code>hangar use work</code>）。 名稱支援唯一前綴：<code>-p wo</code> 等同 <code>-p work</code>。</p>
+<p>幾個指令自己有一份完整說明：<code>scan</code> 見<a href="#區網掃描">區網掃描</a>，<code>--json</code> 見 <a href="#機器可讀的輸出--json">機器可讀的輸出</a>，<code>enroll</code> / <code>ring</code> / <code>adb</code> 見 <a href="#手機端-agent">手機端 agent</a>。</p>
 <h3 id="結束投影">結束投影</h3>
 <p>scrcpy 視窗關掉就結束了（<code>hangar</code> 是前景執行，終端機按 <code>Ctrl-C</code> 也可以）。 <code>hangar all</code> 開的視窗是背景執行的，要一次收掉：</p>
 <div class="term"><div class="bar">bash</div><pre>pkill -f &#x27;scrcpy .*:5555&#x27;</pre></div>
 <p>投影中的操作 —— 複製貼上、傳檔案、全螢幕、模擬實體按鍵 —— 都是 scrcpy 自己的 功能，Hangar 沒有另外包裝，快捷鍵見 scrcpy 的 <code>doc/shortcuts.md</code> （<a href="https://github.com/Genymobile/scrcpy">Genymobile/scrcpy</a>）。 需要額外參數就用 <code>--</code> 直接傳過去：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar -p work -- --window-x=100 --window-y=60   <span class="c"># 指定視窗位置</span>
 hangar -p work -- --record=demo.mp4              <span class="c"># 錄影</span></pre></div>
-<h3 id="區網掃描">區網掃描</h3>
+<h3 id="電量">電量</h3>
+<p><code>list</code> 和 <code>status</code> 都會顯示電量。低於 20%（而且不在充電）會標紅並加上 <code>!</code>：</p>
+<div class="term"><div class="bar">shell</div><pre>     名稱             IP                連線         adb           電量       節點
+  ────────────────────────────────────────────────────────────────────────────────────
+     test             100.101.102.110   online       device        78%        zenfone
+  *  work             100.101.102.103   online       device        12% !      pixel</pre></div>
+<p>電量只在 adb 已經連著的手機上取得（<code>dumpsys battery</code>，一次很短的往返）。 沒連線的顯示 <code>-</code> —— <code>list</code> 不會為了拿電量而硬去建立連線，那會讓它變得很慢。</p>
+<p>狀態是 Android 自己的分類（<code>dumpsys battery</code> 的 <code>status</code>）。<code>not_charging</code> 刻意 不照字面翻成「未充電」——那會被讀成「沒插電」，而那是 <code>discharging</code>：</p>
+<div class="tw"><table><tr><th></th><th>中文</th><th>意思</th></tr><tr><td class="wrap"><code>charging</code></td><td class="wrap">充電中</td><td class="wrap">插著，而且電在進去</td></tr><tr><td class="wrap"><code>discharging</code></td><td class="wrap">放電中</td><td class="wrap">沒插電</td></tr><tr><td class="wrap"><code>not_charging</code></td><td class="wrap">插著沒在充</td><td class="wrap"><strong>插著，但電沒有在進去</strong></td></tr><tr><td class="wrap"><code>full</code></td><td class="wrap">已充滿</td><td class="wrap"></td></tr></table></div>
+<p><code>not_charging</code> 是測試機最容易長期停在的那一個：插著線但系統決定不充——溫度 太高、充電保護（很多機型會刻意停在 80% 左右）、或是那個 USB 孔／線供電不夠。 它跟 <code>discharging</code> 要分開看：一支停在 <code>not_charging</code> 80% 的手機是健康的， 停在 <code>not_charging</code> 9% 的手機是<strong>插著線卻在往下掉</strong>，那條線或那個孔有問題。</p>
+<p>低電量提醒把 <code>not_charging</code> 算成「要充電」（只有 <code>charging</code> 與 <code>full</code> 不提醒） —— 電沒有在進去就是沒有在進去。</p>
+</section>
+<section id="多台手機">
+<h2 id="多台手機">多台手機</h2>
+<p>每支手機一份 profile，存在：</p>
+<div class="term"><div class="bar">shell</div><pre>~/.config/hangar/
+├── default                 # 預設 profile 名稱
+└── profiles/
+    ├── work.conf
+    └── test.conf</pre></div>
+<p>每個 <code>.conf</code> 長這樣：</p>
+<div class="term"><div class="bar">sh</div><pre>PHONE_HOST=&quot;pixel-7&quot;           <span class="c"># Tailscale 節點名</span>
+PHONE_IP=&quot;100.x.y.z&quot;           <span class="c"># Tailscale IP</span>
+TRANSPORT=&quot;tailscale&quot;          <span class="c"># 連線方式（tailscale / lan）</span>
+DEVICE_SERIAL=&quot;1A2B3C4D&quot;       <span class="c"># 硬體序號，跨 IP / 跨連線方式都不變</span>
+PHONE_MAC=&quot;a4:03:e7:01:02:03&quot;  <span class="c"># 區網 MAC，由 hangar scan 記下來（見 docs/scan.md）</span>
+AGENT_TOKEN=&quot;…64 個十六進位字元…&quot;  <span class="c"># 手機端 agent 的 token，由 hangar enroll 寫入</span>
+AGENT_PORT=&quot;5599&quot;              <span class="c"># agent 聽的埠</span></pre></div>
+<p>區網的 profile 最少只要兩行（<code>PHONE_HOST</code> 是 Tailscale 節點名，區網用不到）：</p>
+<div class="term"><div class="bar">sh</div><pre>PHONE_IP=&quot;192.168.1.50&quot;
+TRANSPORT=&quot;lan&quot;</pre></div>
+<div class="note"><p><strong>有 <code>AGENT_TOKEN</code> 的 profile 是有祕密的檔案。</strong> 那組 token 等於「可以問這支 手機的狀態、之後還能切它的偵錯開關」。檔案權限是 600，不要隨手貼給別人，也 不要丟進版控。沒入伍過的手機沒有這一行，那種 profile 仍然只是幾行純文字。</p></div>
+<p><code>PHONE_IP</code> 以外都是可選的，<code>DEVICE_SERIAL</code> 與 <code>PHONE_MAC</code> 讀不到就當空的。</p>
+<p><code>TRANSPORT</code> 是唯一有遷移動作的欄位。<strong>沒有這一行的 profile 一律當 <code>tailscale</code></strong> —— 那些檔案都是 <code>lan</code> backend 出現以前建的，那時 <code>setup</code> 只做得出 Tailscale profile；現在預設值是 <code>lan</code>，讓它們跟著預設值走等於靜默改掉語意。 所以 hangar 會在下次執行時就地把 <code>TRANSPORT=&quot;tailscale&quot;</code> 補進那些檔案，讓檔案 自己講清楚（檔案唯讀就跳過，讀進記憶體時仍然當 tailscale）。<code>PHONE_MAC</code> 是 <code>hangar scan</code> 第一次用 IP 對上這支手機時 自己補上去的，你不用手寫；重跑 <code>setup</code> 而 IP 沒變的話也會留著。</p>
+<h3 id="典型流程">典型流程</h3>
+<div class="term"><div class="bar">bash</div><pre><span class="c"># 兩支手機各插一次 USB（或各自在同區網配對一次）</span>
+hangar setup --name work
+hangar setup --name test
+
+hangar list
+<span class="c">#   * work    100.101.102.103   online   device       78%   pixel-7</span>
+<span class="c">#     test    100.101.102.110   online   未連線        -     zenfone</span>
+
+hangar use work     <span class="c"># 設為預設</span>
+hangar              <span class="c"># 直接投 work</span>
+hangar -p test      <span class="c"># 投 test</span>
+hangar all          <span class="c"># 兩支一起開，視窗標題各是 work / test</span></pre></div>
+<p>名稱支援唯一前綴，<code>hangar -p te</code> 等同 <code>hangar -p test</code>。</p>
+<h3 id="設計上的幾個重點">設計上的幾個重點</h3>
+<ul><li><strong>不會互相干擾</strong>：每支手機的 adb serial 是各自的 <code>&lt;tailscale-ip&gt;:5555</code>， adb 本來就支援同時連多台；<code>reset</code> 和「清除殘留 scrcpy」都只作用在指定的那一支。</li><li><strong>視窗標題</strong>：<code>--window-title=&lt;profile 名稱&gt;</code>，多開時一眼分辨（你自己傳 <code>--window-title</code> 的話會以你的為準）。</li><li><strong>只有一支時完全不用管 profile</strong>：不用 <code>-p</code>，跟單機模式一樣。</li><li><strong>多支但沒設定預設</strong>：會列出來讓你選，並提示 <code>hangar use &lt;名稱&gt;</code> 可以固定下來。</li><li><strong>從舊版升級</strong>：舊的 <code>~/.config/hangar/config</code> 會自動轉成 profile，原檔改名為 <code>config.migrated</code>。</li></ul>
+</section>
+<section id="手機重開機後">
+<h2 id="手機重開機後">手機重開機後</h2>
+<p><strong>這是 adb over TCP 的硬限制，不是 bug。</strong></p>
+<p><code>adb tcpip 5555</code> 是讓 adbd 重啟並改用 TCP 模式，這個狀態<strong>不會持久化</strong>。 手機一重開機，adbd 就回到 USB 模式，5555 埠消失。非 root 無法繞過。</p>
+<p>所以重開機後必須：</p>
+<ol class="list"><li>把那支手機接回 USB，或讓它回到跟電腦同一個 Wi-Fi</li><li>重跑 <code>hangar setup --name &lt;該手機&gt;</code></li></ol>
+<p>hangar 偵測到這個情況時會直接講清楚，不會讓你對著原始 adb 錯誤訊息猜：</p>
+<div class="term"><div class="bar">shell</div><pre> xx  無法連上 100.101.102.103:5555（work）
+     adb: failed to connect to &#x27;100.101.102.103:5555&#x27;: Connection refused
+ xx  手機上的 adb 5555 埠沒在聽 —— 通常代表手機重開機過（非 root 無法持久化）。
+     請把這支手機接回 USB 或回到同一區網，重跑：hangar setup --name work</pre></div>
+<div class="note"><p>如果手機有 root，可以用 <code>setprop persist.adb.tcp.port 5555</code> 讓它開機就監聽。 但那等於把 adb 永久開在所有網路介面上，請務必搭配 <a href="#tailscale-acl強烈建議">Tailscale ACL</a> 一起用。</p></div>
+</section>
+<section id="區網掃描">
+<h2 id="區網掃描">區網掃描</h2>
 <p><code>list</code> 只看得到<strong>已經設定過</strong>的手機。<code>hangar scan</code> 反過來：不管有沒有設定、 有沒有開偵錯，只回答「這個區網上現在有哪些東西」。</p>
 <div class="term"><div class="bar">bash</div><pre>hangar scan                        <span class="c"># 掃預設路由所在的那個 /24</span>
 hangar scan --subnet 192.168.1     <span class="c"># 指定網段（也吃 192.168.1.0/24 或網段內任一 IP）</span>
@@ -273,7 +346,7 @@ hangar scan --json</pre></div>
 <p>它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 <code>arp -an</code> （沒有 <code>arp</code> 就用 <code>ip neigh</code>），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播 與多播位址（<code>ff:ff:…</code>、mDNS 的 <code>01:00:5e:…</code>）會濾掉 —— 那些背後沒有一台機器。</p>
 <p><code>身分</code> 那一欄回答的是「這台對我們來說是什麼」：已經設定過的手機叫什麼名字、 是不是這個網段的<strong>閘道器</strong>、還是完全不認識（<code>-</code>）。閘道器每次掃描都會出現而且 絕對不是測試機，標出來才不用每次重新想一次「192.168.1.1 是什麼」。</p>
 <div class="note"><p>閘道位址是問<strong>掃描用的那張介面</strong>拿到的（macOS 問 DHCP 給的 router，Linux 問 那張介面的預設路由），不是問「預設路由的 gateway」—— 跑 Tailscale 的機器上 預設路由是點對點通道，根本沒有閘道那一欄。問不到就不標，不會亂猜一台。</p></div>
-<h4 id="身分-那欄怎麼認出是哪一支手機"><code>身分</code> 那欄怎麼認出是哪一支手機</h4>
+<h3 id="身分-那欄怎麼認出是哪一支手機"><code>身分</code> 那欄怎麼認出是哪一支手機</h3>
 <p>只比 IP 是不夠的：DHCP 換一次位址，同一支手機就會變成「另一台」；更糟的是 舊 IP 被分給別的機器時，只比 IP 會把那台<strong>誤認</strong>成你的手機。所以識別碼的可靠度 由高到低是：</p>
 <div class="tw"><table><tr><th></th><th>穩定度</th><th>掃描拿得到嗎</th></tr><tr><td class="wrap"><code>DEVICE_SERIAL</code></td><td class="wrap">跨 IP、跨連線方式都不變</td><td class="wrap">拿不到（要 adb 連上才有）</td></tr><tr><td class="wrap">MAC</td><td class="wrap">同一個 SSID 下穩定</td><td class="wrap">拿得到</td></tr><tr><td class="wrap">IP</td><td class="wrap">隨時會變</td><td class="wrap">拿得到</td></tr></table></div>
 <p>掃描碰不到 adb，所以它能用的最好的東西是 MAC：<strong>第一次靠 IP 對上時，把那台的 MAC 記進 profile 的 <code>PHONE_MAC</code>，之後就改用 MAC 認人。</strong></p>
@@ -287,19 +360,10 @@ hangar scan --json</pre></div>
 <p>反過來，IP 對得上但 MAC 跟記住的不一樣時，那台<strong>不會</strong>被算成你的手機 —— 那個位址現在是別台機器的。<code>hangar scan --json</code> 裡的 <code>matched_by</code> 就是在講 這一台是靠什麼對上的（<code>mac</code> 比 <code>ip</code> 可信）。</p>
 <p><code>DEVICE_SERIAL</code> 掃描自己拿不到，但 profile 裡有，所以對上之後會一起附在 <code>--json</code> 輸出裡 —— 那是 hub 把 <code>scan</code> 與 <code>list</code> 兩份資料合起來時該用的主鍵。</p>
 <p>需要知道的限制：</p>
-<ul><li><strong>拿不到機型，也拿不到電量。</strong> 沒開偵錯的手機 adb 完全碰不到，網路層只給得出 IP 與 MAC。這一欄要補齊得等手機端的 agent app（見 <a href="ROADMAP.md">ROADMAP</a>）。</li><li><strong>隨機 MAC 查不到廠商。</strong> Android 10+ / iOS 14+ 對每個 SSID 用一組隨機 MAC， <code>廠商</code> 會直接寫「隨機 MAC」而不是亂猜一個牌子。它在同一個 SSID 底下仍然穩定， 所以照樣拿來認人；但使用者「忘記網路」再重連就會換一組，那時會退回比 IP， 然後把新的那組重新記起來。</li><li><strong>tailscale profile 也認得出來，但不會說它的 IP 過期。</strong> 那種 profile 存的是 100.x 的 tailnet 位址，跟區網 IP 本來就不一樣，拿來比沒有意義。</li><li><strong>廠商要靠系統上現成的 OUI 資料庫。</strong> 裝了 <code>nmap</code> 或 <code>arp-scan</code> 就有；沒有的話 這一欄一律是 <code>?</code>。hangar 不內建自己的表 —— 完整的表好幾萬筆，只抄一小份會把 不認得的廠商全部誤判成不知名。要指定自己的表：<code>HANGAR_OUI_FILE=/path/to/oui</code>。</li><li><strong>只掃 /24。</strong> 更大的網段逐台 ping 不現實，偵測到 <code>/16</code> 這種會直接要你用 <code>--subnet</code> 指定。網段比 <code>/24</code> 小（<code>/28</code> 之類）則是掃包住它的那個 <code>/24</code>。</li><li><strong><code>scan</code> 不需要 adb 也不需要 scrcpy。</strong> 它只用到 <code>ping</code>、<code>arp</code>／<code>ip</code>、<code>nc</code>， 在一台只裝了網路工具的常駐機器上也跑得動 —— 之後 hub 就是那種機器。</li></ul>
-<h3 id="電量">電量</h3>
-<p><code>list</code> 和 <code>status</code> 都會顯示電量。低於 20%（而且不在充電）會標紅並加上 <code>!</code>：</p>
-<div class="term"><div class="bar">shell</div><pre>     名稱             IP                連線         adb           電量       節點
-  ────────────────────────────────────────────────────────────────────────────────────
-     test             100.101.102.110   online       device        78%        zenfone
-  *  work             100.101.102.103   online       device        12% !      pixel</pre></div>
-<p>電量只在 adb 已經連著的手機上取得（<code>dumpsys battery</code>，一次很短的往返）。 沒連線的顯示 <code>-</code> —— <code>list</code> 不會為了拿電量而硬去建立連線，那會讓它變得很慢。</p>
-<p>狀態是 Android 自己的分類（<code>dumpsys battery</code> 的 <code>status</code>）。<code>not_charging</code> 刻意 不照字面翻成「未充電」——那會被讀成「沒插電」，而那是 <code>discharging</code>：</p>
-<div class="tw"><table><tr><th></th><th>中文</th><th>意思</th></tr><tr><td class="wrap"><code>charging</code></td><td class="wrap">充電中</td><td class="wrap">插著，而且電在進去</td></tr><tr><td class="wrap"><code>discharging</code></td><td class="wrap">放電中</td><td class="wrap">沒插電</td></tr><tr><td class="wrap"><code>not_charging</code></td><td class="wrap">插著沒在充</td><td class="wrap"><strong>插著，但電沒有在進去</strong></td></tr><tr><td class="wrap"><code>full</code></td><td class="wrap">已充滿</td><td class="wrap"></td></tr></table></div>
-<p><code>not_charging</code> 是測試機最容易長期停在的那一個：插著線但系統決定不充——溫度 太高、充電保護（很多機型會刻意停在 80% 左右）、或是那個 USB 孔／線供電不夠。 它跟 <code>discharging</code> 要分開看：一支停在 <code>not_charging</code> 80% 的手機是健康的， 停在 <code>not_charging</code> 9% 的手機是<strong>插著線卻在往下掉</strong>，那條線或那個孔有問題。</p>
-<p>低電量提醒把 <code>not_charging</code> 算成「要充電」（只有 <code>charging</code> 與 <code>full</code> 不提醒） —— 電沒有在進去就是沒有在進去。</p>
-<h3 id="機器可讀的輸出--json">機器可讀的輸出（--json）</h3>
+<ul><li><strong>拿不到機型，也拿不到電量。</strong> 沒開偵錯的手機 adb 完全碰不到，網路層只給得出 IP 與 MAC。這一欄要補齊得等手機端的 agent app（見 <a href="../ROADMAP.md">ROADMAP</a>）。</li><li><strong>隨機 MAC 查不到廠商。</strong> Android 10+ / iOS 14+ 對每個 SSID 用一組隨機 MAC， <code>廠商</code> 會直接寫「隨機 MAC」而不是亂猜一個牌子。它在同一個 SSID 底下仍然穩定， 所以照樣拿來認人；但使用者「忘記網路」再重連就會換一組，那時會退回比 IP， 然後把新的那組重新記起來。</li><li><strong>tailscale profile 也認得出來，但不會說它的 IP 過期。</strong> 那種 profile 存的是 100.x 的 tailnet 位址，跟區網 IP 本來就不一樣，拿來比沒有意義。</li><li><strong>廠商要靠系統上現成的 OUI 資料庫。</strong> 裝了 <code>nmap</code> 或 <code>arp-scan</code> 就有；沒有的話 這一欄一律是 <code>?</code>。hangar 不內建自己的表 —— 完整的表好幾萬筆，只抄一小份會把 不認得的廠商全部誤判成不知名。要指定自己的表：<code>HANGAR_OUI_FILE=/path/to/oui</code>。</li><li><strong>只掃 /24。</strong> 更大的網段逐台 ping 不現實，偵測到 <code>/16</code> 這種會直接要你用 <code>--subnet</code> 指定。網段比 <code>/24</code> 小（<code>/28</code> 之類）則是掃包住它的那個 <code>/24</code>。</li><li><strong><code>scan</code> 不需要 adb 也不需要 scrcpy。</strong> 它只用到 <code>ping</code>、<code>arp</code>／<code>ip</code>、<code>nc</code>， 在一台只裝了網路工具的常駐機器上也跑得動 —— 之後 hub 就是那種機器。</li></ul>
+</section>
+<section id="機器可讀的輸出--json">
+<h2 id="機器可讀的輸出--json">機器可讀的輸出（--json）</h2>
 <p><code>list</code> 和 <code>status</code> 都支援 <code>--json</code>，給程式讀用的：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar status --json
 hangar list --json              <span class="c"># 只出便宜的欄位（快）</span>
@@ -378,45 +442,6 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
 <div class="tw"><table><tr><th>code</th><th>意思</th></tr><tr><td class="wrap"><code>scan_unavailable</code></td><td class="wrap">這台電腦上缺工具（讀不到 ARP 表）</td></tr><tr><td class="wrap"><code>subnet_unknown</code></td><td class="wrap">測不出預設路由的網段，要用 <code>--subnet</code> 指定</td></tr><tr><td class="wrap"><code>subnet_too_big</code></td><td class="wrap">偵測到的網段比 <code>/24</code> 大，掃不動</td></tr><tr><td class="wrap"><code>subnet_invalid</code></td><td class="wrap"><code>--subnet</code> 給的值看不懂</td></tr></table></div>
 <p>「缺工具」跟「區網上沒東西」分成兩件事報，跟 <code>transport_unavailable</code> 是同一個 道理：前者要修的是這台電腦，後者才該去看裝置。</p>
 </section>
-<section id="多台手機">
-<h2 id="多台手機">多台手機</h2>
-<p>每支手機一份 profile，存在：</p>
-<div class="term"><div class="bar">shell</div><pre>~/.config/hangar/
-├── default                 # 預設 profile 名稱
-└── profiles/
-    ├── work.conf
-    └── test.conf</pre></div>
-<p>每個 <code>.conf</code> 長這樣：</p>
-<div class="term"><div class="bar">sh</div><pre>PHONE_HOST=&quot;pixel-7&quot;           <span class="c"># Tailscale 節點名</span>
-PHONE_IP=&quot;100.x.y.z&quot;           <span class="c"># Tailscale IP</span>
-TRANSPORT=&quot;tailscale&quot;          <span class="c"># 連線方式（tailscale / lan）</span>
-DEVICE_SERIAL=&quot;1A2B3C4D&quot;       <span class="c"># 硬體序號，跨 IP / 跨連線方式都不變</span>
-PHONE_MAC=&quot;a4:03:e7:01:02:03&quot;  <span class="c"># 區網 MAC，由 hangar scan 記下來（見上面的區網掃描）</span>
-AGENT_TOKEN=&quot;…64 個十六進位字元…&quot;  <span class="c"># 手機端 agent 的 token，由 hangar enroll 寫入</span>
-AGENT_PORT=&quot;5599&quot;              <span class="c"># agent 聽的埠</span></pre></div>
-<p>區網的 profile 最少只要兩行（<code>PHONE_HOST</code> 是 Tailscale 節點名，區網用不到）：</p>
-<div class="term"><div class="bar">sh</div><pre>PHONE_IP=&quot;192.168.1.50&quot;
-TRANSPORT=&quot;lan&quot;</pre></div>
-<div class="note"><p><strong>有 <code>AGENT_TOKEN</code> 的 profile 是有祕密的檔案。</strong> 那組 token 等於「可以問這支 手機的狀態、之後還能切它的偵錯開關」。檔案權限是 600，不要隨手貼給別人，也 不要丟進版控。沒入伍過的手機沒有這一行，那種 profile 仍然只是幾行純文字。</p></div>
-<p><code>PHONE_IP</code> 以外都是可選的，<code>DEVICE_SERIAL</code> 與 <code>PHONE_MAC</code> 讀不到就當空的。</p>
-<p><code>TRANSPORT</code> 是唯一有遷移動作的欄位。<strong>沒有這一行的 profile 一律當 <code>tailscale</code></strong> —— 那些檔案都是 <code>lan</code> backend 出現以前建的，那時 <code>setup</code> 只做得出 Tailscale profile；現在預設值是 <code>lan</code>，讓它們跟著預設值走等於靜默改掉語意。 所以 hangar 會在下次執行時就地把 <code>TRANSPORT=&quot;tailscale&quot;</code> 補進那些檔案，讓檔案 自己講清楚（檔案唯讀就跳過，讀進記憶體時仍然當 tailscale）。<code>PHONE_MAC</code> 是 <code>hangar scan</code> 第一次用 IP 對上這支手機時 自己補上去的，你不用手寫；重跑 <code>setup</code> 而 IP 沒變的話也會留著。</p>
-<h3 id="典型流程">典型流程</h3>
-<div class="term"><div class="bar">bash</div><pre><span class="c"># 兩支手機各插一次 USB（或各自在同區網配對一次）</span>
-hangar setup --name work
-hangar setup --name test
-
-hangar list
-<span class="c">#   * work    100.101.102.103   online   device       78%   pixel-7</span>
-<span class="c">#     test    100.101.102.110   online   未連線        -     zenfone</span>
-
-hangar use work     <span class="c"># 設為預設</span>
-hangar              <span class="c"># 直接投 work</span>
-hangar -p test      <span class="c"># 投 test</span>
-hangar all          <span class="c"># 兩支一起開，視窗標題各是 work / test</span></pre></div>
-<p>名稱支援唯一前綴，<code>hangar -p te</code> 等同 <code>hangar -p test</code>。</p>
-<h3 id="設計上的幾個重點">設計上的幾個重點</h3>
-<ul><li><strong>不會互相干擾</strong>：每支手機的 adb serial 是各自的 <code>&lt;tailscale-ip&gt;:5555</code>， adb 本來就支援同時連多台；<code>reset</code> 和「清除殘留 scrcpy」都只作用在指定的那一支。</li><li><strong>視窗標題</strong>：<code>--window-title=&lt;profile 名稱&gt;</code>，多開時一眼分辨（你自己傳 <code>--window-title</code> 的話會以你的為準）。</li><li><strong>只有一支時完全不用管 profile</strong>：不用 <code>-p</code>，跟單機模式一樣。</li><li><strong>多支但沒設定預設</strong>：會列出來讓你選，並提示 <code>hangar use &lt;名稱&gt;</code> 可以固定下來。</li><li><strong>從舊版升級</strong>：舊的 <code>~/.config/hangar/config</code> 會自動轉成 profile，原檔改名為 <code>config.migrated</code>。</li></ul>
-</section>
 <section id="多台電腦共用同一支手機">
 <h2 id="多台電腦共用同一支手機">多台電腦共用同一支手機</h2>
 <p><strong>關鍵：手機的 5555 一旦開著，第二台電腦不需要 USB，也不用再跑 <code>adb tcpip</code>。</strong> <code>adb tcpip</code> 是手機端的狀態，跟哪台電腦設定的無關。第二台電腦要的只有兩件事： 一份設定檔，以及手機對這台電腦的授權。</p>
@@ -441,7 +466,7 @@ hangar setup --existing pixel-4</pre></div>
 <p>一樣要在手機上授權那台電腦。</p>
 <p>入伍過的手機（profile 裡有 <code>AGENT_TOKEN</code>）抄過去等於把 token 也給了對方 —— 那組 token 可以問這支手機的狀態、之後還能切偵錯。要給就是有意識地給， 不要因為「只是一個設定檔」就順手 <code>scp</code>。</p>
 <h3 id="acl-要記得加新電腦">ACL 要記得加新電腦</h3>
-<p>如果你照前面設了 ACL，<code>src</code> 只寫了第一台電腦的話，第二台會連不上。 建議把電腦也打 tag：</p>
+<p>如果你照 <a href="#tailscale-acl強烈建議">Tailscale ACL</a> 設了規則，<code>src</code> 只寫了第一台電腦的話， 第二台會連不上。 建議把電腦也打 tag：</p>
 <div class="term"><div class="bar">json</div><pre>{
   &quot;tagOwners&quot;: {
     &quot;tag:phone&quot;:  [&quot;autogroup:admin&quot;],
@@ -462,14 +487,14 @@ export ANDROID_SERIAL=100.x.y.z:5555         <span class="c"># 或區網的 192.
 <div class="term"><div class="bar">bash</div><pre>export ANDROID_SERIAL=&quot;$(hangar status --json -p pixel-4 2&gt;/dev/null | jq -r &#x27;.devices[0].adb_serial&#x27;)&quot;</pre></div>
 <p>Android Studio 走的是它自己啟動的 adb server，要它看到這支手機，最省事的方式 是在開 Studio 之前先 <code>adb connect &lt;ip&gt;:5555</code>（<code>hangar status</code> 會順手做掉）， 裝置選單裡就會出現。</p>
 <p>幾個實際會踩到的：</p>
-<ul><li><strong>手機重開機後 5555 會消失</strong>，RD 那台自己救不回來 —— 要有人把手機接 USB 或在 同區網重跑一次 <code>hangar setup</code>。這是<a href="ROADMAP.md">專案方向</a>裡 agent app 要解決的 問題之一。</li><li><strong>多個人同時裝同一支手機會互相蓋掉。</strong> 目前沒有任何佔用／排隊機制，只能靠講。</li><li><strong>QA 在測加固版時偵錯是關著的</strong>，那時候誰都 build 不進去。這是 ROADMAP 的 M4。</li></ul>
+<ul><li><strong>手機重開機後 5555 會消失</strong>，RD 那台自己救不回來 —— 要有人把手機接 USB 或在 同區網重跑一次 <code>hangar setup</code>。這是<a href="../ROADMAP.md">專案方向</a>裡 agent app 要解決的 問題之一。</li><li><strong>多個人同時裝同一支手機會互相蓋掉。</strong> 目前沒有任何佔用／排隊機制，只能靠講。</li><li><strong>QA 在測加固版時偵錯是關著的</strong>，那時候誰都 build 不進去。這是 ROADMAP 的 M4。</li></ul>
 <h3 id="幾件事先講清楚">幾件事先講清楚</h3>
 <div class="tw"><table><tr><td class="wrap">可以同時投嗎</td><td class="wrap">可以。adbd 支援多個連線，兩台電腦各開各的 scrcpy 視窗互不干擾</td></tr><tr><td class="wrap">build 要經過 hub 嗎</td><td class="wrap">不用。adb 本來就是網路協定，RD 的電腦直接連手機的 5555</td></tr><tr><td class="wrap">手機重開機後怎麼辦</td><td class="wrap">只要<strong>任一台</strong>接得到 USB／同區網的電腦重跑 <code>hangar setup</code>，其他電腦就自動恢復（授權還在，不用再按一次）</td></tr><tr><td class="wrap">第二台電腦能自己救嗎</td><td class="wrap">不行。<code>adb tcpip</code> 需要一條既有的 USB 或同區網連線，遠端做不到</td></tr><tr><td class="wrap">profile 名稱要一致嗎</td><td class="wrap">不用。每台電腦各自取名，<code>--name</code> 想叫什麼都行</td></tr></table></div>
 </section>
 <section id="手機端-agent">
 <h2 id="手機端-agent">手機端 agent</h2>
 <p><code>hangar scan</code> 看得到區網上有哪些裝置，但<strong>沒開偵錯的手機 adb 完全碰不到</strong> —— 拿得到 IP、MAC、廠商，拿不到機型，更拿不到電量。唯一的破口是在手機裡放一支 常駐的 app：它自己回報，不需要 adb。</p>
-<p>程式在 <a href="agent/"><code>agent/</code></a>，協定寫在 <a href="ROADMAP.md">ROADMAP</a> 的「M3 協定」。</p>
+<p>程式在 <a href="../agent/"><code>agent/</code></a>，協定寫在 <a href="../ROADMAP.md">ROADMAP</a> 的「M3 協定」。</p>
 <h3 id="入伍一次性-adbusb-或網路">入伍：一次性 ADB（USB 或網路）</h3>
 <div class="term"><div class="bar">bash</div><pre>cd agent &amp;&amp; ./gradlew assembleDebug     <span class="c"># 先 build 出 APK</span>
 cd .. &amp;&amp; hangar enroll -p work          <span class="c"># USB，或已經通得到的網路／Tailscale ADB</span></pre></div>
@@ -486,7 +511,7 @@ cd .. &amp;&amp; hangar enroll -p work          <span class="c"># USB，或已�
      機型  Pixel 7 Pro
      電量  78%  放電中  27.5°C</pre></div>
 <p><code>--apk</code> 可以指定別的檔案；不給的話會找這個 repo 裡 build 出來的那份。</p>
-<p><strong>一台手機只入伍一次。</strong> 已經入伍過的會直接拒絕；要重來得先清掉手機上的入伍 狀態，而那需要 adb。理由見 <a href="agent/README.md">agent/README.md</a>，這台電腦手上沒有 token 時怎麼辦見 <a href="#接手一支已入伍的手機--takeover"><code>--takeover</code></a>。</p>
+<p><strong>一台手機只入伍一次。</strong> 已經入伍過的會直接拒絕；要重來得先清掉手機上的入伍 狀態，而那需要 adb。理由見 <a href="../agent/README.md">agent/README.md</a>，這台電腦手上 沒有 token 時怎麼辦見 <a href="#接手一支已入伍的手機--takeover"><code>--takeover</code></a>。</p>
 <h3 id="升級舊版-agent--reinstall">升級舊版 agent：<code>--reinstall</code></h3>
 <p>手機上那支 agent 還在、也還入伍著，只是版本太舊 —— 例如裝置牆說「這支 agent 沒宣告 <code>ring</code> 能力」。這種時候要的不是重新入伍，是換一支新的 APK：</p>
 <div class="term"><div class="bar">bash</div><pre>cd agent &amp;&amp; ./gradlew assembleDebug
@@ -576,7 +601,7 @@ hangar usb  --json           插在 hub 這台機器上的 USB 裝置（含未�
 <p><code>--port 80</code> 這種 1024 以下的埠會說是權限問題，<code>--bind</code> 給了這台機器上沒有的 位址則會說是位址問題 —— 三件事分開講，因為要做的事完全不同。</p>
 <h3 id="那頁上的狀態是什麼意思">那頁上的狀態是什麼意思</h3>
 <div class="tw"><table><tr><td class="wrap"><code>ready</code></td><td class="wrap">adb 是 <code>device</code>，可以 build 也可以投影</td></tr><tr><td class="wrap"><code>no_adb</code></td><td class="wrap">連得到，但 adb 不是 <code>device</code> —— 幾乎都是手機重開機把 5555 弄丟了</td></tr><tr><td class="wrap"><code>unauthorized</code></td><td class="wrap">這台 hub 還沒被那支手機授權過（要有人在手機上按允許）</td></tr><tr><td class="wrap"><code>offline</code></td><td class="wrap">手機不在線上</td></tr><tr><td class="wrap"><code>unknown</code></td><td class="wrap">只從掃描看到它，<code>hangar list</code> 那邊沒資料（那次輪詢多半失敗了）</td></tr><tr><td class="wrap"><code>unmanaged</code></td><td class="wrap">掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP、MAC、廠商</td></tr></table></div>
-<p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序（見上面的 <a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
+<p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序 （見<a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
 <h3 id="這一版是唯讀的">這一版是唯讀的</h3>
 <p>裝置牆不會去動手機，也不會去改設定檔：輪詢只跑 <code>list</code> 與 <code>scan</code>，<strong>刻意不帶 <code>--fix-ip</code></strong>（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 <code>hangar scan --fix-ip</code>。</p>
 <p>牆上的<strong>投影、響鈴、切偵錯按鈕也沒有破壞這件事</strong>：它們叫的不是 hub，而是你 自己那台電腦上的 helper（見<a href="#從裝置牆上按投影">從裝置牆上按投影</a>）。helper 再呼叫 CLI，CLI 才去碰手機裡的 agent。hub 這一側仍然只有唯讀資料與輪詢喚醒 端點；沒有任何 <code>/api/*</code> 寫入手機的路。</p>
@@ -599,7 +624,7 @@ hangar list
 
 <span class="c"># 然後把舊機器上的那把砍掉 —— 這一步不做，你就是把完整裝置控制權複製了一份</span>
 ssh 舊hub &#x27;rm -f ~/.android/adbkey ~/.android/adbkey.pub &amp;&amp; adb kill-server&#x27;</pre></div>
-<div class="note"><p>這跟前面「<strong>不要把 <code>adbkey</code> 複製到別台電腦</strong>」不衝突：那條講的是同時存在的 多台電腦（複製＝多一份完整控制權）。汰換是搬移，前提是<strong>舊的那份要刪掉</strong>。 做不到「確定刪掉」的話，就老老實實一支一支按。</p></div>
+<div class="note"><p>這跟<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>裡「<strong>不要把 <code>adbkey</code> 複製到別台 電腦</strong>」不衝突：那條講的是同時存在的多台電腦（複製＝多一份完整控制權）。 汰換是搬移，前提是<strong>舊的那份要刪掉</strong>。 做不到「確定刪掉」的話，就老老實實一支一支按。</p></div>
 <h4 id="搬完檢查這幾件事">搬完檢查這幾件事</h4>
 <div class="term"><div class="bar">bash</div><pre>hangar list                      <span class="c"># 每一支的狀態都對嗎</span>
 hangar scan --fix-ip             <span class="c"># 新機器可能在不同網段，順便把換過的 IP 修對</span>
@@ -663,9 +688,9 @@ hangar adb -p work --on                      <span class="c"># 重新開啟偵�
 <div class="term"><div class="bar">bash</div><pre>hangar enroll -p &lt;這台電腦上的 profile&gt; --reinstall</pre></div>
 <p>判斷「是不是舊版」看的是 agent 回報的數字版號，並以目前標準 <code>0.1.2</code> 做比較： <code>0.1.1</code> 會被視為舊版，<code>0.1.2</code> 以及更高版本不會被降版。<code>can.ring</code> 只代表 響鈴能力，不再拿來推測 APK 版本；<code>can.toggle_adb</code> 也不能拿來判斷，因為 <code>WRITE_SECURE_SETTINGS</code> 沒授予時它本來就可能是 <code>false</code>。</p>
 <p>這顆按鈕只在 ADB 狀態是 <code>device</code> 時出現：沒有 ADB 就沒有路把 APK 送上去，卡片 會直接說明原因，不留一顆按下去一定失敗的按鈕。helper 沒連上時它一樣退成 「複製更新指令」。</p>
-<p>換版<strong>不會動到入伍狀態，token 也不會變</strong>，所以其他也入伍過這支手機的電腦不會 因此被鎖在門外；理由見上面的 <a href="#升級舊版-agent--reinstall"><code>--reinstall</code></a>。 hub 這一側沒有新增任何會動手機的端點 —— 按鈕走的仍然是 helper 的 <code>/enroll</code>， 只是 body 多一個 <code>reinstall</code>。</p>
+<p>換版<strong>不會動到入伍狀態，token 也不會變</strong>，所以其他也入伍過這支手機的電腦不會 因此被鎖在門外；理由見 <a href="#升級舊版-agent--reinstall"><code>--reinstall</code></a>。 hub 這一側沒有新增任何會動手機的端點 —— 按鈕走的仍然是 helper 的 <code>/enroll</code>， 只是 body 多一個 <code>reinstall</code>。</p>
 <h3 id="每台電腦要先做的事">每台電腦要先做的事</h3>
-<div class="tw"><table><tr><th></th><th>為什麼</th></tr><tr><td class="wrap">裝好 <code>hangar</code> + <code>adb</code> + <code>scrcpy</code>（<a href="#安裝">安裝</a>那一節）</td><td class="wrap">按鈕跑的就是 <code>hangar -p &lt;名稱&gt;</code>，它省的是打字，不是省掉這些</td></tr><tr><td class="wrap">跑過一次 <code>hangar setup</code></td><td class="wrap"><strong>這一步躲不掉</strong>：adb 授權綁的是每台電腦自己的金鑰，要有人在手機上按「一律允許」。任何按鈕都繞不過它</td></tr><tr><td class="wrap">跑著 <code>hangar_helper.py</code></td><td class="wrap">網頁啟動不了本機程式</td></tr></table></div>
+<div class="tw"><table><tr><th></th><th>為什麼</th></tr><tr><td class="wrap">裝好 <code>hangar</code> + <code>adb</code> + <code>scrcpy</code>（README 的<a href="#安裝">安裝</a>那一節）</td><td class="wrap">按鈕跑的就是 <code>hangar -p &lt;名稱&gt;</code>，它省的是打字，不是省掉這些</td></tr><tr><td class="wrap">跑過一次 <code>hangar setup</code></td><td class="wrap"><strong>這一步躲不掉</strong>：adb 授權綁的是每台電腦自己的金鑰，要有人在手機上按「一律允許」。任何按鈕都繞不過它</td></tr><tr><td class="wrap">跑著 <code>hangar_helper.py</code></td><td class="wrap">網頁啟動不了本機程式</td></tr></table></div>
 <p>沒 setup 過的手機按下去，按鈕會照實說：</p>
 <div class="term"><div class="bar">shell</div><pre>這台電腦上沒有這支手機（work）—— 先在這台電腦跑一次 hangar setup</pre></div>
 <p>牆上的名字是 <strong>hub 那台機器</strong>取的，同一支手機在你的電腦上可以叫別的名字： 按鈕會連<strong>序號</strong>一起送，helper 優先用序號去對，對到了會告訴你它在這台電腦上 叫什麼。這跟 <code>hangar scan</code> 認人用的是同一套順序。</p>
@@ -703,19 +728,6 @@ hangar adb -p work --on                      <span class="c"># 重新開啟偵�
   &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
 &lt;/dict&gt;&lt;/plist&gt;</pre></div>
 <p><code>PATH</code> 那一段不能省：launchd 給的環境很乾淨，<code>adb</code> 與 <code>scrcpy</code> 在 Homebrew 底下，找不到的話按鈕會說投影沒起來。</p>
-</section>
-<section id="手機重開機後">
-<h2 id="手機重開機後">手機重開機後</h2>
-<p><strong>這是 adb over TCP 的硬限制，不是 bug。</strong></p>
-<p><code>adb tcpip 5555</code> 是讓 adbd 重啟並改用 TCP 模式，這個狀態<strong>不會持久化</strong>。 手機一重開機，adbd 就回到 USB 模式，5555 埠消失。非 root 無法繞過。</p>
-<p>所以重開機後必須：</p>
-<ol class="list"><li>把那支手機接回 USB，或讓它回到跟電腦同一個 Wi-Fi</li><li>重跑 <code>hangar setup --name &lt;該手機&gt;</code></li></ol>
-<p>hangar 偵測到這個情況時會直接講清楚，不會讓你對著原始 adb 錯誤訊息猜：</p>
-<div class="term"><div class="bar">shell</div><pre> xx  無法連上 100.101.102.103:5555（work）
-     adb: failed to connect to &#x27;100.101.102.103:5555&#x27;: Connection refused
- xx  手機上的 adb 5555 埠沒在聽 —— 通常代表手機重開機過（非 root 無法持久化）。
-     請把這支手機接回 USB 或回到同一區網，重跑：hangar setup --name work</pre></div>
-<div class="note"><p>如果手機有 root，可以用 <code>setprop persist.adb.tcp.port 5555</code> 讓它開機就監聽。 但那等於把 adb 永久開在所有網路介面上，請務必搭配下面的 ACL 一起用。</p></div>
 </section>
 <section id="tailscale-acl強烈建議">
 <h2 id="tailscale-acl強烈建議">Tailscale ACL（強烈建議）</h2>
@@ -800,7 +812,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 </section>
 <section id="疑難排解">
 <h2 id="疑難排解">疑難排解</h2>
-<div class="tw"><table><tr><th>症狀</th><th>原因 / 解法</th></tr><tr><td class="wrap"><code>Tailscale 目前是 Stopped</code></td><td class="wrap"><code>tailscale up</code></td></tr><tr><td class="wrap"><code>手機不在 tailnet 上</code></td><td class="wrap">手機端 Tailscale App 沒開，或被系統省電關掉</td></tr><tr><td class="wrap"><code>無法連上 …:5555</code> + Connection refused</td><td class="wrap">手機重開機過 → 重跑 <code>hangar setup</code></td></tr><tr><td class="wrap"><code>adb 狀態為 unauthorized</code></td><td class="wrap">手機上會跳「允許 USB 偵錯」，勾「一律允許」再按允許</td></tr><tr><td class="wrap"><code>adb 狀態為 offline</code></td><td class="wrap">Hangar 會自動重試一次；還是不行就 <code>hangar reset</code></td></tr><tr><td class="wrap">一直走 DERP relay</td><td class="wrap">兩端的 UDP 打洞被防火牆擋住。公司網路常見，<code>tailscale netcheck</code> 可以看細節</td></tr><tr><td class="wrap">畫面很卡但顯示 direct</td><td class="wrap">手機在弱訊號的行動網路，試 <code>hangar --lq</code></td></tr><tr><td class="wrap"><code>hangar all</code> 只開起來一部分</td><td class="wrap">看訊息裡哪一支失敗，通常是那支不在 tailnet 或重開過</td></tr><tr><td class="wrap">密碼頁 / 銀行 App / 鎖定畫面全黑</td><td class="wrap">App 加了 <code>FLAG_SECURE</code>，系統層擋掉擷取，見上面「<a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑</a>」</td></tr><tr><td class="wrap"><code>cannot connect to daemon at tcp:5037</code></td><td class="wrap">本機 adb server 掛了（<code>adb tcpip</code> 之後偶爾會）。Hangar 會自動 <code>start-server</code> 重試一次；還是不行就 <code>adb kill-server &amp;&amp; adb start-server</code></td></tr><tr><td class="wrap">想看 scrcpy 實際參數</td><td class="wrap">Hangar 啟動前會把完整指令印出來</td></tr></table></div>
+<div class="tw"><table><tr><th>症狀</th><th>原因 / 解法</th></tr><tr><td class="wrap"><code>Tailscale 目前是 Stopped</code></td><td class="wrap"><code>tailscale up</code></td></tr><tr><td class="wrap"><code>手機不在 tailnet 上</code></td><td class="wrap">手機端 Tailscale App 沒開，或被系統省電關掉</td></tr><tr><td class="wrap"><code>無法連上 …:5555</code> + Connection refused</td><td class="wrap">手機重開機過 → 重跑 <code>hangar setup</code></td></tr><tr><td class="wrap"><code>adb 狀態為 unauthorized</code></td><td class="wrap">手機上會跳「允許 USB 偵錯」，勾「一律允許」再按允許</td></tr><tr><td class="wrap"><code>adb 狀態為 offline</code></td><td class="wrap">Hangar 會自動重試一次；還是不行就 <code>hangar reset</code></td></tr><tr><td class="wrap">一直走 DERP relay</td><td class="wrap">兩端的 UDP 打洞被防火牆擋住。公司網路常見，<code>tailscale netcheck</code> 可以看細節</td></tr><tr><td class="wrap">畫面很卡但顯示 direct</td><td class="wrap">手機在弱訊號的行動網路，試 <code>hangar --lq</code></td></tr><tr><td class="wrap"><code>hangar all</code> 只開起來一部分</td><td class="wrap">看訊息裡哪一支失敗，通常是那支不在 tailnet 或重開過</td></tr><tr><td class="wrap">密碼頁 / 銀行 App / 鎖定畫面全黑</td><td class="wrap">App 加了 <code>FLAG_SECURE</code>，系統層擋掉擷取，見「<a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑</a>」</td></tr><tr><td class="wrap"><code>cannot connect to daemon at tcp:5037</code></td><td class="wrap">本機 adb server 掛了（<code>adb tcpip</code> 之後偶爾會）。Hangar 會自動 <code>start-server</code> 重試一次；還是不行就 <code>adb kill-server &amp;&amp; adb start-server</code></td></tr><tr><td class="wrap">想看 scrcpy 實際參數</td><td class="wrap">Hangar 啟動前會把完整指令印出來</td></tr></table></div>
 <p>連線卡死的萬用手法：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar reset</pre></div>
 <p>還是不行就殺掉 adb server 重來：</p>
@@ -808,20 +820,21 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 </section>
 <section id="參與開發">
 <h2 id="參與開發">參與開發</h2>
-<p>程式碼分層、測試怎麼跑、專案往哪走，都在 <a href="ROADMAP.md">ROADMAP.md</a>。</p>
+<p>程式碼分層、測試怎麼跑、專案往哪走，都在 <a href="../ROADMAP.md">ROADMAP.md</a>。</p>
 </section>
 <section id="授權">
 <h2 id="授權">授權</h2>
-<p><a href="LICENSE">MIT License</a> — Copyright (c) 2026 Alan Lai</p>
+<p><a href="../LICENSE">MIT License</a> — Copyright (c) 2026 Alan Lai</p>
 <p>Hangar 本身不包含任何第三方程式碼，只在執行期呼叫下列工具， 這些工具需要你自行安裝，各自維持原本的授權：</p>
 <div class="tw"><table><tr><th>工具</th><th>授權</th></tr><tr><td class="wrap"><a href="https://github.com/Genymobile/scrcpy">scrcpy</a></td><td class="wrap">Apache-2.0</td></tr><tr><td class="wrap"><a href="https://github.com/tailscale/tailscale">tailscale</a></td><td class="wrap">BSD-3-Clause</td></tr><tr><td class="wrap"><a href="https://github.com/jqlang/jq">jq</a></td><td class="wrap">MIT</td></tr><tr><td class="wrap"><code>adb</code>（Android SDK Platform-Tools）</td><td class="wrap">Android SDK License Agreement</td></tr></table></div>
 <p>Android 與 Tailscale 為各自權利人之商標。本專案與 Google、Tailscale Inc. 及 scrcpy 專案均無關聯，亦未獲其背書。</p>
 </section>
 <footer class="end">
-  <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
-     內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 b7a141139f41</span>
-     —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
+  <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
+     （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
+     在 <strong>ROADMAP.md</strong>。</p>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 c5b21a0d4049</span>
+     —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
 </div>
