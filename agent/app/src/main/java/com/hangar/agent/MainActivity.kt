@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 
 /**
@@ -54,7 +55,10 @@ class MainActivity : Activity() {
             setPadding(0, pad, 0, 0)
             text = body()
         })
-        setContentView(root)
+        setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        })
     }
 
     private fun body(): String {

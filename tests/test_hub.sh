@@ -133,11 +133,21 @@ assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 check  "首頁不快取舊版按鈕事件" "Cache-Control: no-store" "$(get_headers "$HUB_URL/")"
 check  "首頁含註冊 handler" "async function enroll" "$(get "$HUB_URL/")"
+check  "首頁含響鈴 handler" "async function ring" "$(get "$HUB_URL/")"
+check  "首頁含切偵錯 handler" "async function toggleAdb" "$(get "$HUB_URL/")"
 check  "註冊中只保留一顆按鈕" 'st.action === "enroll" && st.busy' "$(get "$HUB_URL/")"
 check  "agent 無回應且 adb ready 可補裝" \
   'd.agent.reachable === false && d.agent.enrolled === null' "$(get "$HUB_URL/")"
+check  "首頁含重新安裝 handler" "async function reinstall" "$(get "$HUB_URL/")"
+# 舊版的判斷點只能是「有沒有宣告 can.ring」；can.toggle_adb 是 false 的理由
+# 太多（權限沒授予），拿它判斷會把好好的新版誤判成舊版
+check  "舊版是用 can.ring 判斷的" "d.agent.can && d.agent.can.ring === true" "$(get "$HUB_URL/")"
+check  "重裝按鈕要 adb 通得到"    'd.adb_state !== "device"' "$(get "$HUB_URL/")"
+check  "重裝走的是 helper 的 enroll" "reinstall: true" "$(get "$HUB_URL/")"
+# 這一條是整條路的重點：hub 自己永遠不會動手機
+nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "6" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "7" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -436,6 +446,9 @@ nocheck "主動輪詢也不帶 --fix-ip" "fix-ip" "$(cat "$MOCK_STATE/argv_log")
 # GET 不該是觸發器 —— 那會讓任何預抓網址的東西都去戳一次手機
 assert "GET 不觸發輪詢"    "404" "$(code1 "$(get_code "$HUB_URL/api/refresh")")"
 assert "不認得的 what 回 400" "400" "$(code1 "$(post "$HUB_URL/api/refresh?what=nonesuch")")"
+# M3d/M4 的寫入仍然走本機 helper；hub 不可以悄悄長出直連手機的端點。
+assert "hub 沒有響鈴寫入端點" "404" "$(code1 "$(post "$HUB_URL/api/ring")")"
+assert "hub 沒有偵錯寫入端點" "404" "$(code1 "$(post "$HUB_URL/api/adb")")"
 hub_stop
 
 echo "=== H13. 起不來的時候要講人話，不要丟 traceback ==="

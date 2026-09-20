@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 6ef564142901</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 249a9b4eadef</span><span class="fact">hangar v1.2.0</span></div>
 </header>
 
 <div class="cols">
@@ -134,7 +134,7 @@
 <main>
 <p>一整隊 Android 測試機的停放、維護與調度。</p>
 <p>透過 <strong>Tailscale</strong> 遠端連到手機、用 <strong>scrcpy</strong> 投影畫面（手機在 4G/5G、在別的網段、 在公司 NAT 後面都能投），並且管得到那些<strong>沒開偵錯、adb 碰不到</strong>的手機。</p>
-<div class="tw"><table><tr><td class="wrap"><a href="hangar"><code>hangar</code></a></td><td class="wrap">CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源</td></tr><tr><td class="wrap"><a href="hub"><code>hub/</code></a></td><td class="wrap">常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）</td></tr><tr><td class="wrap"><a href="helper"><code>helper/</code></a></td><td class="wrap">跑在<strong>你自己那台電腦</strong>上的小服務：讓裝置牆的投影按鈕在你面前開視窗</td></tr><tr><td class="wrap"><a href="agent"><code>agent/</code></a></td><td class="wrap">手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型</td></tr></table></div>
+<div class="tw"><table><tr><td class="wrap"><a href="hangar"><code>hangar</code></a></td><td class="wrap">CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源</td></tr><tr><td class="wrap"><a href="hub"><code>hub/</code></a></td><td class="wrap">常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）</td></tr><tr><td class="wrap"><a href="helper"><code>helper/</code></a></td><td class="wrap">跑在<strong>你自己那台電腦</strong>上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動</td></tr><tr><td class="wrap"><a href="agent"><code>agent/</code></a></td><td class="wrap">手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型</td></tr></table></div>
 <div class="note"><p>專案方向、程式分層、測試涵蓋範圍與待確認清單見 <a href="ROADMAP.md">ROADMAP.md</a>。</p></div>
 <div class="term"><div class="bar">shell</div><pre>hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
 hangar                      # 之後隨時投影
@@ -142,8 +142,10 @@ hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
 hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
+hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
+hangar adb -p work --off    # 關閉偵錯，預設 1800 秒後自動開回
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
-./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的投影按鈕要按得動</pre></div>
+./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的動作按鈕要按得動</pre></div>
 <section id="它解決了什麼">
 <h2 id="它解決了什麼">它解決了什麼</h2>
 <p><code>adb</code> 本來只能走 USB 或同一個區網。要跨網路投影，得處理一堆狀態問題：</p>
@@ -210,7 +212,10 @@ hangar forget work      <span class="c"># 刪掉該手機的設定</span>
 hangar all              <span class="c"># 同時投影所有手機</span>
 hangar all --screen-on  <span class="c"># 同上，但不關手機螢幕</span>
 hangar scan             <span class="c"># 掃描區網，列出看得到的裝置</span>
-hangar enroll           <span class="c"># 用 USB 或網路 ADB 安裝並入伍 agent</span></pre></div>
+hangar enroll           <span class="c"># 用 USB 或網路 ADB 安裝並入伍 agent</span>
+hangar enroll -p work --reinstall   <span class="c"># 只換一支新版 APK（升級舊版 agent）</span>
+hangar ring -p work     <span class="c"># 響鈴識別一支在線上的手機</span>
+hangar adb -p work --off --revert-after 900  <span class="c"># 暫時關閉偵錯</span></pre></div>
 <div class="term"><div class="bar">bash</div><pre>hangar --version        <span class="c"># 或 -V</span>
 hangar help             <span class="c"># 或 -h / --help</span></pre></div>
 <p>指令別名：<code>status</code> = <code>st</code>、<code>list</code> = <code>ls</code>、<code>forget</code> = <code>rm</code>。</p>
@@ -273,7 +278,7 @@ hangar scan --json</pre></div>
 hangar list --json              <span class="c"># 只出便宜的欄位（快）</span>
 hangar list --json --probe      <span class="c"># 連線路徑、機型、電量一起取（慢）</span></pre></div>
 <div class="term"><div class="bar">json</div><pre>{
-  &quot;schema&quot;: 3,
+  &quot;schema&quot;: 4,
   &quot;devices&quot;: [
     {
       &quot;profile&quot;: &quot;work&quot;,
@@ -292,7 +297,11 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
       &quot;android&quot;: { &quot;release&quot;: &quot;14&quot;, &quot;sdk&quot;: 34 },
       &quot;battery&quot;: { &quot;level&quot;: 78, &quot;status&quot;: &quot;discharging&quot;, &quot;temperature_c&quot;: 27.5,
                    &quot;source&quot;: &quot;adb&quot; },
-      &quot;agent&quot;: { &quot;reachable&quot;: true, &quot;version&quot;: &quot;0.1.0&quot;, &quot;enrolled&quot;: true },
+      &quot;agent&quot;: {
+        &quot;reachable&quot;: true, &quot;version&quot;: &quot;0.1.0&quot;, &quot;enrolled&quot;: true,
+        &quot;can&quot;: { &quot;ring&quot;: true, &quot;toggle_adb&quot;: true, &quot;toggle_wifi_adb&quot;: false },
+        &quot;adb&quot;: { &quot;enabled&quot;: true, &quot;wifi_enabled&quot;: null, &quot;wifi_port&quot;: null }
+      },
       &quot;scrcpy_pids&quot;: [12345],
       &quot;errors&quot;: []
     }
@@ -304,7 +313,7 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
 <p><code>adb_port_closed</code> 只在「連得到機器但埠不通」時才出現。傳輸層整個沒通的時候 不會一起報它 —— 否則讀 code 的人會去叫使用者插 USB，方向完全錯了。</p>
 <ul><li><strong>慢欄位預設略過。</strong> <code>path</code> 要跑一次 <code>tailscale ping</code>，<code>model</code> / <code>battery</code> / <code>mac</code> 各要一次 adb 往返。十支手機全取會跑很久，所以 <code>list --json</code> 預設把它們留成 <code>null</code>，要完整資料才加 <code>--probe</code>。<code>status --json</code> 只有一支，一律完整探測。</li></ul>
 <ul><li><strong><code>--json</code> 時 stdout 只有 JSON。</strong> 所有給人看的訊息都轉到 stderr， 所以 <code>hangar list --json 2&gt;/dev/null | jq .</code> 一定解析得過。</li></ul>
-<ul><li><strong><code>battery.source</code> 與 <code>agent</code> 是 schema 2 加的。</strong> 前者說這筆電量是誰量的 （<code>adb</code> 還是 <code>agent</code>），後者在沒入伍也叫不動時是 <code>null</code> —— 細節見 <a href="#手機端-agent">手機端 agent</a>。</li></ul>
+<ul><li><strong><code>battery.source</code> 與 <code>agent</code> 是 schema 2 加的，<code>agent.can</code> / <code>agent.adb</code> 是 schema 4 加的。</strong> 前者說這筆電量是誰量的 （<code>adb</code> 還是 <code>agent</code>），後者在沒入伍也叫不動時是 <code>null</code> —— 細節見 <a href="#手機端-agent">手機端 agent</a>。</li></ul>
 <ul><li><strong><code>mac</code> 是 schema 3 加的，跟 <code>scan</code> 那份不是同一個來源。</strong> 這裡的 MAC 是 <code>adb shell cmd wifi status</code> 問手機自己要的，所以走 tailscale 或人在別的 Wi-Fi 上的手機也有 —— <code>hangar scan</code> 是對某個網段送 ARP，那些手機它永遠對不上。 （不讀 <code>/sys/class/net/wlan0/address</code> 或 <code>ip link</code> 是因為 Android 11 起這兩條路 對 shell 使用者都是 <code>Permission denied</code>。）</li></ul>
 <p><code>randomized</code> 為 <code>true</code> 表示這是 Android 10+ 每個 SSID 一組的隨機 MAC，換個 Wi-Fi 就換一組 —— <code>ssid</code> 記的就是「這組 MAC 屬於哪個網路」。<strong>別拿它當長期 識別碼</strong>，那是 <code>device_serial</code> 的工作。兩邊都有 MAC 時 hub 用 <code>scan</code> 那一份： ARP 換來的才是 hub 實際看到的那張網卡。</p>
 <ul><li><strong><code>device_serial</code> 是穩定識別碼。</strong> IP 會變、連線方式會換，硬體序號不會。 這是日後要認出「同一支手機」時唯一可靠的欄位。</li></ul>
@@ -447,6 +456,25 @@ cd .. &amp;&amp; hangar enroll -p work          <span class="c"># USB，或已�
      電量  78%  放電中  27.5°C</pre></div>
 <p><code>--apk</code> 可以指定別的檔案；不給的話會找這個 repo 裡 build 出來的那份。</p>
 <p><strong>一台手機只入伍一次。</strong> 已經入伍過的會直接拒絕，要重來得先 <code>adb shell pm clear com.hangar.agent</code> —— 那本來就需要 adb。理由見 <a href="agent/README.md">agent/README.md</a>。</p>
+<h3 id="升級舊版-agent--reinstall">升級舊版 agent：<code>--reinstall</code></h3>
+<p>手機上那支 agent 還在、也還入伍著，只是版本太舊 —— 例如裝置牆說「這支 agent 沒宣告 <code>ring</code> 能力」。這種時候要的不是重新入伍，是換一支新的 APK：</p>
+<div class="term"><div class="bar">bash</div><pre>cd agent &amp;&amp; ./gradlew assembleDebug
+cd .. &amp;&amp; hangar enroll -p work --reinstall</pre></div>
+<div class="term"><div class="bar">shell</div><pre>==&gt; 1/4 換上新版 agent（保留入伍狀態）
+ ok  安裝完成
+==&gt; 2/4 重新授予 WRITE_SECURE_SETTINGS
+ ok  已授予
+==&gt; 3/4 把 agent 叫起來
+==&gt; 4/4 驗證：用原本那組 token 問一次
+ ok  agent 0.2.0 回應正常
+     機型  Pixel 7 Pro
+     能力  響鈴、切偵錯、切無線偵錯
+
+ ok  重新安裝完成。token 沒有變，牆上那張卡不用重新入伍。</pre></div>
+<p><code>adb install -r</code> 是<strong>就地升級</strong>，app 的資料不會被清掉 —— 所以 token 還在手機裡， 這台電腦的 profile 不用動。這一點是刻意的：token 是每台電腦各自保管的， <code>pm clear</code> 之後其他也入伍過這支手機的電腦會全部被鎖在門外，而升級不該有這種代價。</p>
+<p>順手處理的兩件事：</p>
+<ul><li><strong>權限</strong>：第二步會再授予一次 <code>WRITE_SECURE_SETTINGS</code>。上次入伍時這一步失敗 （手機沒解鎖、被 OEM 擋掉）的手機，升級之後就切得動偵錯了。</li><li><strong>入伍資料不見了</strong>：如果新裝上去的 agent 說自己沒入伍（有人 <code>pm clear</code> 過，或 app 曾被解除安裝），這時候手上還有 adb，指令會直接補一次完整入伍並寫一組新 token，不會丟一個錯誤要你再跑一次別的指令。</li></ul>
+<p>裝得上去、但新版不認這台電腦的 token（手機上那支是別台電腦入伍的），指令會停下來 講清楚，不會假裝成功。這種情況只能 <code>pm clear</code> 之後重新入伍，代價就是上面那句。</p>
 <h3 id="入伍之後有什麼不一樣">入伍之後有什麼不一樣</h3>
 <div class="tw"><table><tr><th></th><th>沒有 agent</th><th>有 agent</th></tr><tr><td class="wrap">手機重開機後（5555 沒了）</td><td class="wrap"><code>list</code> 只剩「連不上」</td><td class="wrap">機型、電量照樣看得到</td></tr><tr><td class="wrap">沒開偵錯時</td><td class="wrap">只有 IP / MAC / 廠商</td><td class="wrap">完整裝置資訊</td></tr><tr><td class="wrap">電量</td><td class="wrap">要 adb 進得去才拿得到</td><td class="wrap">agent 直接回報</td></tr></table></div>
 <p><code>hangar list --json --probe</code> 的 <code>battery.source</code> 會告訴你這筆電量是誰量的 （<code>adb</code> 還是 <code>agent</code>），<code>agent</code> 物件則說得出 agent 在不在：</p>
@@ -455,7 +483,7 @@ cd .. &amp;&amp; hangar enroll -p work          <span class="c"># USB，或已�
 <p><code>agent.reachable</code> 是 <code>false</code> 而 profile 又有 token，意思是<strong>這支手機入伍過但 agent 現在叫不動</strong> —— 現在可能還沒事（adb 還通），但下次重開機就會失聯。 裝置牆會把這件事標出來。</p>
 <p><code>hangar scan</code> 也會順手探每台的 5599：探得到就在 <code>agent</code> 欄標「有」。它先用 <code>nc</code> 測埠、只對有回應的發 HTTP —— 一個 /24 上大多數東西沒有 agent，每台都等 逾時的話掃描會從幾秒變成幾分鐘。</p>
 <h3 id="限制">限制</h3>
-<ul><li><strong>需要 <code>curl</code></strong>（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。</li><li><strong>agent 拿不到自己的 MAC</strong>（Android 6+ 對一般 app 回傳假的 <code>02:00:00:00:00:00</code>），所以 agent 回報的資料裡沒有這一欄。MAC 由另外兩條路 取得：<code>hangar scan</code> 從 ARP 表學，或 <code>hangar list --probe</code> 用 <code>adb shell cmd wifi status</code> 問 —— 後者連 adb 通得到但不在同一段區網的手機 也拿得到。</li><li><strong>agent 也拿不到硬體序號</strong>（Android 10+ 要特權權限），所以序號是入伍時由電腦 這一側寫進去的 —— 兩邊因此一定是同一個字串。</li><li><strong>切偵錯還沒做</strong>（M4）。現在 <code>POST /hangar/v1/adb</code> 一律回 501。</li></ul>
+<ul><li><strong>需要 <code>curl</code></strong>（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。</li><li><strong>agent 拿不到自己的 MAC</strong>（Android 6+ 對一般 app 回傳假的 <code>02:00:00:00:00:00</code>），所以 agent 回報的資料裡沒有這一欄。MAC 由另外兩條路 取得：<code>hangar scan</code> 從 ARP 表學，或 <code>hangar list --probe</code> 用 <code>adb shell cmd wifi status</code> 問 —— 後者連 adb 通得到但不在同一段區網的手機 也拿得到。</li><li><strong>agent 也拿不到硬體序號</strong>（Android 10+ 要特權權限），所以序號是入伍時由電腦 這一側寫進去的 —— 兩邊因此一定是同一個字串。</li><li><strong>切偵錯已由 agent 實作。</strong> <code>POST /hangar/v1/adb</code> 支援雙向切換；關閉時可帶 <code>revert_after_s</code>，agent 會用鬧鐘在期限到時自動開回。CLI 是 <code>hangar adb -p work --off --revert-after 1800</code>。能力不足的裝置會明確回報， 不會把「不能寫」誤當成成功。</li><li><strong>響鈴已由 agent 實作。</strong> <code>hangar ring -p work --seconds 30</code> 走 alarm stream、 震動與高優先度通知，最長 120 秒；<code>--stop</code> 或手機通知上的「找到了」都能停止。</li></ul>
 </section>
 <section id="hub裝置牆網頁">
 <h2 id="hub裝置牆網頁">hub（裝置牆網頁）</h2>
@@ -489,8 +517,8 @@ hangar scan --json           區網上看得到的所有東西：IP、MAC、廠�
 <p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序（見上面的 <a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
 <h3 id="這一版是唯讀的">這一版是唯讀的</h3>
 <p>裝置牆不會去動手機，也不會去改設定檔：輪詢只跑 <code>list</code> 與 <code>scan</code>，<strong>刻意不帶 <code>--fix-ip</code></strong>（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 <code>hangar scan --fix-ip</code>。</p>
-<p>牆上的<strong>投影按鈕也沒有破壞這件事</strong>：它叫的不是 hub，是你自己那台電腦上的 helper（見<a href="#從裝置牆上按投影">從裝置牆上按投影</a>），而 helper 跑的就是 CLI 的 <code>hangar -p &lt;名稱&gt;</code>。hub 這一側仍然只有 <code>list</code> 與 <code>scan</code> 兩個唯讀端點，一個會 動到手機的路都沒有多。</p>
-<p>從網頁「切偵錯」要等 M3／M4，見 <a href="ROADMAP.md">ROADMAP</a>。<strong>在瀏覽器裡直接看到 畫面（網頁投影串流）仍然是遠期目標</strong> —— 投影本身維持走 CLI 的 scrcpy，那顆 按鈕省的是打字，不是換掉投影的方式。</p>
+<p>牆上的<strong>投影、響鈴、切偵錯按鈕也沒有破壞這件事</strong>：它們叫的不是 hub，而是你 自己那台電腦上的 helper（見<a href="#從裝置牆上按投影">從裝置牆上按投影</a>）。helper 再呼叫 CLI，CLI 才去碰手機裡的 agent。hub 這一側仍然只有唯讀資料與輪詢喚醒 端點；沒有任何 <code>/api/*</code> 寫入手機的路。</p>
+<p>在卡片上，響鈴只對「agent 可達且宣告 <code>can.ring</code>」的手機啟用；偵錯只對宣告 <code>can.toggle_adb</code> 且回報了 <code>adb.enabled</code> 的手機啟用。helper 沒有啟動時，按鈕會 改成複製 <code>hangar ring</code>／<code>hangar adb</code> 指令。<strong>在瀏覽器裡直接看到畫面（網頁投影 串流）仍然是遠期目標</strong> —— 投影本身維持走 CLI 的 scrcpy，那顆按鈕省的是打字， 不是換掉投影的方式。</p>
 <h3 id="換一台-hub">換一台 hub</h3>
 <p>hub 本身是<strong>無狀態的</strong> —— 它把看到的東西放在記憶體裡，重開就重新問一次 hangar。 所以「搬 hub」實際上搬的是三樣東西，而且只有一樣會痛。</p>
 <div class="tw"><table><tr><th>要搬的</th><th>怎麼搬</th><th>痛不痛</th></tr><tr><td class="wrap"><code>~/.config/hangar/</code>（profiles、預設值）</td><td class="wrap"><code>scp -r</code> 或 <code>rsync</code></td><td class="wrap">不痛</td></tr><tr><td class="wrap">常駐設定（launchd plist／systemd unit）</td><td class="wrap">照上面重寫一份</td><td class="wrap">不痛</td></tr><tr><td class="wrap"><strong>手機對這台電腦的 adb 授權</strong></td><td class="wrap">見下面</td><td class="wrap"><strong>會痛</strong></td></tr></table></div>
@@ -555,11 +583,23 @@ WantedBy=default.target</pre></div>
   http://192.168.1.5:8787/#helper=ab12…&amp;port=8788
 （鑰匙在 # 後面，不會送到 hub 那邊去）</pre></div>
 <p>在那台電腦上開一次那個連結，牆上的按鈕就活了。鑰匙存在那台瀏覽器裡，之後 直接開裝置牆就好。</p>
+<p>除了投影，這個 helper 也承接兩個不應由 hub 直接發出的動作：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar ring -p work --seconds 30             <span class="c"># 用聲音、震動與通知識別手機</span>
+hangar ring -p work --stop                   <span class="c"># 立刻停止</span>
+hangar adb -p work --off --revert-after 1800 <span class="c"># 暫時關閉偵錯，時間到自動開回</span>
+hangar adb -p work --on                      <span class="c"># 重新開啟偵錯</span></pre></div>
+<p>這三個動作共用 helper 的 localhost、Origin 與 token 三道鎖。響鈴的最長時間由 agent 再夾到 120 秒；偵錯關閉的自動恢復由手機端 agent 排程，因此 CLI 或 helper 在中途退出也不會讓手機永久停在關閉狀態。</p>
 <h3 id="從裝置牆自動入伍">從裝置牆自動入伍</h3>
 <p>如果某張卡的 ADB 狀態是 <code>device</code>，但還沒有能回應的 agent，卡片會在投影按鈕右邊顯示 「註冊 agent」。如果 profile 還留著舊 token、但手機上的 APK 已被解除安裝，這顆按鈕 也會出現，讓它用同一條 ADB 路徑補裝。按下去後，<strong>按按鈕的這台電腦</strong>上的 helper 會透過 profile 的 USB 或網路／Tailscale ADB 執行：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar enroll -p &lt;這台電腦上的 profile&gt;</pre></div>
 <p>它使用的仍然是 CLI 原本的 enrollment 流程：安裝 APK、授予 <code>WRITE_SECURE_SETTINGS</code>、寫入 profile 名字、序號與 token，再驗證 agent。hub 不會直接執行這個 指令，也不會代替 helper 操作手機；因此這台電腦仍然必須先有可用的 ADB 連線與 profile。若 agent 其實還在手機上、只是暫時沒有回應，Android 端會拒絕重複入伍並提示 先清除 app 狀態，不會默默覆蓋原本的 token。</p>
 <p>如果 helper 沒有啟動，按鈕會改成「複製註冊指令」，讓你貼到終端機執行。入伍需要 安裝好的 agent APK；找不到 APK 時，helper 會把 CLI 的 build 提示帶回裝置牆。</p>
+<h3 id="從裝置牆升級舊版-agent">從裝置牆升級舊版 agent</h3>
+<p>入伍過的手機也可能停在舊版：牆上那句「這支 agent 沒宣告 <code>ring</code> 能力」就是這種。 這時候卡片會多一顆<strong>「重新安裝 agent」</strong>，按下去等於在這台電腦上執行：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar enroll -p &lt;這台電腦上的 profile&gt; --reinstall</pre></div>
+<p>判斷「是不是舊版」用的是 <code>can.ring</code>：新版一律宣告它 <code>true</code>（響鈴不看權限、也不看 Android 版本），所以「答得出話、也入伍了，卻沒有 <code>can.ring</code>」只會是 APK 太舊。 <code>can.toggle_adb</code> 不能拿來判斷 —— 它是 <code>false</code> 的理由太多（<code>WRITE_SECURE_SETTINGS</code> 沒授予），會把好好的新版誤判成舊版。</p>
+<p>這顆按鈕只在 ADB 狀態是 <code>device</code> 時出現：沒有 ADB 就沒有路把 APK 送上去，卡片 會直接說明原因，不留一顆按下去一定失敗的按鈕。helper 沒連上時它一樣退成 「複製重裝指令」。</p>
+<p>換版<strong>不會動到入伍狀態，token 也不會變</strong>，所以其他也入伍過這支手機的電腦不會 因此被鎖在門外；理由見上面的 <a href="#升級舊版-agent--reinstall"><code>--reinstall</code></a>。 hub 這一側沒有新增任何會動手機的端點 —— 按鈕走的仍然是 helper 的 <code>/enroll</code>， 只是 body 多一個 <code>reinstall</code>。</p>
 <h3 id="每台電腦要先做的事">每台電腦要先做的事</h3>
 <div class="tw"><table><tr><th></th><th>為什麼</th></tr><tr><td class="wrap">裝好 <code>hangar</code> + <code>adb</code> + <code>scrcpy</code>（<a href="#安裝">安裝</a>那一節）</td><td class="wrap">按鈕跑的就是 <code>hangar -p &lt;名稱&gt;</code>，它省的是打字，不是省掉這些</td></tr><tr><td class="wrap">跑過一次 <code>hangar setup</code></td><td class="wrap"><strong>這一步躲不掉</strong>：adb 授權綁的是每台電腦自己的金鑰，要有人在手機上按「一律允許」。任何按鈕都繞不過它</td></tr><tr><td class="wrap">跑著 <code>hangar_helper.py</code></td><td class="wrap">網頁啟動不了本機程式</td></tr></table></div>
 <p>沒 setup 過的手機按下去，按鈕會照實說：</p>
@@ -574,12 +614,12 @@ WantedBy=default.target</pre></div>
 <p>「網頁叫得動本機程式」本來就是要小心的事：</p>
 <div class="tw"><table><tr><td class="wrap">只綁 <code>127.0.0.1</code></td><td class="wrap">別台電腦連不到。<strong>沒有 <code>--bind</code> 可以改</strong></td></tr><tr><td class="wrap">Origin 白名單</td><td class="wrap">只有 <code>--hub</code> 給的那些網址上的頁面叫得動。Origin 是瀏覽器自己填的，頁面上的 JS 偽造不了</td></tr><tr><td class="wrap">token</td><td class="wrap">擋掉這台電腦上其他不是從那頁來的呼叫。放在 <code>~/.config/hangar/helper.token</code>（0600），換一把用 <code>--new-token</code></td></tr></table></div>
 <p>hub 那一側<strong>什麼都沒有多</strong>：沒有新端點，也沒有任何會動到手機的路。按下去走的 是「你的瀏覽器 → 你自己電腦上的 helper」，hub 全程不知情。</p>
-<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hub</code></td><td class="wrap">無（必填）</td><td class="wrap">裝置牆的網址，可以給多次</td></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--port</code></td><td class="wrap"><code>8788</code></td><td class="wrap">只在 <code>127.0.0.1</code> 上聽</td></tr><tr><td class="wrap"><code>--grace</code></td><td class="wrap">30 秒</td><td class="wrap">等投影起來的上限</td></tr><tr><td class="wrap"><code>--enroll-timeout</code></td><td class="wrap">180 秒</td><td class="wrap">等 agent 入伍完成的上限</td></tr><tr><td class="wrap"><code>--new-token</code></td><td class="wrap"></td><td class="wrap">換一把新鑰匙（舊連結失效）</td></tr></table></div>
+<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hub</code></td><td class="wrap">無（必填）</td><td class="wrap">裝置牆的網址，可以給多次</td></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--port</code></td><td class="wrap"><code>8788</code></td><td class="wrap">只在 <code>127.0.0.1</code> 上聽</td></tr><tr><td class="wrap"><code>--grace</code></td><td class="wrap">30 秒</td><td class="wrap">等投影起來的上限</td></tr><tr><td class="wrap"><code>--enroll-timeout</code></td><td class="wrap">180 秒</td><td class="wrap">等 agent 入伍（或重新安裝）完成的上限</td></tr><tr><td class="wrap"><code>--new-token</code></td><td class="wrap"></td><td class="wrap">換一把新鑰匙（舊連結失效）</td></tr></table></div>
 <h3 id="按不動的時候">按不動的時候</h3>
 <p>牆上那一行會講是哪一種：</p>
 <div class="tw"><table><tr><th>牆上寫的</th><th>多半是</th></tr><tr><td class="wrap">這台電腦得先跑一支 helper</td><td class="wrap">還沒開過那個帶鑰匙的連結</td></tr><tr><td class="wrap">叫不動這台電腦的 helper</td><td class="wrap">helper 沒在跑，<strong>或者 <code>--hub</code> 跟這一頁的網址對不起來</strong>（<code>localhost</code> 與 <code>192.168.x.x</code> 是不同的來源），也可能是瀏覽器不讓網頁連本機</td></tr><tr><td class="wrap">helper 在跑，但這一頁沒有它的鑰匙</td><td class="wrap">換過 token 了，再開一次那個連結</td></tr></table></div>
 <div class="note warn"><p>瀏覽器對「區網上的頁面連 127.0.0.1」還有自己的一關（Chrome 的 Private Network Access／Local Network Access），新版可能會跳一次權限詢問。helper 該給的標頭都給了，但那個詢問是瀏覽器的 UI，程式這邊關不掉也繞不過。 <strong>這一關還沒有在各家瀏覽器的新版上實測過</strong>，第一個試的人請回報。</p></div>
-<p>按不動也不會卡住：helper 不在的時候投影按鈕會變成<strong>複製指令</strong>；如果手機符合 自動入伍條件，註冊按鈕也會變成複製 <code>hangar enroll -p &lt;名稱&gt;</code>。貼到終端機的 結果完全一樣。</p>
+<p>按不動也不會卡住：helper 不在的時候投影按鈕會變成<strong>複製指令</strong>；如果手機符合 自動入伍條件，註冊按鈕也會變成複製 <code>hangar enroll -p &lt;名稱&gt;</code>，舊版 agent 的 重裝按鈕則變成複製 <code>hangar enroll -p &lt;名稱&gt; --reinstall</code>。貼到終端機的 結果完全一樣。</p>
 <h3 id="讓-helper-開機就自己跑">讓 helper 開機就自己跑</h3>
 <p>macOS（launchd，存成 <code>~/Library/LaunchAgents/com.hangar.helper.plist</code>）：</p>
 <div class="term"><div class="bar">xml</div><pre>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
@@ -737,7 +777,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 6ef564142901</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 249a9b4eadef</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>

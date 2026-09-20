@@ -54,7 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 6
+API_SCHEMA = 7
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -128,15 +128,39 @@ def _state_of(dev):
     return "no_adb"
 
 
+def _mac_key(mac):
+    """MAC 當索引鍵用的樣子。兩邊來源的大小寫不見得一樣（adb 給小寫、ARP 表
+    在某些系統上給大寫），不正規化就會白白配不上。"""
+    return mac.lower() if isinstance(mac, str) and mac else None
+
+
+def _index(entry, by_profile, by_serial, by_mac):
+    """把一張卡登記進三張索引，之後掃描結果才認得出它已經在牆上了。"""
+    if entry.get("name"):
+        by_profile[entry["name"]] = entry
+    if entry.get("device_serial"):
+        by_serial.setdefault(entry["device_serial"], entry)
+    key = _mac_key(entry.get("mac"))
+    if key:
+        by_mac.setdefault(key, entry)
+
+
 def merge(list_data, scan_data):
     """把 list 與 scan 兩份資料合成一張裝置牆。
 
     識別碼的優先順序跟 hangar scan 那一層同一套：DEVICE_SERIAL > MAC > IP。
     序號是跨 IP、跨連線方式都不變的，所以只要 profile 記過序號，同一支手機在
     兩份資料裡就一定會合成同一張卡。
+
+    掃描那邊是靠 profile 名字回報配對的，而它自己只認得 MAC 與 IP —— 走
+    tailscale 的手機 profile 記的是 100.x，區網上掃到的是 192.168.x，兩邊對不
+    上。所以這裡不只看 h["profile"]：序號（mDNS TXT 給得出來）與 MAC 對得上
+    就是同一支手機，不能讓它在牆上多長出一張 unmanaged 的卡。
     """
     devices = []
     by_profile = {}
+    by_serial = {}
+    by_mac = {}
 
     for d in (list_data or {}).get("devices", []):
         entry = {
@@ -172,12 +196,16 @@ def merge(list_data, scan_data):
             "errors": list(d.get("errors") or []),
         }
         devices.append(entry)
-        if entry["name"]:
-            by_profile[entry["name"]] = entry
+        _index(entry, by_profile, by_serial, by_mac)
 
     for h in (scan_data or {}).get("hosts", []):
         prof = h.get("profile")
         entry = by_profile.get(prof) if prof else None
+        if entry is None:
+            entry = (by_serial.get(h.get("device_serial"))
+                     or by_mac.get(_mac_key(h.get("mac"))))
+            if entry is not None:
+                prof = entry["name"]
         if entry is None and prof:
             # 掃描說它是某支已設定的手機，但 list 那邊沒有這一筆 —— 多半是那次
             # list 剛好失敗或逾時。這時候仍然要叫得出名字：把它顯示成一台陌生
@@ -197,7 +225,7 @@ def merge(list_data, scan_data):
                 "agent": None, "is_gateway": False, "sources": [], "errors": [],
             }
             devices.append(entry)
-            by_profile[prof] = entry
+            _index(entry, by_profile, by_serial, by_mac)
         if entry is None:
             # 掃到但沒設定過 —— 這正是裝置牆存在的理由：沒開偵錯的手機 adb 完全
             # 碰不到，網路層只給得出 IP 與 MAC，但它確實在那裡。

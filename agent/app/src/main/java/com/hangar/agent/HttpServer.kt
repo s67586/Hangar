@@ -15,9 +15,9 @@ import org.json.JSONObject
 /**
  * 一個只夠用的 HTTP server。
  *
- * 為什麼不拉一個 HTTP 函式庫進來：這支 app 總共三個端點、全部回 JSON，
+ * 為什麼不拉一個 HTTP 函式庫進來：這支 app 總共四個端點、全部回 JSON，
  * 用得到的東西 `java.net` 都有。整個專案（hangar / hub / agent）維持零外部
- * 相依是刻意的 —— 一台測試機的常駐 app 不該為了三個端點背一套框架。
+ * 相依是刻意的 —— 一台測試機的常駐 app 不該為了四個端點背一套框架。
  *
  * 只聽 5599，一個連線一個執行緒（同時來的請求不會超過個位數，不需要更花俏的東西）。
  */
@@ -29,6 +29,7 @@ class HttpServer(
         const val PORT = 5599
         private const val TAG = "hangar-agent"
         private const val MAX_HEADERS = 50
+        private const val MAX_BODY = 4096
     }
 
     private var socket: ServerSocket? = null
@@ -87,6 +88,7 @@ class HttpServer(
         val path = parts[1].substringBefore('?')
 
         var auth: String? = null
+        var contentLength = 0
         var n = 0
         while (n++ < MAX_HEADERS) {
             val line = reader.readLine() ?: break
@@ -94,6 +96,9 @@ class HttpServer(
             val i = line.indexOf(':')
             if (i > 0 && line.substring(0, i).equals("Authorization", ignoreCase = true)) {
                 auth = line.substring(i + 1).trim()
+            }
+            if (i > 0 && line.substring(0, i).equals("Content-Length", ignoreCase = true)) {
+                contentLength = line.substring(i + 1).trim().toIntOrNull() ?: -1
             }
         }
         val token = auth?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }?.substring(7)
@@ -112,13 +117,110 @@ class HttpServer(
                     respond(s, 200, Status.status(ctx))
             }
 
-            // M4 才實作。先把路徑佔住並明確說「還沒有」，比回 404 讓對方以為
-            // 打錯網址好 —— 那會害人去查一個不存在的問題。
-            path == "/hangar/v1/adb" ->
-                respond(s, 501, err("not_implemented", "切偵錯是 M4 的事，還沒實作"))
+            path == "/hangar/v1/ring" || path == "/hangar/v1/adb" -> {
+                if (method != "POST") {
+                    respond(s, 405, err("method_not_allowed", "這個端點只接受 POST"))
+                } else if (!Enrollment.isEnrolled(ctx)) {
+                    respond(s, 409, err("not_enrolled", "這支手機還沒入伍"))
+                } else if (!Enrollment.tokenMatches(ctx, token)) {
+                    respond(s, 401, err("unauthorized", "token 不對"))
+                } else if (contentLength < 0 || contentLength > MAX_BODY) {
+                    respond(s, 400, err("bad_request", "body 太大或 Content-Length 不合法"))
+                } else {
+                    val raw = readBody(reader, contentLength)
+                    val body = try {
+                        JSONObject(raw)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (body == null) {
+                        respond(s, 400, err("bad_request", "body 不是 JSON"))
+                    } else if (path == "/hangar/v1/ring") {
+                        handleRing(s, body)
+                    } else {
+                        handleAdb(s, body)
+                    }
+                }
+            }
 
             else -> respond(s, 404, err("not_found", "沒有這個端點：$path"))
         }
+    }
+
+    private fun readBody(reader: BufferedReader, length: Int): String {
+        if (length == 0) return ""
+        val count = length.coerceAtMost(MAX_BODY)
+        val chars = CharArray(count)
+        var offset = 0
+        while (offset < count) {
+            val got = reader.read(chars, offset, count - offset)
+            if (got < 0) break
+            offset += got
+        }
+        return String(chars, 0, offset)
+    }
+
+    private fun handleRing(s: Socket, body: JSONObject) {
+        val value = body.opt("seconds")
+        val seconds = when (value) {
+            is Number -> value.toDouble()
+                .takeIf { it.isFinite() && it == it.toInt().toDouble() }
+                ?.toInt()
+            else -> null
+        }
+        if (seconds == null || seconds < 0) {
+            respond(s, 400, err("bad_request", "seconds 必須是非負整數"))
+            return
+        }
+        val actual = Ringer.ring(ctx, seconds)
+        respond(s, 200, JSONObject().apply {
+            put("schema", BuildConfig.PROTOCOL_SCHEMA)
+            put("ringing", actual > 0)
+            put("seconds", actual)
+        })
+    }
+
+    private fun handleAdb(s: Socket, body: JSONObject) {
+        val enabled = body.opt("enabled") as? Boolean
+        if (enabled == null) {
+            respond(s, 400, err("bad_request", "enabled 必須是布林值"))
+            return
+        }
+
+        val rawRevert = body.opt("revert_after_s")
+        val revert = when {
+            rawRevert == null || rawRevert == JSONObject.NULL -> null
+            rawRevert is Number -> rawRevert.toDouble()
+                .takeIf { it.isFinite() && it == it.toInt().toDouble() }
+                ?.toInt()
+            else -> null
+        }
+        if (rawRevert != null && rawRevert != JSONObject.NULL && revert == null) {
+            respond(s, 400, err("bad_request", "revert_after_s 必須是整數"))
+            return
+        }
+        if (!enabled && revert != null && revert < 0) {
+            respond(s, 400, err("bad_request", "revert_after_s 不可以是負數"))
+            return
+        }
+        if (!Status.canToggleAdb(ctx)) {
+            respond(s, 403, err("forbidden", "這支 agent 沒有 WRITE_SECURE_SETTINGS 權限"))
+            return
+        }
+
+        val actualRevert = try {
+            AdbController.set(ctx, enabled, revert)
+        } catch (_: SecurityException) {
+            respond(s, 403, err("forbidden", "Android 拒絕寫入偵錯設定"))
+            return
+        }
+        val current = Status.status(ctx)
+        respond(s, 200, JSONObject().apply {
+            put("schema", BuildConfig.PROTOCOL_SCHEMA)
+            put("enabled", enabled)
+            put("revert_after_s", if (enabled) 0 else actualRevert)
+            put("adb", current.getJSONObject("adb"))
+        })
     }
 
     private fun err(code: String, message: String) = JSONObject().apply {
@@ -132,7 +234,8 @@ class HttpServer(
     private fun respond(s: Socket, status: Int, body: JSONObject) {
         val text = when (status) {
             200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"
-            404 -> "Not Found"; 409 -> "Conflict"; 501 -> "Not Implemented"
+            403 -> "Forbidden"; 404 -> "Not Found"; 405 -> "Method Not Allowed"
+            409 -> "Conflict"; 501 -> "Not Implemented"
             else -> "Error"
         }
         val bytes = body.toString().toByteArray(StandardCharsets.UTF_8)

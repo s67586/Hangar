@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
       這一個不是在 manifest 裡就會有的：它是 signature|privileged 級別，要由
@@ -69,5 +70,13 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".RingerActionReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".AdbRevertReceiver"
+            android:exported="false" />
     </application>
 </manifest>

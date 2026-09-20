@@ -15,7 +15,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         // 協定版本。改了要同時改 ROADMAP 的「M3 協定」與 tests/test_agent_protocol.sh
-        buildConfigField("int", "PROTOCOL_SCHEMA", "1")
+        buildConfigField("int", "PROTOCOL_SCHEMA", "2")
     }
 
     buildFeatures { buildConfig = true }

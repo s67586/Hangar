@@ -17,6 +17,10 @@ hub 在角落那台常駐機器上，它跑起來的 scrcpy 視窗開在那台�
     GET  /healthz     還活著嗎、這台電腦叫什麼、它看得到幾支手機
     POST /mirror      投影一支手機（body：{"profile": "...", "serial": "..."}）
     POST /enroll      透過這台電腦的 USB 或網路 ADB，安裝並入伍一支手機（同樣的 body）
+                      body 多給 {"reinstall": true} 就只換一支新版 APK（升級舊版
+                      agent），入伍狀態與 token 都留著
+    POST /ring        讓一支已入伍的手機響鈴（再加 seconds）
+    POST /adb         開／關偵錯（再加 enabled、revert_after_s）
 
 「網頁叫得動本機程式」本來就是一件要小心的事，所以有三道鎖：
 
@@ -65,7 +69,8 @@ class Server(ThreadingHTTPServer):
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 這一版的回應形狀。跟 hangar --json 與 hub 同一個規矩：欄位有變動就往上加。
-API_SCHEMA = 2
+# 5：/enroll 多收一個 reinstall 布林，回應也把這次做的是哪一種帶回去。
+API_SCHEMA = 5
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hangar")
@@ -219,17 +224,24 @@ def launch_mirror(hangar, profile, grace):
     return True, "還在跑，但等了 %g 秒沒看到 scrcpy 接手" % grace, []
 
 
-def launch_enroll(hangar, profile, timeout):
+def launch_enroll(hangar, profile, timeout, reinstall=False):
     """在這台電腦上執行 `hangar enroll -p <profile>` → 結果與細節。
 
     profile 裡的 PHONE_IP / ADB_PORT 可以是 USB 對應的 adb serial，也可以是
     5555 上的區網／Tailscale TCP ADB；CLI 會用同一條 ADB 連線安裝 APK、授予
     WRITE_SECURE_SETTINGS，並把 token 寫入本機 profile。所以這裡不自行重做
     enrollment 流程；CLI 才是唯一知道 APK、ADB、廣播與 token 格式的地方。
+
+    reinstall=True 時多帶一個 --reinstall：手機上那支 agent 還在、也還入伍著，
+    只是版本太舊（例如不會響鈴）。那條路只換 APK，token 不動 —— 所以其他也入伍
+    過這支手機的電腦不會被踢掉。同樣是 CLI 在決定這些事，這裡只是轉達。
     """
+    args = [hangar, "enroll", "-p", profile]
+    if reinstall:
+        args.append("--reinstall")
     try:
         p = subprocess.Popen(
-            [hangar, "enroll", "-p", profile],
+            args,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -250,13 +262,40 @@ def launch_enroll(hangar, profile, timeout):
         except (OSError, ProcessLookupError):
             pass
         stdout, stderr = p.communicate()
-        return False, "註冊逾時（超過 %g 秒）" % timeout, tidy(
+        what = "重新安裝" if reinstall else "註冊"
+        return False, "%s逾時（超過 %g 秒）" % (what, timeout), tidy(
             (stdout or "") + "\n" + (stderr or ""), keep=8)
 
     detail = tidy((stdout or "") + "\n" + (stderr or ""), keep=8)
+    done, failed = ("agent 重新安裝完成", "重新安裝失敗") if reinstall \
+        else ("agent 入伍完成", "agent 入伍失敗")
     if p.returncode == 0:
-        return True, "agent 入伍完成", detail
-    return False, "agent 入伍失敗（hangar 離開碼 %d）" % p.returncode, detail
+        return True, done, detail
+    return False, "%s（hangar 離開碼 %d）" % (failed, p.returncode), detail
+
+
+def launch_agent_command(hangar, args, profile, timeout):
+    """在本機同步執行一個短的 agent 動作，回報真正的 CLI 結果。"""
+    try:
+        p = subprocess.run(
+            [hangar] + args + ["-p", profile],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return False, "找不到 hangar：%s" % hangar, []
+    except subprocess.TimeoutExpired:
+        return False, "動作逾時（超過 %g 秒）" % timeout, []
+    except OSError as e:
+        return False, "跑不起來 hangar：%s" % e, []
+
+    detail = tidy((p.stdout or "") + "\n" + (p.stderr or ""), keep=8)
+    if p.returncode == 0:
+        return True, detail[-1] if detail else "agent 動作完成", detail
+    return False, detail[-1] if detail else "agent 動作失敗（hangar 離開碼 %d）" % p.returncode, detail
 
 
 # ------------------------------------------------------------------ 狀態 ----
@@ -330,6 +369,7 @@ class Handler(BaseHTTPRequestHandler):
     origins = ()
     grace = 30.0
     enroll_timeout = 180.0
+    command_timeout = 20.0
 
     # ---- CORS ----
     def _origin_ok(self):
@@ -395,7 +435,7 @@ class Handler(BaseHTTPRequestHandler):
         if not allowed:
             return self._deny(origin)
         path = self.path.split("?", 1)[0]
-        if path not in ("/mirror", "/enroll"):
+        if path not in ("/mirror", "/enroll", "/ring", "/adb"):
             return self._json(404, {"ok": False, "reason": "沒有這個端點"}, origin)
         if not self._authed():
             return self._unauth(origin)
@@ -405,16 +445,53 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             n = 0
         # 上限擋著：這個端點只收得下一個名字跟一個序號
+        if n < 0 or n > 4096:
+            return self._json(400, {"ok": False, "reason": "body 太大或 Content-Length 不合法"}, origin)
         raw = self.rfile.read(min(n, 4096)) if n > 0 else b"{}"
         try:
             body = json.loads(raw.decode("utf-8", "replace")) or {}
         except json.JSONDecodeError:
             return self._json(400, {"ok": False, "reason": "body 不是 JSON"}, origin)
-        profile = (body.get("profile") or "").strip()
-        serial = (body.get("serial") or "").strip()
+        if not isinstance(body, dict):
+            return self._json(400, {"ok": False, "reason": "body 必須是 JSON 物件"}, origin)
+        raw_profile = body.get("profile") or ""
+        raw_serial = body.get("serial") or ""
+        if not isinstance(raw_profile, str) or not isinstance(raw_serial, str):
+            return self._json(400, {"ok": False,
+                                    "reason": "profile 與 serial 必須是字串"}, origin)
+        profile = raw_profile.strip()
+        serial = raw_serial.strip()
         if not profile and not serial:
             return self._json(400, {"ok": False,
                                     "reason": "要給 profile 或 serial"}, origin)
+
+        reinstall = False
+        if path == "/enroll":
+            # 只換 APK 還是完整入伍：兩件事都走這個端點，差別只有這一個布林值。
+            reinstall = body.get("reinstall", False)
+            if not isinstance(reinstall, bool):
+                return self._json(400, {"ok": False,
+                                        "reason": "reinstall 必須是布林值"}, origin)
+        elif path == "/ring":
+            seconds = body.get("seconds", 30)
+            if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 0:
+                return self._json(400, {"ok": False, "reason": "seconds 必須是非負整數"}, origin)
+            if seconds > 120:
+                seconds = 120
+        elif path == "/adb":
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                return self._json(400, {"ok": False, "reason": "enabled 必須是布林值"}, origin)
+            revert = body.get("revert_after_s", 1800)
+            if isinstance(revert, bool) or not isinstance(revert, int) or revert < 0:
+                return self._json(400, {"ok": False,
+                                        "reason": "revert_after_s 必須是非負整數"}, origin)
+            # CLI/agent 對 0 的定義是「使用預設值」，helper 回應也要跟實際採用的
+            # 1800 秒一致，否則裝置牆會顯示錯誤倒數。
+            if not enabled and revert == 0:
+                revert = 1800
+            if revert > 86400:
+                revert = 86400
 
         name, matched_by, err = self.state.resolve(profile, serial)
         if name is None:
@@ -434,15 +511,35 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/enroll":
                 ok, message, detail = launch_enroll(
-                    self.state.hangar, name, self.enroll_timeout)
-            else:
+                    self.state.hangar, name, self.enroll_timeout, reinstall)
+            elif path == "/mirror":
                 ok, message, detail = launch_mirror(self.state.hangar, name, self.grace)
+            elif path == "/ring":
+                ok, message, detail = launch_agent_command(
+                    self.state.hangar,
+                    ["ring", "--seconds", str(seconds)],
+                    name,
+                    self.command_timeout)
+            else:
+                adb_args = ["adb", "--on" if enabled else "--off"]
+                if not enabled:
+                    adb_args += ["--revert-after-s", str(revert)]
+                ok, message, detail = launch_agent_command(
+                    self.state.hangar, adb_args, name, self.command_timeout)
         finally:
             self.state.release(name)
-        return self._json(200 if ok else 502,
-                          {"ok": ok, "profile": name, "matched_by": matched_by,
-                           "host": hostname(),
-                           "message": message, "detail": detail}, origin)
+        result = {"ok": ok, "profile": name, "matched_by": matched_by,
+                  "host": hostname(), "message": message, "detail": detail}
+        # 牆上的倒數與狀態要使用 agent 實際採用的值；helper 先把本次受安全上限
+        # 夾過的輸入帶回來，CLI 也會再由 agent 回應實際值並印在人類訊息裡。
+        if path == "/enroll":
+            result["reinstall"] = reinstall
+        elif path == "/ring":
+            result.update({"ringing": seconds > 0, "seconds": seconds})
+        elif path == "/adb":
+            result.update({"enabled": enabled,
+                           "revert_after_s": 0 if enabled else revert})
+        return self._json(200 if ok else 502, result, origin)
 
     # ---- 雜事 ----
     def _authed(self):
@@ -508,6 +605,8 @@ def main(argv=None):
                     help="等投影起來的上限（秒，預設 30）")
     ap.add_argument("--enroll-timeout", type=float, default=180.0,
                     help="等 agent 入伍完成的上限（秒，預設 180）")
+    ap.add_argument("--command-timeout", type=float, default=20.0,
+                    help="響鈴／切偵錯指令的上限（秒，預設 20）")
     ap.add_argument("--timeout", type=float, default=30.0,
                     help="單次 hangar list 的逾時（秒）")
     ap.add_argument("--token-file", default=TOKEN_FILE, help="鑰匙放哪（預設 %s）" % TOKEN_FILE)
@@ -537,6 +636,7 @@ def main(argv=None):
     Handler.origins = origins
     Handler.grace = args.grace
     Handler.enroll_timeout = args.enroll_timeout
+    Handler.command_timeout = args.command_timeout
 
     try:
         # 只綁 127.0.0.1，而且沒有參數可以改。這一支會在這台電腦上開程式，

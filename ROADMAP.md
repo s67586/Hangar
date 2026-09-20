@@ -49,7 +49,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 | 網頁投影 | **遠期目標**，不排進 M1–M5。投影目前維持走 CLI 的 scrcpy，網頁只負責切偵錯（見里程碑下面那段） |
 | 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 `helper/`，helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
-| 牆上的響鈴按鈕 | 跟投影同一條路：走 helper，不走 hub。**hub 維持唯讀**，「網頁的寫入端點怎麼認證」那個決定留到 M4 再做（理由見「[響鈴](#響鈴在一排手機裡認出是哪一支)」的 A 案那段） |
+| 牆上的響鈴按鈕 | 已完成，跟投影同一條路：走 helper，不走 hub。**hub 維持唯讀**；M4 也沿用這個動作邊界 |
 
 ## 里程碑
 
@@ -61,9 +61,9 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成，而且在 Pixel 4 / Android 13 上實機驗過** |
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | **已完成**（電腦端兩條路都有測試；手機端的 `NsdManager` 廣播還沒在實機上看過 —— 見待確認清單 B3）|
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
-| M3d | 響鈴：牆上按一下，那支手機響給你聽 —— 用來**識別**，不是用來找失聯的機器。只依賴 M3a，不卡 M3b／M3c | 做法已定（見「[響鈴](#響鈴在一排手機裡認出是哪一支)」），還沒寫 |
+| M3d | 響鈴：牆上按一下，那支手機響給你聽 —— 用來**識別**，不是用來找失聯的機器。只依賴 M3a，不卡 M3b／M3c | **已完成**（fake agent、CLI、helper、裝置牆與協定測試已接上；實機音量／震動仍待實測） |
 | M3e | 反向識別：入伍時把 profile 名字也寫進手機，agent 那頁大字顯示。**協定不動**，最小的一條 | **已完成**（見「[反向識別](#反向識別m3e入伍時多寫一個名字)」） |
-| M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
+| M4 | 網頁切換偵錯（RD 開 / QA 關） | **已完成**（agent、CLI、helper、裝置牆與自動恢復已接上；實機 ROM 行為仍待實測） |
 | M5 | iOS 唯讀 | |
 
 ### 遠期：網頁投影串流
@@ -95,14 +95,14 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 
 | | 現在是 | 在哪裡 |
 |---|---|---|
-| `hangar` 版本 | `1.2.0` | `hangar:18` |
-| `list` / `status --json` | schema **3** | `JSON_SCHEMA`，`hangar:2208` |
-| `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:178` |
-| hub `/api/devices` | schema **6** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
-| agent 協定 | schema **1**，版本 `0.1.0` | `agent/app/build.gradle.kts` |
+| `hangar` 版本 | `1.2.0` | `hangar:20` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2291` |
+| `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
+| hub `/api/devices` | schema **7** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
+| agent 協定 | schema **2**，版本 `0.1.0` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
-| agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/adb`（一律 501） | 5599/tcp |
-| helper 端點 | `POST /mirror`、`POST /enroll`（只綁 127.0.0.1） | `API_SCHEMA` **2**，`helper/hangar_helper.py:68` |
+| agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
+| helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
 
 `POST /api/refresh` 是 hub 目前唯一的非 GET 端點。它**不會動手機**，只是把輪詢
 提早叫醒，跑的還是同樣那兩個唯讀的 `hangar` 指令 —— 「唯讀」在這份文件裡一律
@@ -205,8 +205,8 @@ agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價
 |---|---|---|
 | `GET /hangar/v1/hello` | 不需要 token | 只回「我是 hangar agent、schema 幾號、版本幾號」。給掃描用的 |
 | `GET /hangar/v1/status` | 要 token | 裝置資訊、電量、偵錯開關現在的狀態 |
-| `POST /hangar/v1/adb` | 要 token | 切偵錯（M4 才實作） |
-| `POST /hangar/v1/ring` | 要 token | 響給人聽（M3d 才實作）。形狀見「[響鈴](#響鈴在一排手機裡認出是哪一支)」 |
+| `POST /hangar/v1/adb` | 要 token | 切偵錯；關閉時自動恢復（M4 已實作） |
+| `POST /hangar/v1/ring` | 要 token | 響給人聽；最長 120 秒且可由通知停止（M3d 已實作） |
 
 `status` 的形狀刻意跟 `hangar --json` 對齊，hub 合併時才不用翻譯：
 
@@ -259,6 +259,32 @@ hangar enroll [-p 手機] [--apk agent.apk]
 **agent 自己不產生 token。** 產生的一方是電腦端，因為那時候 adb 通道已經是信任的；
 讓 agent 產生再由電腦來讀，多一個「誰先信任誰」的問題。
 
+### 升級（`--reinstall`）：換 APK，不換 token
+
+> **已實作。** `hangar enroll -p <手機> --reinstall`，裝置牆上是「重新安裝 agent」。
+
+「一台手機只入伍一次」這條規矩擋的是**重新入伍**，不是**換版本**。但兩件事在
+使用者眼前長得很像：牆上那句「這支 agent 沒宣告 `can.ring` 能力（可能是舊版）」
+說完了問題，卻沒有下一步 —— 而正規入伍那條路會撞上 `already_enrolled`，看起來
+像是「被系統擋住了」。所以升級要有自己的一條路。
+
+只做三件事，中間**不發入伍廣播**：
+
+1. `adb install -r <APK>` —— 就地升級，app 的資料不動
+2. `adb shell pm grant … WRITE_SECURE_SETTINGS` —— 再授一次
+3. `am start` 把 app 叫到前景，再用**原本那組 token** 打一次 `GET /status`
+
+| 決定 | 為什麼 |
+|---|---|
+| **不 `pm clear` 再重新入伍** | token 是每台電腦各自保管的。清一次就等於把所有入伍過這支手機的電腦一起鎖在門外 —— 升級不該有這種代價 |
+| 第二步「再授一次權限」是刻意的 | 就地升級後權限本來就還在。這一步救的是另一種人：上次入伍時這一步失敗（手機沒解鎖、OEM 擋掉），那支 agent 從此切不了偵錯 |
+| 新裝上去的 agent 說自己沒入伍 → 直接補完整入伍 | 有人 `pm clear` 過，或 app 曾被解除安裝。那一刻 adb 就在手上，不要丟一個錯誤叫人再跑一個指令 |
+| 裝得上去、但新版不認這台電腦的 token → 停下來講清楚 | 手機上那支是別台電腦入伍的。唯一的解法（`pm clear` + 重新入伍）有代價，那個代價要由人決定，不是由指令順手做掉 |
+| 沒有 token 的 profile 不給用這條 | 「只換 APK」對還沒入伍過的手機沒有意義：裝上去也問不到話。那條路本來就叫 `enroll` |
+| 判斷「是不是舊版」用 `can.ring`，不用 `can.toggle_adb` | 新版一律宣告 `can.ring` 為 `true`（不看權限、不看 Android 版本）。`can.toggle_adb` 是 `false` 的理由太多，拿它判斷會把好好的新版誤判成舊版。**之後新增能力時，這個判斷點要跟著換成最新那個「一定為 true」的能力** |
+| helper 沿用 `POST /enroll`，只多一個 `reinstall` 布林 | 同一條 adb、同一套三道鎖、同一支 CLI。為了一個旗標開第二個端點只會多一份要一起維護的東西 |
+| hub 一行都不用改 | 「hub 維持唯讀」那條規矩不因為多一顆按鈕就破例 |
+
 ### 找得到 agent：mDNS 是加速器，不是必要條件
 
 > **已實作（M3b）**：手機端在 `agent/…/MdnsBroadcast.kt`，電腦端在 `hangar` 的
@@ -309,6 +335,22 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 
 時間到就自己開回來。QA 測加固版是有限時間的事，這個代價划算。
 
+### M4 實作邊界：helper 寫入，hub 仍唯讀
+
+M4 已按原本的安全邊界落地：`hub` 只輪詢與呈現資料，瀏覽器上的偵錯按鈕透過
+本機 `helper` 的三道鎖呼叫 `hangar adb`，再由 agent 執行真正的設定變更。這樣
+不需要在 hub 增加一個新的遠端寫入認證面，也不會讓固定輪詢程序意外改手機。
+
+```json
+POST /hangar/v1/adb
+{ "enabled": false, "revert_after_s": 1800 }
+→ { "schema": 2, "enabled": false, "revert_after_s": 1800, "adb": { ... } }
+```
+
+`enabled: true` 會取消既有恢復計時；`enabled: false` 會在 agent 端設定鬧鐘，
+預設 1800 秒、上限 86400 秒。CLI 與 helper 都會先驗證輸入，並把 agent 回傳的
+能力不足（403）、未入伍（409）或 token 錯誤（401）保留給使用者看。
+
 ### 版本規矩
 
 - 路徑帶大版本（`/hangar/v1/`），不相容才動它
@@ -325,24 +367,26 @@ POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
 | 不在 Android 10 以下重開 TCP adb | 做不到，那種機器重開機後還是要人插 USB |
 | 不自己決定偵錯開或關 | 狀態由電腦端指派，agent 只執行與回報 |
 
-### 這份協定已經改了現有的什麼（M3a）
+### 這份協定已經改了現有的什麼（M3a／M3d／M4）
 
 | 元件 | 動到的地方 | schema |
 |---|---|---|
-| `hangar` | `hangar enroll`；`agent_*` 這一層；profile 多 `AGENT_TOKEN` / `AGENT_PORT`；`scan` 多探 5599；`list --probe` 在 adb 不通時改問 agent | `list` 1 → 2、`scan` 3 → 4（**當時**的號碼） |
-| hub | 多讀 `agent` 與 `battery.source`，多一個 `agent_only` 狀態。**沒有**直接跟 agent 講話，M2b 的規矩維持 | `/api/devices` 1 → 2（**當時**的號碼） |
+| `hangar` | `hangar enroll`（含 `--reinstall`）；`agent_*` 這一層；profile 多 `AGENT_TOKEN` / `AGENT_PORT`；`scan` 多探 5599；`list --probe` 在 adb 不通時改問 agent；新增 `ring` / `adb` CLI | `list` 現為 4、hub 現為 7 |
+| hub | 多讀 `agent`、`agent.can`、`agent.adb` 與 `battery.source`；卡片按鈕仍經 helper，**沒有**直接跟 agent 講話 | `/api/devices` 現為 7 |
+| helper | 新增 `/ring`、`/adb`，沿用 localhost、Origin、token 三道鎖；`/enroll` 多收一個 `reinstall` 布林 | API schema 2 → 5 |
 | README | 「profile 沒有任何祕密」那句已經改掉 —— 入伍過的 profile 有 token |  |
 
-還沒做的：mDNS（M3b，`hangar` 裡目前沒有任何 `dns-sd` / `avahi` 的呼叫）、
-`adb.wifi_port`（M3c，agent 目前一律回 `null`）。
+還沒做的：`adb.wifi_port`（M3c，agent 目前一律回 `null`）。M3b 的 agent mDNS
+廣播與電腦端 fallback 已完成；手機端廣播仍列在待實測清單 B3。
 
-> 這張表寫的是 **M3a 當時**動到什麼，號碼停在那一刻。之後 `scan` 與 hub 都又
-> 往上加過，現在各是多少看上面的「現況速查」。
+> 這張表把功能邊界與目前實作一起記下來；歷史上的 schema 變更仍以各元件的宣告
+> 與上面的「現況速查」為準。
 
 ## 響鈴：在一排手機裡認出是哪一支
 
-> **M3d。做法已定，還沒寫。** 只依賴 M3a（已完成、實機驗過），不依賴 M3b／M3c／M4，
-> 隨時可以插隊做。
+> **M3d 已完成。** 只依賴 M3a（已完成、實機驗過），不依賴 M3b／M3c／M4；
+> agent、CLI、helper、裝置牆與 fake agent 協定測試都已接上。真機音量、震動與
+> 各家 ROM 的通知顯示仍列在待實測清單。
 
 ### 先把「找不到手機」拆開
 
@@ -398,11 +442,11 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 | `{"seconds": 0}` 就是停 | 找到之後要能立刻關掉 |
 | 手機上那則通知要有一顆「找到了」 | 手機已經在你手上的時候，那是最快的路，比跑回電腦按快 |
 | 重複呼叫 = 重新計時，不疊加 | 按兩下不該變成響兩倍久 |
-| `can.ring` 是能力宣告，跟 `can.toggle_adb` 同一套 | 舊版 agent 根本沒有這個欄位。兩邊都必須忽略不認得的欄位 —— 所以牆上要把「沒有這個欄位」當成 `false`，不是當成壞掉 |
+| `can.ring` 是能力宣告，跟 `can.toggle_adb` 同一套 | 舊版 agent 根本沒有這個欄位。兩邊都必須忽略不認得的欄位 —— 所以牆上要把「沒有這個欄位」當成 `false`，不是當成壞掉。這個欄位後來還多了一個用途：它是牆上判斷「這支是舊版」的那個點，見「[升級（`--reinstall`）](#升級--reinstall換-apk不換-token)」 |
 | 錯誤碼沿用現在那套 | 沒入伍 409、token 不對 401、body 不是 JSON 400。不要為了一個新端點發明第二套 |
 | **不做「全部響」** | 20 支一起響沒有任何識別價值，只有噪音 |
 
-協定 schema **1 → 2**。`can` 多一個欄位、多一個端點，都是往上加而不是改意思。
+協定 schema **1 → 2**。`can` 多一個欄位，並加入響鈴與偵錯寫入端點；都是往上加而不是改意思。
 
 ### 誰按得動：走 helper，hub 維持唯讀（A 案）
 
@@ -454,8 +498,8 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 |---|---|---|
 | agent | `POST /hangar/v1/ring`；一個 `Ringer`（alarm stream + 震動 + 高優先度通知 + 會自己到點停的計時器）；`Status` 的 `can` 多 `ring` | 協定 1 → 2 |
 | `hangar` | `agent_ring`（agent 層）、`cmd_ring`（指令層）。transport 那一層不用動；`list --json` 的 `agent` 物件多帶 `can` | `list` 3 → 4 |
-| helper | `POST /ring`，跟 `/mirror` 同一套三道鎖與同一套「別丟出去就回報成功」 | helper 1 → 2 |
-| hub | **不用動** —— `agent` 物件是整包從 `hangar --json` 帶上來的。A 案就是為了這個 | 欄位有變就往上加 |
+| helper | `POST /ring` 與 `POST /adb`，跟 `/mirror` 同一套三道鎖與同一套「別丟出去就回報成功」 | helper 2 → 4 |
+| hub | **不用增加寫入端點** —— `agent` 物件是整包從 `hangar --json` 帶上來的；卡片動作仍走 helper | API schema 6 → 7 |
 | 牆 | 每張卡一顆鈴鐺 + 倒數 + 停；讀 `agent.can.ring` | |
 | 測試 | `tests/agentbin/fake_agent.py` 要同步實作 `/ring`（協定被兩份實作夾住的規矩）；`test_agent_protocol.sh`（上限夾得住、停得掉、沒入伍 409、舊版沒有 `can.ring` 不算壞）、`test_helper.sh`（`/ring` 的三道鎖）、`test_agent_client.sh`（`hangar ring`）、`test_hub.sh`（**hub 仍然沒有任何會動手機的端點**） | |
 
@@ -479,8 +523,8 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 三個刻意不做的決定：
 
 **協定 schema 不用動。** 這個名字是走 enroll 廣播進去的，不是 HTTP 協定的一部分。
-`/hangar/v1/*` 那三個端點的形狀完全沒變，所以 agent 協定停在 schema 1，
-`tests/agentbin/fake_agent.py` 那份參考實作也不用跟。
+`/hangar/v1/*` 的既有端點語意沒有被改寫；M3d/M4 新增的欄位與寫入端點已讓 agent
+協定升到 schema 2，`tests/agentbin/fake_agent.py` 也同步實作。
 
 **名字不進 `/status`，也不做比對。** 同一支手機在不同電腦上**本來就會叫不同的
 名字** —— `helper` 的 `resolve()` 就是為這件事寫的（牆上的名字是 hub 那台機器
@@ -832,14 +876,10 @@ hangar status -p <手機>          # 期望：還是 device
 web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
 RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——這些都還開放。
 
-hub 目前沒有任何會動手機的端點（`POST /api/refresh` 只叫醒自己的輪詢）。
-要從網頁動手機（M4 的切偵錯）就會有真正的寫入端點，那時要決定的是認證
-怎麼做 —— 現在連「誰在看這頁」都不知道。
-
-響鈴（M3d）本來會提前把這題逼出來，但它決定走 helper 而不走 hub，所以這個決定
-**仍然留到 M4**。理由與那個決定的反面論點都寫在「[響鈴](#響鈴在一排手機裡認出是哪一支)」
-的 A 案那一段 —— 哪天想拿一個低風險的動作來試 hub 的認證長什麼樣，響鈴是現成的
-白老鼠，翻案的成本很低。
+hub 目前沒有任何會動手機的端點（`POST /api/refresh` 只叫醒自己的輪詢）。M3d
+與 M4 的網頁動作都走 helper，因此不需要替 hub 增加寫入端點；helper 已沿用
+localhost、Origin、token 三道鎖。未來若要支援多使用者或把寫入權限移進 hub，仍要
+另行設計認證與授權，不把這次實作當成多使用者方案。
 
 agent 的端點目前定為明文 HTTP + token。要不要上 TLS、還是乾脆只在 tailnet 上
 開放，等 M3a 跑起來、知道實際的延遲與麻煩程度再決定。

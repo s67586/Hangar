@@ -25,13 +25,16 @@
   h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
   .meta { color: var(--dim); font-size: 13px; }
   .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  button.refresh, button.cast, button.enroll {
+  button.refresh, button.cast, button.enroll, button.ring, button.adb, button.reinstall {
     font: inherit; font-size: 12.5px; color: var(--fg); background: var(--card);
     border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
   }
   button.refresh:hover:not(:disabled), button.cast:hover:not(:disabled),
-  button.enroll:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
-  button.refresh:disabled, button.cast:disabled, button.enroll:disabled {
+  button.enroll:hover:not(:disabled), button.ring:hover:not(:disabled),
+  button.adb:hover:not(:disabled), button.reinstall:hover:not(:disabled) {
+    border-color: var(--ok); color: var(--ok); }
+  button.refresh:disabled, button.cast:disabled, button.enroll:disabled,
+  button.ring:disabled, button.adb:disabled, button.reinstall:disabled {
     opacity: .55; cursor: default;
   }
   .said { font-size: 12.5px; color: var(--dim); }
@@ -44,6 +47,11 @@
   .helper.off { color: var(--warn); }
   .cast-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: 2px; }
   .cast-row .said { flex: 1 1 100%; }
+  .action-note { flex: 1 1 100%; font-size: 12px; color: var(--dim); }
+  .action-note.bad { color: var(--warn); }
+  button.ring { border-color: var(--warn); }
+  button.reinstall { border-color: var(--warn); }
+  button.adb { border-color: var(--ok); }
   .counts b { color: var(--fg); font-weight: 600; }
 
   .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
@@ -152,8 +160,9 @@
       <dt><code>unmanaged</code></dt>
       <dd>掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP 與 MAC —— 機型與電量要等它裝上 agent</dd>
     </dl>
-    <p class="foot">這頁不會去動手機，也不會去改設定檔 —— hub 上沒有任何會動手機的端點。
-      <b>立即更新</b>也只是把輪詢提早叫醒，跑的還是同樣那兩個唯讀的指令。</p>
+    <p class="foot">hub 本身不會去動手機，也不會去改設定檔 —— 它沒有任何會動手機的端點。
+      <b>立即更新</b>也只是把輪詢提早叫醒，跑的還是同樣那兩個唯讀的指令。
+      卡片上的響鈴與偵錯按鈕若可用，會透過這台電腦本機的 helper 執行。</p>
 
     <h2 style="margin-top:22px">投影按鈕</h2>
     <p class="foot">視窗開在<b>你自己這台電腦</b>上，不是 hub 上。hub 多半是一台沒人在看的機器，
@@ -166,6 +175,16 @@
       把 APK 遠端安裝到手機並完成入伍；找不到 helper 時則提供複製註冊指令。</p>
     <p class="foot">第一次投某一支手機，這台電腦還是要跑過一次 <code>hangar setup</code> ——
       adb 授權綁的是每台電腦自己的金鑰。</p>
+
+    <h2 style="margin-top:22px">響鈴與偵錯按鈕</h2>
+    <p class="foot">響鈴只用來識別仍然叫得動的手機；agent 沒回應、尚未入伍、舊版沒有
+      <code>can.ring</code> 能力，卡片會直接說明原因，不會留一顆死按鈕。</p>
+    <p class="foot">遇到「舊版」那一種，卡片會多一顆「重新安裝 agent」：它請這台電腦的
+      helper 執行 <code>hangar enroll -p &lt;profile&gt; --reinstall</code>，用 ADB 把新版
+      APK 就地換上去。<b>token 不會變</b> —— 就地升級不清資料，所以其他也入伍過這支
+      手機的電腦不會因此被鎖在門外。這需要 adb 通得到那支手機（USB 或網路／Tailscale）。</p>
+    <p class="foot">關閉偵錯時 agent 會在手機上排定自動復原；預設 30 分鐘後開回。
+      這是為了避免 QA 測完後 agent 也被關掉，最後只能拿手機處理。</p>
   </section>
 </div>
 
@@ -262,7 +281,7 @@ function helperLine() {
   if (helper.status === "ok") {
     el.className = "helper";
     el.innerHTML = `這台電腦：<b>${esc(helper.host || "?")}</b>` +
-      `　投影按鈕會在這台上開視窗（它看得到 ${helper.profiles.length} 支設定過的手機）`;
+      `　投影、響鈴與偵錯按鈕會在這台執行（它看得到 ${helper.profiles.length} 支設定過的手機）`;
   } else if (helper.status === "nokey") {
     el.className = "helper off";
     el.innerHTML = "這台電腦的 helper 在跑，但這一頁沒有它的鑰匙 —— " +
@@ -273,7 +292,7 @@ function helperLine() {
       `跟這一頁的網址對不起來（這一頁是 <code>${esc(location.origin)}</code>）。`;
   } else {
     el.className = "helper";
-    el.innerHTML = "要按投影的話，這台電腦得先跑一支 helper：" +
+    el.innerHTML = "要按投影、響鈴或偵錯按鈕，這台電腦得先跑一支 helper：" +
       `<code>./helper/hangar_helper.py --hub ${esc(location.origin)}</code>` +
       "，然後照它印出來的連結進來一次。";
   }
@@ -281,6 +300,9 @@ function helperLine() {
 
 // 每張卡按鈕底下那句話。key → { busy, action, msg, bad }
 const says = new Map();
+// key → 結束時間（毫秒）。裝置牆每 0.5 秒重畫一次，倒數不依賴 hub 輪詢。
+const ringings = new Map();
+const adbReverts = new Map();
 let byKey = new Map();
 
 function needsEnroll(d) {
@@ -304,39 +326,140 @@ function enrollCommand(d) {
   return `hangar enroll -p ${d.name}`;
 }
 
+function actionSaid(st) {
+  return st.msg
+    ? `<span class="said ${st.bad ? "bad" : "good"}">${esc(st.msg)}</span>` : "";
+}
+
+function agentReason(d, capability) {
+  if (!d.agent) return "尚未入伍，沒有可用的 agent";
+  if (d.agent.reachable !== true) return "agent 沒有回應";
+  if (d.agent.enrolled !== true) return "agent 尚未入伍";
+  if (!d.agent.can || d.agent.can[capability] !== true) {
+    // 舊版的話，卡片上就有一顆「重新安裝 agent」可以按。把話講完整，不要讓
+    // 人看著一句「可能是舊版」卻不知道下一步該做什麼。
+    const fix = agentStale(d) ? "（舊版 agent —— 按「重新安裝 agent」換成新版）" : "（可能是舊版）";
+    return `這支 agent 沒宣告 ${capability} 能力${fix}`;
+  }
+  return "";
+}
+
+// 「這支 agent 是舊版嗎」。
+//
+// 用 can.ring 當判斷點，是因為新版一律宣告它 true：響鈴不看權限、也不看
+// Android 版本。所以「答得出話、也入伍了，卻沒有 can.ring」只會是一種情況 ——
+// 手機上那支 APK 比這套協定舊。can.toggle_adb 不行，它是 false 的理由太多
+// （WRITE_SECURE_SETTINGS 沒授予），會把好好的新版誤判成舊版。
+//
+// 之後新增能力時，這裡要跟著換成「最新那個一定為 true 的能力」。
+function agentStale(d) {
+  return !!d.agent && d.agent.reachable === true && d.agent.enrolled === true &&
+    !(d.agent.can && d.agent.can.ring === true);
+}
+
+function ringCommand(d) { return `hangar ring -p ${d.name} --seconds 30`; }
+
+function reinstallCommand(d) { return `hangar enroll -p ${d.name} --reinstall`; }
+
+function adbCommand(d) {
+  const enabled = d.agent && d.agent.adb && d.agent.adb.enabled === true;
+  return enabled
+    ? `hangar adb -p ${d.name} --off --revert-after-s 1800`
+    : `hangar adb -p ${d.name} --on`;
+}
+
+function secondsLeft(until) {
+  return Math.max(0, Math.ceil((until - Date.now()) / 1000));
+}
+
+// 舊版才出現的那一排。沒有 adb 就沒有路把 APK 送上去 —— 那種時候寧可說清楚，
+// 也不要留一顆按下去一定失敗的按鈕。
+function reinstallRow(d) {
+  if (!agentStale(d)) return "";
+  const st = says.get(d.key) || {};
+  if (d.adb_state !== "device") {
+    return `<span class="action-note bad">這支 agent 是舊版，換新版需要 adb 通得到它
+      （接 USB，或先讓網路／Tailscale ADB 回到 device）</span>`;
+  }
+  if (helper.status !== "ok") {
+    return `<button class="reinstall" type="button" data-copy-reinstall="${esc(d.key)}">複製重裝指令</button>
+      <span class="action-note">重新安裝需要這台電腦的 helper（目前沒有連上）</span>`;
+  }
+  if (st.action === "reinstall" && st.busy) {
+    return `<button class="reinstall" type="button" disabled>重新安裝中…</button>`;
+  }
+  return `<button class="reinstall" type="button" data-reinstall="${esc(d.key)}" ${st.busy ? "disabled" : ""}>重新安裝 agent</button>
+    <span class="action-note">這支 agent 是舊版。換新版不會動到入伍狀態，token 也不會變。</span>`;
+}
+
+function ringRow(d) {
+  const reason = agentReason(d, "ring");
+  const st = says.get(d.key) || {};
+  if (reason) return `<span class="action-note bad">響鈴：${esc(reason)}</span>`;
+  if (helper.status !== "ok") {
+    return `<button class="ring" type="button" data-copy-ring="${esc(d.key)}">複製響鈴指令</button>
+      <span class="action-note">響鈴需要這台電腦的 helper（目前沒有連上）</span>`;
+  }
+  const until = ringings.get(d.key);
+  if (until && secondsLeft(until) > 0) {
+    return `<button class="ring" type="button" data-ring-stop="${esc(d.key)}" ${st.busy ? "disabled" : ""}>
+      停止響鈴（${secondsLeft(until)} 秒）</button>`;
+  }
+  if (until) ringings.delete(d.key);
+  return `<button class="ring" type="button" data-ring="${esc(d.key)}" ${st.busy ? "disabled" : ""}>響鈴 30 秒</button>`;
+}
+
+function adbRow(d) {
+  const reason = agentReason(d, "toggle_adb");
+  const st = says.get(d.key) || {};
+  if (reason) return `<span class="action-note bad">偵錯：${esc(reason)}</span>`;
+  const adb = d.agent && d.agent.adb;
+  if (!adb || typeof adb.enabled !== "boolean")
+    return `<span class="action-note bad">偵錯：拿不到目前狀態，請先按「立即更新」</span>`;
+  const enabled = adb.enabled;
+  if (helper.status !== "ok") {
+    return `<button class="adb" type="button" data-copy-adb="${esc(d.key)}">複製偵錯指令</button>
+      <span class="action-note">偵錯操作需要這台電腦的 helper（目前沒有連上）</span>`;
+  }
+  const until = adbReverts.get(d.key);
+  const left = until ? secondsLeft(until) : 0;
+  if (!enabled && left > 0) {
+    return `<button class="adb" type="button" data-adb="on" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>開啟偵錯</button>
+      <span class="action-note">偵錯已關閉，${left} 秒後自動開回</span>`;
+  }
+  if (!enabled && until) adbReverts.delete(d.key);
+  if (enabled) {
+    return `<button class="adb" type="button" data-adb="off" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>
+      關閉偵錯（30 分鐘後自動開回）</button>`;
+  }
+  return `<button class="adb" type="button" data-adb="on" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>開啟偵錯</button>`;
+}
+
 function castRow(d) {
-  // 沒有 profile 的卡沒有東西可以投：adb 根本碰不到它們
+  // 沒有 profile 的卡沒有東西可以投或寫入：adb 根本碰不到它們。
   if (!d.name) return "";
   const st = says.get(d.key) || {};
-  const said = st.msg
-    ? `<span class="said ${st.bad ? "bad" : "good"}">${esc(st.msg)}</span>` : "";
+  const said = actionSaid(st);
   const canEnroll = needsEnroll(d);
   const busyText = st.action === "enroll" ? "註冊中…" : "叫了…";
   if (st.action === "enroll" && st.busy) {
-    // 入伍是一次性的手機操作；進行中不要再顯示投影按鈕，避免使用者以為
-    // 還能同時對同一支手機做另一個動作。
     return `<div class="cast-row">
       <button class="enroll" type="button" data-enroll="${esc(d.key)}" disabled>註冊中…</button>
       ${said}
     </div>`;
   }
 
-  // 沒有 helper（沒裝、沒跑、或是這個瀏覽器不讓網頁連本機）的時候不要只給一顆
-  // 按不動的按鈕。指令本來就在那裡，複製去貼是完全一樣的結果 —— 這一版的按鈕
-  // 省的是打字，不是省掉那台電腦要有 hangar。
-  if (helper.status !== "ok") {
-    return `<div class="cast-row">
-      <button class="cast" type="button" data-copy="${esc(d.key)}">複製指令</button>
-      ${canEnroll ? `<button class="enroll" type="button" data-copy-enroll="${esc(d.key)}">複製註冊指令</button>` : ""}
-      ${said || `<span class="said mono">hangar -p ${esc(d.name)}</span>`}
-    </div>`;
-  }
+  const cast = helper.status !== "ok"
+    ? `<button class="cast" type="button" data-copy="${esc(d.key)}">複製投影指令</button>`
+    : `<button class="cast" type="button" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>${
+        st.busy ? busyText : "投影到這台電腦"}</button>`;
+  const enroll = canEnroll
+    ? (helper.status !== "ok"
+      ? `<button class="enroll" type="button" data-copy-enroll="${esc(d.key)}">複製註冊指令</button>`
+      : `<button class="enroll" type="button" data-enroll="${esc(d.key)}" ${st.busy ? "disabled" : ""}>註冊 agent</button>`)
+    : "";
   return `<div class="cast-row">
-    <button class="cast" type="button" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>${
-      st.busy ? busyText : "投影到這台電腦"}</button>
-    ${canEnroll ? `<button class="enroll" type="button" data-enroll="${esc(d.key)}" ${st.busy ? "disabled" : ""}>${
-      st.action === "enroll" && st.busy ? "註冊中…" : "註冊 agent"}</button>` : ""}
-    ${said}
+    ${cast}${enroll}${reinstallRow(d)}${ringRow(d)}${adbRow(d)}${said}
   </div>`;
 }
 
@@ -381,6 +504,42 @@ async function copyEnrollCmd(key) {
   setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
 }
 
+async function copyReinstallCmd(key) {
+  const d = byKey.get(key);
+  if (!d) return;
+  const cmd = reinstallCommand(d);
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
+  catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function copyRingCmd(key) {
+  const d = byKey.get(key);
+  if (!d) return;
+  const cmd = ringCommand(d);
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
+  catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function copyAdbCmd(key) {
+  const d = byKey.get(key);
+  if (!d) return;
+  const cmd = adbCommand(d);
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
+  catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
 async function cast(key) {
   const d = byKey.get(key);
   const cfg = helperCfg();
@@ -413,6 +572,91 @@ async function cast(key) {
   says.set(key, st);
   paint();
   // 訊息留一陣子再收掉，但別把後來按的那次蓋掉
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function ring(key, seconds = 30) {
+  const d = byKey.get(key);
+  const cfg = helperCfg();
+  if (!d || !cfg) return;
+  const capability = agentReason(d, "ring");
+  if (capability) {
+    says.set(key, { bad: true, msg: `不能響鈴：${capability}` });
+    paint();
+    return;
+  }
+  const mine = { busy: true, action: "ring" };
+  says.set(key, mine);
+  paint();
+  let st;
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/ring`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 Authorization: "Bearer " + cfg.token },
+      body: JSON.stringify({ profile: d.name, serial: d.device_serial || "", seconds }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      const actual = Number.isInteger(j.seconds) ? j.seconds : seconds;
+      if (actual > 0) ringings.set(key, Date.now() + actual * 1000);
+      else ringings.delete(key);
+      st = { msg: actual > 0 ? `已響鈴 ${actual} 秒` : "已停止響鈴" };
+    } else {
+      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
+                              .filter(Boolean).join(" —— ") };
+    }
+  } catch (e) {
+    st = { bad: true, msg: "叫不動這台電腦的 helper（它還在跑嗎？）" };
+  }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function toggleAdb(key, enabled) {
+  const d = byKey.get(key);
+  const cfg = helperCfg();
+  if (!d || !cfg) return;
+  const capability = agentReason(d, "toggle_adb");
+  if (capability || !d.agent.adb || typeof d.agent.adb.enabled !== "boolean") {
+    says.set(key, { bad: true, msg: `不能切偵錯：${capability || "拿不到目前狀態"}` });
+    paint();
+    return;
+  }
+  const mine = { busy: true, action: "adb" };
+  says.set(key, mine);
+  paint();
+  let st;
+  try {
+    const body = { profile: d.name, serial: d.device_serial || "", enabled };
+    if (!enabled) body.revert_after_s = 1800;
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/adb`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 Authorization: "Bearer " + cfg.token },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      d.agent.adb = { ...(d.agent.adb || {}), enabled: j.enabled === true };
+      if (j.enabled === false) {
+        const actual = Number.isInteger(j.revert_after_s) ? j.revert_after_s : 1800;
+        adbReverts.set(key, Date.now() + actual * 1000);
+        st = { msg: `偵錯已關閉，${actual} 秒後自動開回` };
+      } else {
+        adbReverts.delete(key);
+        st = { msg: "偵錯已開啟" };
+      }
+    } else {
+      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
+                              .filter(Boolean).join(" —— ") };
+    }
+  } catch (e) {
+    st = { bad: true, msg: "叫不動這台電腦的 helper（它還在跑嗎？）" };
+  }
+  says.set(key, st);
+  paint();
   setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
 }
 
@@ -470,6 +714,53 @@ async function enroll(key) {
   setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
 }
 
+// 重新安裝：同一個 /enroll 端點，多帶一個 reinstall。CLI 那邊才是真正知道
+// 「只換 APK」要做哪幾步的人 —— 這裡只是把按鈕接到它身上。
+async function reinstall(key) {
+  const d = byKey.get(key);
+  const cfg = helperCfg();
+  if (!d) return;
+  const say = (st) => {
+    says.set(key, st);
+    paint();
+    setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+  };
+  if (!cfg) {
+    return say({ bad: true, msg: "這台電腦的 helper 沒有連上，請先啟動 helper 或複製重裝指令" });
+  }
+  if (!agentStale(d)) {
+    // 卡片可能是 10 秒前那一份。已經是新版就不要再裝一次。
+    return say({ bad: true, msg: "這支 agent 已經是新版了，請先按「立即更新」確認" });
+  }
+  const mine = { busy: true, action: "reinstall" };
+  says.set(key, mine);
+  paint();
+  let st;
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/enroll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 Authorization: "Bearer " + cfg.token },
+      body: JSON.stringify({ profile: d.name, serial: d.device_serial || "", reinstall: true }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      st = { msg: `${j.message || "agent 重新安裝完成"}${j.profile && j.profile !== d.name
+        ? `（這台電腦上叫 ${j.profile}）` : ""}` };
+      // 能力宣告是 hub 從 list --probe 拿的，所以要叫它重問一次，牆上那句
+      // 「沒宣告 ring 能力」才會跟著消失。
+      fetch("/api/refresh?what=all", { method: "POST" }).catch(() => {});
+      setTimeout(tick, 500);
+    } else {
+      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
+                              .filter(Boolean).join(" —— ") };
+    }
+  } catch (e) {
+    st = { bad: true, msg: "叫不動這台電腦的 helper（它還在跑嗎？）" };
+  }
+  say(st);
+}
+
 // 卡片每 10 秒會被重畫，所以事件掛在 document 上，不掛在按鈕上
 document.addEventListener("click", (ev) => {
   // 某些瀏覽器在點到按鈕文字節點時，target 不一定是 Element；不要讓
@@ -478,10 +769,17 @@ document.addEventListener("click", (ev) => {
   const target = rawTarget && typeof rawTarget.closest === "function"
     ? rawTarget : rawTarget && rawTarget.parentElement;
   const b = target && typeof target.closest === "function"
-    ? target.closest("button.cast, button.enroll") : null;
+    ? target.closest("button.cast, button.enroll, button.ring, button.adb, button.reinstall") : null;
   if (!b || b.disabled) return;
   if (b.dataset.copy) copyCmd(b.dataset.copy);
   else if (b.dataset.copyEnroll) copyEnrollCmd(b.dataset.copyEnroll);
+  else if (b.dataset.copyRing) copyRingCmd(b.dataset.copyRing);
+  else if (b.dataset.copyReinstall) copyReinstallCmd(b.dataset.copyReinstall);
+  else if (b.dataset.reinstall) reinstall(b.dataset.reinstall);
+  else if (b.dataset.copyAdb) copyAdbCmd(b.dataset.copyAdb);
+  else if (b.dataset.ring) ring(b.dataset.ring, 30);
+  else if (b.dataset.ringStop) ring(b.dataset.ringStop, 0);
+  else if (b.dataset.adb) toggleAdb(b.dataset.key, b.dataset.adb === "on");
   else if (b.dataset.enroll) enroll(b.dataset.enroll);
   else if (b.dataset.key) cast(b.dataset.key);
 });
@@ -521,6 +819,9 @@ function card(d) {
     const enrollmentText = d.agent.enrolled === true ? "（已入伍）"
       : d.agent.enrolled === false ? "（尚未入伍）" : "（入伍狀態未知）";
     rows += row("agent", agentText + enrollmentText);
+    if (d.agent.adb && typeof d.agent.adb.enabled === "boolean") {
+      rows += row("偵錯", d.agent.adb.enabled ? "開啟" : "關閉");
+    }
   }
 
   let batt = "";
@@ -693,6 +994,11 @@ tick();
 helperTick();
 setInterval(tick, 10000);
 setInterval(helperTick, 15000);
+setInterval(() => {
+  const active = [...ringings.values(), ...adbReverts.values()]
+    .some(t => secondsLeft(t) > 0);
+  if (active) paint();
+}, 500);
 </script>
 </body>
 </html>

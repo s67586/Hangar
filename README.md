@@ -9,7 +9,7 @@
 |---|---|
 | [`hangar`](hangar) | CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源 |
 | [`hub/`](hub) | 常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件） |
-| [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影按鈕在你面前開視窗 |
+| [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動 |
 | [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
 
 > **[📖 使用手冊（一頁可讀版）](https://claude.ai/artifact/WyegAVdz2UzVitcvwB5kZ8)**
@@ -26,8 +26,10 @@ hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
 hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
+hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
+hangar adb -p work --off    # 關閉偵錯，預設 1800 秒後自動開回
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
-./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的投影按鈕要按得動
+./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的動作按鈕要按得動
 ```
 
 ---
@@ -195,6 +197,9 @@ hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
 hangar scan             # 掃描區網，列出看得到的裝置
 hangar enroll           # 用 USB 或網路 ADB 安裝並入伍 agent
+hangar enroll -p work --reinstall   # 只換一支新版 APK（升級舊版 agent）
+hangar ring -p work     # 響鈴識別一支在線上的手機
+hangar adb -p work --off --revert-after 900  # 暫時關閉偵錯
 ```
 
 ```bash
@@ -376,7 +381,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 3,
+  "schema": 4,
   "devices": [
     {
       "profile": "work",
@@ -395,7 +400,11 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "android": { "release": "14", "sdk": 34 },
       "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5,
                    "source": "adb" },
-      "agent": { "reachable": true, "version": "0.1.0", "enrolled": true },
+      "agent": {
+        "reachable": true, "version": "0.1.0", "enrolled": true,
+        "can": { "ring": true, "toggle_adb": true, "toggle_wifi_adb": false },
+        "adb": { "enabled": true, "wifi_enabled": null, "wifi_port": null }
+      },
       "scrcpy_pids": [12345],
       "errors": []
     }
@@ -428,7 +437,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 - **`--json` 時 stdout 只有 JSON。** 所有給人看的訊息都轉到 stderr，
   所以 `hangar list --json 2>/dev/null | jq .` 一定解析得過。
 
-- **`battery.source` 與 `agent` 是 schema 2 加的。** 前者說這筆電量是誰量的
+- **`battery.source` 與 `agent` 是 schema 2 加的，`agent.can` / `agent.adb` 是 schema 4 加的。** 前者說這筆電量是誰量的
   （`adb` 還是 `agent`），後者在沒入伍也叫不動時是 `null` —— 細節見
   [手機端 agent](#手機端-agent)。
 
@@ -741,6 +750,45 @@ agent 確認活著。成功之後 token 寫進 profile，手機上的 agent 頁�
 `adb shell pm clear com.hangar.agent` —— 那本來就需要 adb。理由見
 [agent/README.md](agent/README.md)。
 
+### 升級舊版 agent：`--reinstall`
+
+手機上那支 agent 還在、也還入伍著，只是版本太舊 —— 例如裝置牆說「這支 agent
+沒宣告 `ring` 能力」。這種時候要的不是重新入伍，是換一支新的 APK：
+
+```bash
+cd agent && ./gradlew assembleDebug
+cd .. && hangar enroll -p work --reinstall
+```
+
+```
+==> 1/4 換上新版 agent（保留入伍狀態）
+ ok  安裝完成
+==> 2/4 重新授予 WRITE_SECURE_SETTINGS
+ ok  已授予
+==> 3/4 把 agent 叫起來
+==> 4/4 驗證：用原本那組 token 問一次
+ ok  agent 0.2.0 回應正常
+     機型  Pixel 7 Pro
+     能力  響鈴、切偵錯、切無線偵錯
+
+ ok  重新安裝完成。token 沒有變，牆上那張卡不用重新入伍。
+```
+
+`adb install -r` 是**就地升級**，app 的資料不會被清掉 —— 所以 token 還在手機裡，
+這台電腦的 profile 不用動。這一點是刻意的：token 是每台電腦各自保管的，
+`pm clear` 之後其他也入伍過這支手機的電腦會全部被鎖在門外，而升級不該有這種代價。
+
+順手處理的兩件事：
+
+- **權限**：第二步會再授予一次 `WRITE_SECURE_SETTINGS`。上次入伍時這一步失敗
+  （手機沒解鎖、被 OEM 擋掉）的手機，升級之後就切得動偵錯了。
+- **入伍資料不見了**：如果新裝上去的 agent 說自己沒入伍（有人 `pm clear` 過，或
+  app 曾被解除安裝），這時候手上還有 adb，指令會直接補一次完整入伍並寫一組新
+  token，不會丟一個錯誤要你再跑一次別的指令。
+
+裝得上去、但新版不認這台電腦的 token（手機上那支是別台電腦入伍的），指令會停下來
+講清楚，不會假裝成功。這種情況只能 `pm clear` 之後重新入伍，代價就是上面那句。
+
 ### 入伍之後有什麼不一樣
 
 | | 沒有 agent | 有 agent |
@@ -775,7 +823,12 @@ agent 現在叫不動** —— 現在可能還沒事（adb 還通），但下次
   也拿得到。
 - **agent 也拿不到硬體序號**（Android 10+ 要特權權限），所以序號是入伍時由電腦
   這一側寫進去的 —— 兩邊因此一定是同一個字串。
-- **切偵錯還沒做**（M4）。現在 `POST /hangar/v1/adb` 一律回 501。
+- **切偵錯已由 agent 實作。** `POST /hangar/v1/adb` 支援雙向切換；關閉時可帶
+  `revert_after_s`，agent 會用鬧鐘在期限到時自動開回。CLI 是
+  `hangar adb -p work --off --revert-after 1800`。能力不足的裝置會明確回報，
+  不會把「不能寫」誤當成成功。
+- **響鈴已由 agent 實作。** `hangar ring -p work --seconds 30` 走 alarm stream、
+  震動與高優先度通知，最長 120 秒；`--stop` 或手機通知上的「找到了」都能停止。
 
 ---
 
@@ -874,14 +927,16 @@ curl -X POST 'http://127.0.0.1:8787/api/refresh?what=all'   # 或 what=list / wh
 `--fix-ip`**（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile
 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 `hangar scan --fix-ip`。
 
-牆上的**投影按鈕也沒有破壞這件事**：它叫的不是 hub，是你自己那台電腦上的
-helper（見[從裝置牆上按投影](#從裝置牆上按投影)），而 helper 跑的就是 CLI 的
-`hangar -p <名稱>`。hub 這一側仍然只有 `list` 與 `scan` 兩個唯讀端點，一個會
-動到手機的路都沒有多。
+牆上的**投影、響鈴、切偵錯按鈕也沒有破壞這件事**：它們叫的不是 hub，而是你
+自己那台電腦上的 helper（見[從裝置牆上按投影](#從裝置牆上按投影)）。helper
+再呼叫 CLI，CLI 才去碰手機裡的 agent。hub 這一側仍然只有唯讀資料與輪詢喚醒
+端點；沒有任何 `/api/*` 寫入手機的路。
 
-從網頁「切偵錯」要等 M3／M4，見 [ROADMAP](ROADMAP.md)。**在瀏覽器裡直接看到
-畫面（網頁投影串流）仍然是遠期目標** —— 投影本身維持走 CLI 的 scrcpy，那顆
-按鈕省的是打字，不是換掉投影的方式。
+在卡片上，響鈴只對「agent 可達且宣告 `can.ring`」的手機啟用；偵錯只對宣告
+`can.toggle_adb` 且回報了 `adb.enabled` 的手機啟用。helper 沒有啟動時，按鈕會
+改成複製 `hangar ring`／`hangar adb` 指令。**在瀏覽器裡直接看到畫面（網頁投影
+串流）仍然是遠期目標** —— 投影本身維持走 CLI 的 scrcpy，那顆按鈕省的是打字，
+不是換掉投影的方式。
 
 ### 換一台 hub
 
@@ -1013,6 +1068,19 @@ hangar helper: http://127.0.0.1:8788/（只有這台電腦連得到）
 在那台電腦上開一次那個連結，牆上的按鈕就活了。鑰匙存在那台瀏覽器裡，之後
 直接開裝置牆就好。
 
+除了投影，這個 helper 也承接兩個不應由 hub 直接發出的動作：
+
+```bash
+hangar ring -p work --seconds 30             # 用聲音、震動與通知識別手機
+hangar ring -p work --stop                   # 立刻停止
+hangar adb -p work --off --revert-after 1800 # 暫時關閉偵錯，時間到自動開回
+hangar adb -p work --on                      # 重新開啟偵錯
+```
+
+這三個動作共用 helper 的 localhost、Origin 與 token 三道鎖。響鈴的最長時間由
+agent 再夾到 120 秒；偵錯關閉的自動恢復由手機端 agent 排程，因此 CLI 或 helper
+在中途退出也不會讓手機永久停在關閉狀態。
+
 ### 從裝置牆自動入伍
 
 如果某張卡的 ADB 狀態是 `device`，但還沒有能回應的 agent，卡片會在投影按鈕右邊顯示
@@ -1032,6 +1100,29 @@ profile。若 agent 其實還在手機上、只是暫時沒有回應，Android �
 
 如果 helper 沒有啟動，按鈕會改成「複製註冊指令」，讓你貼到終端機執行。入伍需要
 安裝好的 agent APK；找不到 APK 時，helper 會把 CLI 的 build 提示帶回裝置牆。
+
+### 從裝置牆升級舊版 agent
+
+入伍過的手機也可能停在舊版：牆上那句「這支 agent 沒宣告 `ring` 能力」就是這種。
+這時候卡片會多一顆**「重新安裝 agent」**，按下去等於在這台電腦上執行：
+
+```bash
+hangar enroll -p <這台電腦上的 profile> --reinstall
+```
+
+判斷「是不是舊版」用的是 `can.ring`：新版一律宣告它 `true`（響鈴不看權限、也不看
+Android 版本），所以「答得出話、也入伍了，卻沒有 `can.ring`」只會是 APK 太舊。
+`can.toggle_adb` 不能拿來判斷 —— 它是 `false` 的理由太多（`WRITE_SECURE_SETTINGS`
+沒授予），會把好好的新版誤判成舊版。
+
+這顆按鈕只在 ADB 狀態是 `device` 時出現：沒有 ADB 就沒有路把 APK 送上去，卡片
+會直接說明原因，不留一顆按下去一定失敗的按鈕。helper 沒連上時它一樣退成
+「複製重裝指令」。
+
+換版**不會動到入伍狀態，token 也不會變**，所以其他也入伍過這支手機的電腦不會
+因此被鎖在門外；理由見上面的 [`--reinstall`](#升級舊版-agent--reinstall)。
+hub 這一側沒有新增任何會動手機的端點 —— 按鈕走的仍然是 helper 的 `/enroll`，
+只是 body 多一個 `reinstall`。
 
 ### 每台電腦要先做的事
 
@@ -1089,7 +1180,7 @@ hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到
 | `--hangar` | repo 裡那支 | hangar 執行檔的路徑 |
 | `--port` | `8788` | 只在 `127.0.0.1` 上聽 |
 | `--grace` | 30 秒 | 等投影起來的上限 |
-| `--enroll-timeout` | 180 秒 | 等 agent 入伍完成的上限 |
+| `--enroll-timeout` | 180 秒 | 等 agent 入伍（或重新安裝）完成的上限 |
 | `--new-token` | | 換一把新鑰匙（舊連結失效） |
 
 ### 按不動的時候
@@ -1109,7 +1200,8 @@ hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到
 > **這一關還沒有在各家瀏覽器的新版上實測過**，第一個試的人請回報。
 
 按不動也不會卡住：helper 不在的時候投影按鈕會變成**複製指令**；如果手機符合
-自動入伍條件，註冊按鈕也會變成複製 `hangar enroll -p <名稱>`。貼到終端機的
+自動入伍條件，註冊按鈕也會變成複製 `hangar enroll -p <名稱>`，舊版 agent 的
+重裝按鈕則變成複製 `hangar enroll -p <名稱> --reinstall`。貼到終端機的
 結果完全一樣。
 
 ### 讓 helper 開機就自己跑

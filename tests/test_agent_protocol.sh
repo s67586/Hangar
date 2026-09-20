@@ -21,19 +21,23 @@ assert() { if [ "$2" = "$3" ]; then printf '  PASS  %s\n' "$1"; PASS=$((PASS+1))
 
 command -v python3 >/dev/null 2>&1 || { echo "  SKIP  這台機器沒有 python3"; exit 0; }
 
-# req <路徑> [token] → "<狀態碼>|<body>"
+# req <路徑> [token] [method] [body] → "<狀態碼>|<body>"
 req() { python3 -c '
 import sys, json, urllib.request, urllib.error
-url, token = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "")
-r = urllib.request.Request(url)
+url = sys.argv[1]
+token = sys.argv[2] if len(sys.argv) > 2 else ""
+method = sys.argv[3] if len(sys.argv) > 3 else "GET"
+raw = sys.argv[4] if len(sys.argv) > 4 else ""
+r = urllib.request.Request(url, data=(raw.encode() if raw else None), method=method)
 if token: r.add_header("Authorization", "Bearer " + token)
+if raw: r.add_header("Content-Type", "application/json")
 try:
     resp = urllib.request.urlopen(r, timeout=5)
     print("%d|%s" % (resp.status, resp.read().decode()))
 except urllib.error.HTTPError as e:
     print("%d|%s" % (e.code, e.read().decode()))
 except Exception as e:
-    print("0|%s" % e)' "$1" "${2:-}"; }
+    print("0|%s" % e)' "$1" "${2:-}" "${3:-GET}" "${4:-}"; }
 
 code() { printf '%s' "$1" | cut -d'|' -f1; }
 body() { printf '%s' "$1" | cut -d'|' -f2-; }
@@ -65,7 +69,7 @@ echo "=== A1. /hello：不需要 token，掃描靠它認人 ==="
 r="$(req "$URL/hangar/v1/hello")"
 assert "沒帶 token 也要回 200" "200" "$(code "$r")"
 assert "說得出自己是誰"        "hangar-agent" "$(q 'd["agent"]' "$(body "$r")")"
-assert "有協定版本"            "1"            "$(q 'd["schema"]' "$(body "$r")")"
+assert "有協定版本"            "2"            "$(q 'd["schema"]' "$(body "$r")")"
 assert "說得出入伍了沒"        "True"         "$(q 'str(d["enrolled"])' "$(body "$r")")"
 # /hello 是給還沒建立信任的對象看的，不該吐序號
 assert "不吐序號"              "False"        "$(q 'str("device_serial" in d)' "$(body "$r")")"
@@ -81,7 +85,7 @@ echo "=== A3. /status 的形狀（hub 就是照這個合併的）==="
 r="$(req "$URL/hangar/v1/status" "$TOKEN")"
 assert "帶對 token 回 200"     "200" "$(code "$r")"
 b="$(body "$r")"
-assert "有協定版本"            "1"    "$(q 'd["schema"]' "$b")"
+assert "有協定版本"            "2"    "$(q 'd["schema"]' "$b")"
 # 這一欄是 hub 把 agent / list / scan 三份資料合成同一張卡的主鍵
 assert "序號不可以是空的"      "True" "$(q 'str(bool(d["device_serial"]))' "$b")"
 assert "有機型"                "True" "$(q 'str(bool(d["model"]))' "$b")"
@@ -96,7 +100,7 @@ assert "adb.enabled 是布林"    "True" "$(q 'str(isinstance(d["adb"]["enabled"
 assert "wifi_enabled 是布林或 null" "True" \
   "$(q 'str(d["adb"]["wifi_enabled"] is None or isinstance(d["adb"]["wifi_enabled"], bool))' "$b")"
 assert "能力宣告在"            "True" \
-  "$(q 'str(isinstance(d["can"]["toggle_adb"], bool) and isinstance(d["can"]["toggle_wifi_adb"], bool))' "$b")"
+  "$(q 'str(isinstance(d["can"]["toggle_adb"], bool) and isinstance(d["can"]["toggle_wifi_adb"], bool) and isinstance(d["can"]["ring"], bool))' "$b")"
 assert "agent 自己的版本在"    "True" "$(q 'str(bool(d["agent"]["version"]))' "$b")"
 # 拿不到的東西要誠實回 null，不要塞 0 或空字串假裝有值
 assert "wifi_port 拿不到就 null" "True" \
@@ -104,13 +108,29 @@ assert "wifi_port 拿不到就 null" "True" \
 # MAC 一般 app 拿不到（Android 6+ 回 02:00:00:00:00:00），所以協定裡根本沒有這一欄
 assert "不回報 MAC"            "False" "$(q 'str("mac" in d)' "$b")"
 
-echo "=== A4. 還沒實作與不存在要分得出來 ==="
-r="$(req "$URL/hangar/v1/adb" "$TOKEN")"
-assert "切偵錯回 501 而不是 404" "501" "$(code "$r")"
-assert "而且說得出是還沒做"      "not_implemented" "$(q 'd["error"]["code"]' "$(body "$r")")"
+echo "=== A4. 響鈴與切偵錯的 POST 協定 ==="
+if [ "$REAL" -eq 1 ]; then
+  echo "  SKIP  真機不做會發聲的響鈴與偵錯切換"
+else
+  r="$(req "$URL/hangar/v1/ring" "$TOKEN" POST '{"seconds":999}')"
+  assert "響鈴回 200"             "200" "$(code "$r")"
+  assert "響鈴上限夾在 120 秒"     "120" "$(q 'd["seconds"]' "$(body "$r")")"
+  r="$(req "$URL/hangar/v1/ring" "$TOKEN" POST '{"seconds":0}')"
+  assert "seconds=0 可以停"        "False" "$(q 'str(d["ringing"])' "$(body "$r")")"
+  r="$(req "$URL/hangar/v1/adb" "$TOKEN" POST '{"enabled":false,"revert_after_s":1800}')"
+  assert "關閉偵錯回 200"          "200" "$(code "$r")"
+  assert "回應實際狀態"            "False" "$(q 'str(d["enabled"])' "$(body "$r")")"
+  r="$(req "$URL/hangar/v1/adb" "$TOKEN" POST '{"enabled":true}')"
+  assert "可以再開回偵錯"          "200" "$(code "$r")"
+  assert "開啟後回報 true"         "True" "$(q 'str(d["enabled"])' "$(body "$r")")"
+fi
+r="$(req "$URL/hangar/v1/ring" "$TOKEN" POST '{bad-json')"
+assert "body 不是 JSON 回 400"    "400" "$(code "$r")"
+r="$(req "$URL/hangar/v1/adb" "wrong-token" POST '{"enabled":true}')"
+assert "寫入端點 token 錯回 401"  "401" "$(code "$r")"
 r="$(req "$URL/hangar/v1/nonesuch" "$TOKEN")"
 assert "不存在的端點才是 404"    "404" "$(code "$r")"
-assert "錯誤也有 schema"         "1"   "$(q 'd["schema"]' "$(body "$r")")"
+assert "錯誤也有 schema"         "2"   "$(q 'd["schema"]' "$(body "$r")")"
 
 echo "=== A5. 沒入伍的手機 ==="
 if [ "$REAL" -eq 1 ]; then
