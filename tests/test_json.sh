@@ -6,6 +6,7 @@ SP="$(cd "$(dirname "$0")" && pwd)"
 PM="$1"
 export MOCK_STATE="${TMPDIR:-/tmp}/hangar-test/state" PATH="$SP/mockbin:$PATH" XDG_CONFIG_HOME="${TMPDIR:-/tmp}/hangar-test/cfg" NO_COLOR=1
 P1=100.101.102.103; P2=100.101.102.110
+LAN1=192.168.1.5
 PASS=0; FAIL=0
 
 two_phones() {
@@ -180,9 +181,12 @@ assert "peer_offline code"    "peer_offline" "$(q '.devices[0].errors[] | select
 
 echo "=== J9. transport 可抽換：profile 指定 lan 就走 lan backend ==="
 two_phones
-# lan backend 不碰 tailscale，靠 nc 測 5555 通不通
-printf 'PHONE_HOST="pixel"\nPHONE_IP="%s"\nTRANSPORT="lan"\n' "$P1" \
+# lan backend 不碰 tailscale，靠 nc 測 5555 通不通。
+# 位址要用真的區網位址：100.64/10 是 Tailscale 網段，寫成 lan 會被就地更正
+# （見 J9b），這條測的是 backend 抽換，不是那個更正。
+printf 'PHONE_HOST="pixel"\nPHONE_IP="%s"\nTRANSPORT="lan"\n' "$LAN1" \
   > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+printf '%s\tdevice\n%s\tdevice\n' "$LAN1:5555" "$P2:5555" > "$MOCK_STATE/adb_devices"
 rm -f "$MOCK_STATE/ts_log" "$MOCK_STATE/nc_log"
 out="$("$PM" status --json -p work 2>/dev/null)"
 assert "transport 讀到 lan" "lan" "$(q '.devices[0].transport' "$out")"
@@ -206,6 +210,39 @@ if printf '%s' "$out" | grep -q 'Tailscale IP'; then
 else
   printf '  PASS  表頭沒寫死 Tailscale\n'; PASS=$((PASS+1))
 fi
+
+echo "=== J9b. TRANSPORT=lan 但位址是 Tailscale 網段 → 就地更正成 tailscale ==="
+# setup 只看旗標不看位址，所以 `hangar setup <tailscale IP>` 會生出這種檔案。
+# 連得上（位址是對的），但顯示與每一句診斷提示都會指向區網。
+two_phones
+printf 'PHONE_HOST="pixel"\nPHONE_IP="%s"\nTRANSPORT="lan"\n' "$P1" \
+  > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+out="$("$PM" status --json -p work 2>/dev/null)"
+conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/work.conf")"
+check  "檔案自己改好了"     'TRANSPORT="tailscale"'  "$conf"
+assert "JSON 也跟著對"      "tailscale" "$(q '.devices[0].transport' "$out")"
+err2="$("$PM" status --json -p work 2>&1 >/dev/null)"
+nocheck "改過一次就不再囉嗦" "更正為 tailscale" "$err2"
+# 其他欄位不能被洗掉
+check  "PHONE_IP 沒被動到"  "PHONE_IP=\"$P1\"" "$conf"
+# 真的區網位址不准被碰
+printf 'PHONE_HOST=""\nPHONE_IP="%s"\nTRANSPORT="lan"\n' "$LAN1" \
+  > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+"$PM" status --json -p work >/dev/null 2>&1
+check  "區網位址維持 lan"   'TRANSPORT="lan"' \
+  "$(cat "$XDG_CONFIG_HOME/hangar/profiles/work.conf")"
+
+echo "=== J9c. 沒有 tailscale CLI 的機器上不准改 ==="
+# 改了只會讓原本好好的指令全部死在「找不到 tailscale CLI」。
+two_phones
+printf 'PHONE_HOST="pixel"\nPHONE_IP="%s"\nTRANSPORT="lan"\n' "$P1" \
+  > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+saved_ts9c="${HANGAR_TAILSCALE:-}"
+export HANGAR_TAILSCALE=/nonexistent/tailscale
+"$PM" status --json -p work >/dev/null 2>&1
+check  "維持原樣"           'TRANSPORT="lan"' \
+  "$(cat "$XDG_CONFIG_HOME/hangar/profiles/work.conf")"
+if [ -n "$saved_ts9c" ]; then export HANGAR_TAILSCALE="$saved_ts9c"; else unset HANGAR_TAILSCALE; fi
 
 echo "=== J10. 壞掉的 profile 不該讓整張表消失 ==="
 two_phones
@@ -266,6 +303,26 @@ check  "而且說得出要的是什麼"        "要的是手機的 IP"  "$out"
   && { echo "  PASS  預設名稱取自位址最後一段"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  預設名稱取自位址最後一段（找不到 phone-88.conf）"; FAIL=$((FAIL+1)); }
 if [ -n "$saved_ts" ]; then export HANGAR_TAILSCALE="$saved_ts"; else unset HANGAR_TAILSCALE; fi
+
+echo "=== J11e. setup 給的是 Tailscale 網段的位址 → 自己改判成 tailscale ==="
+# `hangar setup 100.x.y.z` 是很自然的用法，但旗標沒給的話 TRANSPORT 會留在
+# 預設的 lan —— profile 從此帶著一個錯標籤：連得上，但顯示與診斷全指向區網。
+rm -rf "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar"; mkdir -p "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar/profiles"
+echo Running>"$MOCK_STATE/ts_backend"; echo true>"$MOCK_STATE/ts_online"
+echo direct>"$MOCK_STATE/ts_ping_mode"; echo ok>"$MOCK_STATE/adb_connect_result"
+printf 'ABC123\tdevice\n' > "$MOCK_STATE/adb_devices"
+out="$("$PM" setup "$P1" --name gpa < /dev/null 2>&1)"
+conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/gpa.conf" 2>/dev/null)"
+check "profile 記成 tailscale"  'TRANSPORT="tailscale"'   "$conf"
+check "位址照樣是給的那個"      "PHONE_IP=\"$P1\""        "$conf"
+check "順手把節點名補起來"      'PHONE_HOST="pixel"'      "$conf"
+check "而且有講為什麼改判"      "Tailscale 網段"          "$out"
+
+# 使用者明講 --lan 就照做，但要提醒他代價
+out="$("$PM" setup "$P1" --lan --name gpa2 < /dev/null 2>&1)"
+conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/gpa2.conf" 2>/dev/null)"
+check "明講 lan 就維持 lan"     'TRANSPORT="lan"'         "$conf"
+check "但有警告"                "但你指定了區網"          "$out"
 
 echo "=== J11c. 舊 profile 沒有 TRANSPORT → 就地補成 tailscale，不吃新預設值 ==="
 # 預設值翻成 lan 之後，舊檔跟著預設值走就等於被靜默改判成區網直連，
