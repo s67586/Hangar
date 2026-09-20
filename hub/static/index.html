@@ -217,6 +217,7 @@
           <h3>註冊與更新 agent</h3>
           <p><code>adb</code> 是 <code>device</code>、但還沒有 agent 時，卡片會顯示「註冊 agent」，由 helper 透過該 profile 的 USB 或網路／Tailscale ADB 執行 <code>hangar enroll -p &lt;profile&gt;</code>。helper 不在時，卡片會提供可複製的指令。</p>
           <p>agent 低於目前標準 <code>0.1.2</code> 時會顯示「更新agent」，執行 <code>hangar enroll -p &lt;profile&gt; --reinstall</code>。這需要 adb 是 <code>device</code>；就地升級不清資料，<b>token 不會變</b>，其他已入伍的電腦仍可使用。</p>
+          <p>手機已經入伍過、但<b>這台電腦沒有它的 token</b>（profile 重建過，或它是別台電腦入伍的）時，註冊會被手機端擋下來，卡片上會帶回 CLI 的提示：<code>hangar enroll -p &lt;profile&gt; --takeover</code>。接手會清掉手機上的入伍狀態，其他電腦手上的 token 一起失效 —— 那件事在這面牆上看不出來，所以它<b>刻意沒有按鈕</b>，要複製到終端機當面點頭。</p>
         </section>
 
         <section class="help-card">

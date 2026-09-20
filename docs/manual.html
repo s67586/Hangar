@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 5163570bfaac</span><span class="fact">hangar v1.4.0</span></div>
+  <div class="facts"><span class="fact">README sha256 b7a141139f41</span><span class="fact">hangar v1.5.0</span></div>
 </header>
 
 <div class="cols">
@@ -240,6 +240,7 @@ hangar scan             <span class="c"># 掃描區網，列出看得到的裝�
 hangar usb              <span class="c"># 這台電腦上 USB 接著的裝置（含 unauthorized）</span>
 hangar enroll           <span class="c"># 用 USB 或網路 ADB 安裝並入伍 agent</span>
 hangar enroll -p work --reinstall   <span class="c"># 只換一支新版 APK（升級舊版 agent）</span>
+hangar enroll -p work --takeover    <span class="c"># 手機已入伍、但這台電腦沒有它的 token</span>
 hangar ring -p work     <span class="c"># 響鈴識別一支在線上的手機</span>
 hangar adb -p work --off  <span class="c"># 關閉偵錯（要開回來就 --on，沒有人按就不會變）</span></pre></div>
 <div class="term"><div class="bar">bash</div><pre>hangar --version        <span class="c"># 或 -V</span>
@@ -485,7 +486,7 @@ cd .. &amp;&amp; hangar enroll -p work          <span class="c"># USB，或已�
      機型  Pixel 7 Pro
      電量  78%  放電中  27.5°C</pre></div>
 <p><code>--apk</code> 可以指定別的檔案；不給的話會找這個 repo 裡 build 出來的那份。</p>
-<p><strong>一台手機只入伍一次。</strong> 已經入伍過的會直接拒絕，要重來得先 <code>adb shell pm clear com.hangar.agent</code> —— 那本來就需要 adb。理由見 <a href="agent/README.md">agent/README.md</a>。</p>
+<p><strong>一台手機只入伍一次。</strong> 已經入伍過的會直接拒絕；要重來得先清掉手機上的入伍 狀態，而那需要 adb。理由見 <a href="agent/README.md">agent/README.md</a>，這台電腦手上沒有 token 時怎麼辦見 <a href="#接手一支已入伍的手機--takeover"><code>--takeover</code></a>。</p>
 <h3 id="升級舊版-agent--reinstall">升級舊版 agent：<code>--reinstall</code></h3>
 <p>手機上那支 agent 還在、也還入伍著，只是版本太舊 —— 例如裝置牆說「這支 agent 沒宣告 <code>ring</code> 能力」。這種時候要的不是重新入伍，是換一支新的 APK：</p>
 <div class="term"><div class="bar">bash</div><pre>cd agent &amp;&amp; ./gradlew assembleDebug
@@ -504,7 +505,35 @@ cd .. &amp;&amp; hangar enroll -p work --reinstall</pre></div>
 <p><code>adb install -r</code> 是<strong>就地升級</strong>，app 的資料不會被清掉 —— 所以 token 還在手機裡， 這台電腦的 profile 不用動。這一點是刻意的：token 是每台電腦各自保管的， <code>pm clear</code> 之後其他也入伍過這支手機的電腦會全部被鎖在門外，而升級不該有這種代價。</p>
 <p>順手處理的兩件事：</p>
 <ul><li><strong>權限</strong>：第二步會再授予一次 <code>WRITE_SECURE_SETTINGS</code>。上次入伍時這一步失敗 （手機沒解鎖、被 OEM 擋掉）的手機，升級之後就切得動偵錯了。</li><li><strong>入伍資料不見了</strong>：如果新裝上去的 agent 說自己沒入伍（有人 <code>pm clear</code> 過，或 app 曾被解除安裝），這時候手上還有 adb，指令會直接補一次完整入伍並寫一組新 token，不會丟一個錯誤要你再跑一次別的指令。</li></ul>
-<p>裝得上去、但新版不認這台電腦的 token（手機上那支是別台電腦入伍的），指令會停下來 講清楚，不會假裝成功。這種情況只能 <code>pm clear</code> 之後重新入伍，代價就是上面那句。</p>
+<p>裝得上去、但新版不認這台電腦的 token（手機上那支是別台電腦入伍的），指令會停下來 講清楚，不會假裝成功。那種情況要的是下一節的 <code>--takeover</code>。</p>
+<h3 id="接手一支已入伍的手機--takeover">接手一支已入伍的手機：<code>--takeover</code></h3>
+<p>手機上那支 agent 還在、也還入伍著，但<strong>這台電腦手上沒有它的 token</strong>：</p>
+<ul><li>這裡的 profile 重建過（<code>AGENT_TOKEN</code> 是空的），或</li><li>這支手機本來就是別台電腦入伍的。</li></ul>
+<p>這種狀態以前是條死路：正規入伍會被手機端的 <code>already_enrolled</code> 擋下來， <code>--reinstall</code> 又會說「沒有 token，沒辦法只換 APK」——兩邊都對，人卡在中間。 <code>hangar enroll --takeover</code> 就是那條出路：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar enroll -p work --takeover</pre></div>
+<div class="term"><div class="bar">shell</div><pre> !! 接手會清掉手機上那支 agent 的入伍狀態
+    其他也入伍過這支手機的電腦，手上的 token 會一起失效，要重新入伍才問得到它
+    只是想換新版 APK 的話，要的是 --reinstall，不是這個
+  確定要讓這台電腦接手「work」？輸入 yes ＞ yes
+
+==&gt; 1/6 安裝 agent
+ ok  安裝完成
+==&gt; 2/6 清掉手機上的入伍狀態
+ ok  手機上的入伍狀態已清掉
+==&gt; 3/6 授予 WRITE_SECURE_SETTINGS
+ ok  已授予
+==&gt; 4/6 交出 profile 名字、裝置序號與 token
+ ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
+==&gt; 5/6 把 agent 叫起來
+==&gt; 6/6 驗證：直接問 agent
+ ok  agent 0.1.2 回應正常
+     機型  Pixel 7 Pro
+     電量  78%  放電中  27.5°C
+
+ ok  接手完成。這台電腦有自己的 token 了 —— 其他電腦要重新入伍才問得到這支手機。</pre></div>
+<p>幾件事值得先知道：</p>
+<ul><li><strong>token 要不回來。</strong> 它存在 app 的私有資料裡，adb 這一側讀不出來，所以沒有 「把原本那組拿回來」這種選項，只有清掉重來。</li><li><strong>代價是別台電腦。</strong> <code>pm clear</code> 之後，其他也入伍過這支手機的電腦手上那組 token 全部失效，而<strong>這台電腦看不出來還有誰入伍過</strong> —— 看不見的代價只能用問的， 所以它會停下來要你打一次 <code>yes</code>。沒有終端機的時候（例如從 helper 執行）它不會 自己點頭，而是要求把 <code>--yes</code> 明確打出來。</li><li><strong>步驟順序是有理由的。</strong> 先裝 APK 再清資料：簽章對不上這種失敗要發生在還沒 破壞任何東西之前。清完才授權：<code>pm clear</code> 會把 <code>pm grant</code> 給過的權限一起收回去。</li><li><strong>不要拿它當升級用。</strong> 只是版本太舊的話，<code>--reinstall</code> 不會動 token，也就不會 把別台電腦踢掉。</li></ul>
+<p>為什麼不在 agent 那一側做一個「重新入伍」廣播：<code>EnrollReceiver</code> 必須是 exported 的 （發廣播的是 shell uid），同一支手機上的任何 app 都發得出那個廣播。真有那條路， 等於誰都能把別人的手機搶走。門檻就是 <code>pm clear</code> 需要 adb —— 這條指令是走進那道門， 不是繞過它。</p>
 <h3 id="入伍之後有什麼不一樣">入伍之後有什麼不一樣</h3>
 <div class="tw"><table><tr><th></th><th>沒有 agent</th><th>有 agent</th></tr><tr><td class="wrap">手機重開機後（5555 沒了）</td><td class="wrap"><code>list</code> 只剩「連不上」</td><td class="wrap">機型、電量照樣看得到</td></tr><tr><td class="wrap">沒開偵錯時</td><td class="wrap">只有 IP / MAC / 廠商</td><td class="wrap">完整裝置資訊</td></tr><tr><td class="wrap">電量</td><td class="wrap">要 adb 進得去才拿得到</td><td class="wrap">agent 直接回報</td></tr></table></div>
 <p><code>hangar list --json --probe</code> 的 <code>battery.source</code> 會告訴你這筆電量是誰量的 （<code>adb</code> 還是 <code>agent</code>），<code>agent</code> 物件則說得出 agent 在不在：</p>
@@ -626,7 +655,8 @@ hangar adb -p work --on                      <span class="c"># 重新開啟偵�
 <h3 id="從裝置牆自動入伍">從裝置牆自動入伍</h3>
 <p>如果某張卡的 ADB 狀態是 <code>device</code>，但還沒有能回應的 agent，卡片會在投影按鈕右邊顯示 「註冊 agent」。如果 profile 還留著舊 token、但手機上的 APK 已被解除安裝，這顆按鈕 也會出現，讓它用同一條 ADB 路徑補裝。按下去後，<strong>按按鈕的這台電腦</strong>上的 helper 會透過 profile 的 USB 或網路／Tailscale ADB 執行：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar enroll -p &lt;這台電腦上的 profile&gt;</pre></div>
-<p>它使用的仍然是 CLI 原本的 enrollment 流程：安裝 APK、授予 <code>WRITE_SECURE_SETTINGS</code>、寫入 profile 名字、序號與 token，再驗證 agent。hub 不會直接執行這個 指令，也不會代替 helper 操作手機；因此這台電腦仍然必須先有可用的 ADB 連線與 profile。若 agent 其實還在手機上、只是暫時沒有回應，Android 端會拒絕重複入伍並提示 先清除 app 狀態，不會默默覆蓋原本的 token。</p>
+<p>它使用的仍然是 CLI 原本的 enrollment 流程：安裝 APK、授予 <code>WRITE_SECURE_SETTINGS</code>、寫入 profile 名字、序號與 token，再驗證 agent。hub 不會直接執行這個 指令，也不會代替 helper 操作手機；因此這台電腦仍然必須先有可用的 ADB 連線與 profile。若 agent 其實還在手機上、只是暫時沒有回應，Android 端會拒絕重複入伍， 不會默默覆蓋原本的 token；這時候卡片上會帶回 CLI 的提示 —— 手上有 token 就用 <code>--reinstall</code>，沒有 token 就是 <a href="#接手一支已入伍的手機--takeover"><code>--takeover</code></a>。</p>
+<p><strong>接手沒有做成按鈕，是刻意的。</strong> <code>--takeover</code> 會讓其他電腦手上的 token 一起失效， 而那件事在裝置牆上完全看不出來（沒有任何一份資料知道還有誰入伍過這支手機）。 helper 的 <code>/enroll</code> 只走正規入伍與 <code>--reinstall</code> 這兩條不會踢掉別人的路；要接手， 就把卡片上那行指令複製到終端機，當面點一次頭。</p>
 <p>如果 helper 沒有啟動，按鈕會改成「複製註冊指令」，讓你貼到終端機執行。入伍需要 安裝好的 agent APK；找不到 APK 時，helper 會把 CLI 的 build 提示帶回裝置牆。</p>
 <h3 id="從裝置牆升級舊版-agent">從裝置牆升級舊版 agent</h3>
 <p>入伍過的手機也可能停在舊版：裝置牆會把低於目前標準 <code>0.1.2</code> 的 agent 標出來。 這時候卡片會多一顆<strong>「更新agent」</strong>，按下去等於在這台電腦上執行：</p>
@@ -790,7 +820,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 5163570bfaac</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 b7a141139f41</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>

@@ -62,6 +62,15 @@ case "$1" in
         case "$2" in
           pm)
             echo "pm $*" >> "$S/adb_log"
+            # pm clear：把假手機上的入伍狀態清掉，跟真的 pm clear 一樣會回 Success。
+            # 這是 --takeover 那條路的核心動作，所以 mock 也要真的清。
+            if [ "$3" = "clear" ]; then
+              [ -f "$S/pm_clear_fail" ] && { echo "Failed"; exit 0; }
+              rm -f "$S/enroll_already" "$S/agent_token" "$S/agent_serial" "$S/agent_name"
+              # 清掉資料 = 那支 agent 從此不認得任何 token，也不再宣稱自己入伍過
+              touch "$S/agent_not_enrolled"
+              echo "Success"; exit 0
+            fi
             # grant_fail 存在時模擬「這個權限拿不到」
             [ -f "$S/grant_fail" ] && { echo "Operation not allowed: java.lang.SecurityException"; exit 0; }
             exit 0 ;;
@@ -82,7 +91,9 @@ case "$1" in
             if [ -f "$S/enroll_already" ]; then
               echo 'Broadcast completed: result=1, data="already_enrolled"'; exit 0
             fi
-            [ -n "$tok" ] && printf '%s' "$tok" > "$S/agent_token"
+            # 只有真的帶著 token 的入伍廣播才算入伍 —— `am start`（把 app 叫
+            # 起來）走的也是這一段，不能讓它把「沒入伍」的狀態抹掉
+            [ -n "$tok" ] && { rm -f "$S/agent_not_enrolled"; printf '%s' "$tok" > "$S/agent_token"; }
             [ -n "$ser_in" ] && printf '%s' "$ser_in" > "$S/agent_serial"
             [ -n "$name_in" ] && printf '%s' "$name_in" > "$S/agent_name"
             echo 'Broadcast completed: result=0, data="enrolled"'
