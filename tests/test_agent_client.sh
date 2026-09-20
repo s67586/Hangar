@@ -74,6 +74,22 @@ t2="$(pfield work AGENT_TOKEN)"
 if [ -n "$t1" ] && [ "$t1" != "$t2" ]; then echo "  PASS  每次入伍都是新 token"; PASS=$((PASS+1));
 else echo "  FAIL  token 沒有變（$t1 / ${t2}）"; FAIL=$((FAIL+1)); fi
 
+echo "=== C1b. 從 PATH 上的 symlink 執行也要找得到 APK ==="
+# hangar_install.sh 裝的是 symlink（/usr/local/bin/hangar → repo/hangar）。找
+# APK 要相對於「腳本真正在哪」，不是相對於那個 symlink —— 不解開的話，照著
+# README 裝的人跑 enroll 一律會被告知「找不到 APK」，而 APK 明明就在 repo 裡。
+env_one
+mkdir -p "$MOCK_STATE/repo/agent/app/build/outputs/apk/debug" "$MOCK_STATE/bin/deep"
+cp "$PM" "$MOCK_STATE/repo/hangar"
+: > "$MOCK_STATE/repo/agent/app/build/outputs/apk/debug/app-debug.apk"
+ln -sf "$MOCK_STATE/repo/hangar" "$MOCK_STATE/bin/deep/hangar"
+# 再套一層，而且是相對路徑的 symlink：Homebrew 那種 bin/hangar → ../deep/hangar
+ln -sf "deep/hangar" "$MOCK_STATE/bin/hangar"
+out="$("$MOCK_STATE/bin/hangar" enroll -p work 2>&1)"
+check "symlink 也找得到 APK" "repo/agent/app/build/outputs/apk/debug/app-debug.apk" "$out"
+nocheck "不會說找不到"       "找不到 agent 的 APK" "$out"
+check "而且真的裝下去了"     "install .*app-debug.apk" "$(cat "$MOCK_STATE/adb_log")"
+
 echo "=== C2. 入伍失敗的幾種樣子 ==="
 env_one; : > "$MOCK_STATE/fake.apk"; touch "$MOCK_STATE/enroll_already"
 out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"

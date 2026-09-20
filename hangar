@@ -1104,10 +1104,21 @@ agent_gen_token() {
 }
 
 # APK 要從哪裡找。--apk 指定的優先，其次是這個 repo 裡 build 出來的那份。
+# APK 在 repo 裡，所以要找的是「這支腳本真正放在哪」，不是「它被叫的時候叫做什
+# 麼」。hangar_install.sh 裝的是 symlink（/usr/local/bin/hangar → repo/hangar），
+# 不解開就會去 /usr/local/bin/agent/ 底下找 —— 照著 README 裝的人一跑 enroll 就
+# 被告知「找不到 APK」，而 APK 明明就在。macOS 的 readlink 沒有 -f，自己走完
+# 整條鏈（symlink 可以指向另一個 symlink，也可以是相對路徑）。
 agent_find_apk() {
   [ -n "${1:-}" ] && { [ -f "$1" ] && printf '%s' "$1" && return 0; return 1; }
-  local here f
-  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local here f src dir
+  src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+  done
+  here="$(cd -P "$(dirname "$src")" && pwd)"
   for f in "$here"/agent/app/build/outputs/apk/release/*.apk \
            "$here"/agent/app/build/outputs/apk/debug/*.apk; do
     [ -f "$f" ] && { printf '%s' "$f"; return 0; }
