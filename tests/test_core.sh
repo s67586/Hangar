@@ -36,6 +36,23 @@ nocheck() { # <name> <must-NOT-contain> <actual>
   fi
 }
 
+# 等到 pgrep 數到的行程數符合預期為止，最多等 <secs> 秒（預設 15），回傳最後數到的值。
+#
+# 這裡不可以用固定 sleep：背景那支 mock scrcpy 多久才會出現在行程表上，看的是
+# 當下機器多忙 —— 開發機上 3 秒綽綽有餘，CI runner 上就不一定，這正是這幾項在
+# CI 偶爾紅、在本機重跑又綠的原因。固定 sleep 只能二選一：短了偶爾誤報，長了
+# 每一輪都在空等。輪詢兩邊都不必挑。
+wait_count() { # <pgrep-pattern> <test-op> <want> [secs]
+  local i=0 n
+  while :; do
+    n="$(pgrep -f "$1" | grep -c .)"
+    [ "$n" "$2" "$3" ] && break
+    [ "$i" -ge "$(( ${4:-15} * 5 ))" ] && break
+    i=$((i+1)); sleep 0.2
+  done
+  printf '%s' "$n"
+}
+
 echo "=== 1. direct → 高畫質參數 ==="
 reset_state; echo direct > "$MOCK_STATE/ts_ping_mode"
 out="$("$PM" 2>&1)"
@@ -128,8 +145,7 @@ echo "=== 12. 重複執行：不殘留 scrcpy、不重複 adb 連線 ==="
 reset_state
 MOCK_SCRCPY_SLEEP=30 "$PM" >/dev/null 2>&1 &
 first=$!
-sleep 3
-running="$(pgrep -f 'scrcpy .*100.101.102.103:5555' | wc -l | tr -d ' ')"
+running="$(wait_count 'scrcpy .*100.101.102.103:5555' -ge 1)"
 [ "$running" -ge 1 ] && { echo "  PASS  第一個 scrcpy 已在執行 ($running)"; PASS=$((PASS+1)); } || { echo "  FAIL  第一個 scrcpy 沒起來"; FAIL=$((FAIL+1)); }
 out="$(MOCK_SCRCPY_SLEEP=2 "$PM" 2>&1)"
 check "偵測並清掉殘留 scrcpy" "殘留的 scrcpy"  "$out"
