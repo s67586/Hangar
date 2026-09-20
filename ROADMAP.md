@@ -64,7 +64,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M3d | 響鈴：牆上按一下，那支手機響給你聽 —— 用來**識別**，不是用來找失聯的機器。只依賴 M3a，不卡 M3b／M3c | **已完成**（fake agent、CLI、helper、裝置牆與協定測試已接上；實機音量／震動仍待實測） |
 | M3e | 反向識別：入伍時把 profile 名字也寫進手機，agent 那頁大字顯示。**協定不動**，最小的一條 | **已完成**（見「[反向識別](#反向識別m3e入伍時多寫一個名字)」） |
-| M4 | 網頁切換偵錯（RD 開 / QA 關） | **已完成**（agent、CLI、helper、裝置牆與自動恢復已接上；實機 ROM 行為仍待實測） |
+| M4 | 網頁切換偵錯（RD 開 / QA 關） | **已完成**（agent、CLI、helper 與裝置牆已接上；**全手動，沒有自動復原**，見下面那節；實機 ROM 行為仍待實測） |
 | M5 | iOS 唯讀 | |
 
 ### 遠期：網頁投影串流
@@ -97,10 +97,10 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.2.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2300` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2297` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | hub `/api/devices` | schema **7** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
-| agent 協定 | schema **2**，版本 `0.1.0` | `agent/app/build.gradle.kts` |
+| agent 協定 | schema **3**，版本 `0.1.1` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
 | helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
@@ -276,7 +276,7 @@ agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價
 |---|---|---|
 | `GET /hangar/v1/hello` | 不需要 token | 只回「我是 hangar agent、schema 幾號、版本幾號」。給掃描用的 |
 | `GET /hangar/v1/status` | 要 token | 裝置資訊、電量、偵錯開關現在的狀態 |
-| `POST /hangar/v1/adb` | 要 token | 切偵錯；關閉時自動恢復（M4 已實作） |
+| `POST /hangar/v1/adb` | 要 token | 切偵錯；全手動，沒有任何自動復原（M4 已實作） |
 | `POST /hangar/v1/ring` | 要 token | 響給人聽；最長 120 秒且可由通知停止（M3d 已實作） |
 
 `status` 的形狀刻意跟 `hangar --json` 對齊，hub 合併時才不用翻譯：
@@ -284,7 +284,7 @@ agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價
 ```json
 {
   "schema": 1,
-  "agent":  { "version": "0.1.0", "uptime_s": 86400 },
+  "agent":  { "version": "0.1.1", "uptime_s": 86400 },
   "device_serial": "R58M12345AB",
   "model": "Pixel 7 Pro",
   "android": { "release": "14", "sdk": 34 },
@@ -398,13 +398,11 @@ v=1  serial=R58M12345AB  model=Pixel+7+Pro
 TLS 或只在 tailnet 上開放，那是之後要決定的事，先寫在「還沒決定」裡。
 
 M4 要關偵錯時還有一個更實際的風險：**偵錯關掉之後，agent 的 HTTP 端點是唯一
-回得去的路**。agent 掛了就要人拿著手機處理。所以切偵錯的介面要帶一個自動復原：
+回得去的路**。agent 掛了就要人拿著手機處理。
 
-```json
-POST /hangar/v1/adb   { "enabled": false, "revert_after_s": 1800 }
-```
-
-時間到就自己開回來。QA 測加固版是有限時間的事，這個代價划算。
+第一版用「關閉後 `revert_after_s` 秒自動開回」去擋這件事，前提是「QA 測加固版
+是有限時間的事」。**那個前提是錯的**，所以那套機制已經整個拿掉了 —— 為什麼錯、
+換成什麼，見下一節。
 
 ### M4 實作邊界：helper 寫入，hub 仍唯讀
 
@@ -414,13 +412,42 @@ M4 已按原本的安全邊界落地：`hub` 只輪詢與呈現資料，瀏覽�
 
 ```json
 POST /hangar/v1/adb
-{ "enabled": false, "revert_after_s": 1800 }
-→ { "schema": 2, "enabled": false, "revert_after_s": 1800, "adb": { ... } }
+{ "enabled": false }
+→ { "schema": 3, "enabled": false, "adb": { ... } }
 ```
 
-`enabled: true` 會取消既有恢復計時；`enabled: false` 會在 agent 端設定鬧鐘，
-預設 1800 秒、上限 86400 秒。CLI 與 helper 都會先驗證輸入，並把 agent 回傳的
-能力不足（403）、未入伍（409）或 token 錯誤（401）保留給使用者看。
+CLI 與 helper 都會先驗證輸入，並把 agent 回傳的能力不足（403）、未入伍（409）
+或 token 錯誤（401）保留給使用者看。
+
+### 為什麼沒有自動復原（schema 2 → 3 拿掉了 `revert_after_s`）
+
+原本的設計把「關偵錯」當成一件有時限的事，關掉後排一個鬧鐘自己開回來。**機房
+的實際用法剛好相反**：QA 長期關著偵錯測加固版，那才是常態；RD 偶爾開偵錯進去
+協助，那才是例外。在這個前提下，那顆鬧鐘做的事是：
+
+- **在一段長測的中途把條件改掉，而且不通知任何人。** 加固版會偵測
+  `adb_enabled`，前半段跟後半段的行為可能不一樣，log 上卻看不出分界。這比測失敗
+  更糟：拿到一個不知道在測什麼的結果。
+- **把常態變成勞務。** 每 30 分鐘回來按一次，或設成 86400 秒每天按一次 —— 而那個
+  24 小時上限的存在理由，正是不准有人把它設成實質永久。上限在對抗需求。
+- **沒有真的救到什麼。** 「關掉偵錯後 agent 是唯一回得去的路」在這種用法下是**常態**，
+  不是按鈕造成的臨時暴露。每隔一段時間把偵錯翻回開，只是開一扇隨機的窗，並沒有
+  讓那條路變可靠。
+
+所以 schema **2 → 3**：`revert_after_s` 不再是可選欄位，而是**會被拒絕的欄位**
+（400）。刻意不做「靜默忽略」—— 一個被默默吃掉的欄位會讓人以為鬧鐘還武裝著，
+而這次改動的重點正是狀態不能有歧義。同理，CLI 的 `--revert-after-s` 直接報錯。
+
+失敗方向也因此變好了：舊設計裡復原失敗＝偵錯永遠關著、遠端救不回來；現在沒有
+復原這回事，任何一次切換失敗都還留在「可以再按一次」的狀態。
+
+真正該接手那個風險的是**看得見**，不是自動化：牆上要讓「agent 沒回話 ＋ 偵錯
+關著」這個組合明顯到不用盯，因為那正是需要有人走過去的狀態。那是顯示層的事，
+不會產生任何自動狀態變更。**還沒做。**
+
+換版時注意：只更新電腦端拿不掉舊 APK 上的鬧鐘，每支手機都要換 APK。順序上沒有
+死結 —— 用舊 agent 開偵錯（舊碼在 `enabled: true` 時會清掉期限）→ adb 推新
+APK → 用新 agent 關回去。
 
 ### 版本規矩
 
@@ -495,8 +522,10 @@ agent 反過來很簡單：它是一支 app，要的東西框架都給了 ——
 
 **音量是個會回不去的狀態。** 手機被調成靜音的話，鈴響了也聽不到；但 agent 要是
 去改系統 alarm 音量，就得負責改回來，而 app 被 ROM 殺掉的時候它改不回來。這跟
-M4 的 `revert_after_s` 是同一類問題：**手機旁邊沒有人，任何會持續的狀態都要自己
-回來**。第一版**不碰系統音量**，只用 alarm stream（它本來就不受靜音影響，DND 的
+這跟偵錯開關不一樣，差別值得寫下來：**響鈴是一個動作，偵錯是一個狀態**。動作
+一定要自己結束，狀態只能由人改。（M4 原本也給偵錯排了自動復原，後來拿掉了 ——
+見「[為什麼沒有自動復原](#為什麼沒有自動復原schema-2--3-拿掉了-revert_after_s)」。）
+第一版**不碰系統音量**，只用 alarm stream（它本來就不受靜音影響，DND 的
 多數設定也放行）；要不要動音量等 B6／C8 實測完再說。
 
 ### 協定：`POST /hangar/v1/ring`
@@ -508,7 +537,7 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 
 | 規矩 | 為什麼 |
 |---|---|
-| **一定要自己停**，agent 端夾一個上限（暫定 120 秒） | 一支在抽屜裡響一整天的手機是災難。跟 M4 的 `revert_after_s` 同一個原則 |
+| **一定要自己停**，agent 端夾一個上限（暫定 120 秒） | 一支在抽屜裡響一整天的手機是災難。響鈴是動作，所以要自己結束；偵錯是狀態，所以不准自己變 |
 | 回應回的是**實際會響幾秒**，不是你要的幾秒 | 被上限夾過的話呼叫端要知道。呼叫端不准假設它拿到的就是它送出的 |
 | `{"seconds": 0}` 就是停 | 找到之後要能立刻關掉 |
 | 手機上那則通知要有一顆「找到了」 | 手機已經在你手上的時候，那是最快的路，比跑回電腦按快 |
@@ -518,6 +547,7 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 | **不做「全部響」** | 20 支一起響沒有任何識別價值，只有噪音 |
 
 協定 schema **1 → 2**。`can` 多一個欄位，並加入響鈴與偵錯寫入端點；都是往上加而不是改意思。
+（後來的 **2 → 3** 才是減法：拿掉 `revert_after_s`，見 M4 那節。）
 
 ### 誰按得動：走 helper，hub 維持唯讀（A 案）
 
@@ -595,7 +625,8 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 
 **協定 schema 不用動。** 這個名字是走 enroll 廣播進去的，不是 HTTP 協定的一部分。
 `/hangar/v1/*` 的既有端點語意沒有被改寫；M3d/M4 新增的欄位與寫入端點已讓 agent
-協定升到 schema 2，`tests/agentbin/fake_agent.py` 也同步實作。
+協定升到 schema 2，後來拿掉 `revert_after_s` 又升到 3，
+`tests/agentbin/fake_agent.py` 都同步實作。
 
 **名字不進 `/status`，也不做比對。** 同一支手機在不同電腦上**本來就會叫不同的
 名字** —— `helper` 的 `resolve()` 就是為這件事寫的（牆上的名字是 hub 那台機器
@@ -635,7 +666,7 @@ exported 廣播，那是同一支手機上任何 app 都發得出來的攻擊面
 | # | 要確認什麼 | 怎麼確認 | 影響 |
 |---|---|---|---|
 | B1 | 前景服務在各家 ROM 的省電策略下活多久；以及手機重開機後它自己回不回得來 | 裝上去放 24／72 小時，中間不碰手機，看 `/hello` 還答不答得出來；然後重開機再看一次 | **整套的單點故障**：agent 被殺 = 那支手機失聯 |
-| B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 影響 M4 的復原路徑設計 |
+| B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 偵錯現在會長期關著，這條決定了那段期間還剩哪些路回得去 |
 | B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完了，現在測得動：手機裝上新版 agent 後，在同區網的電腦跑 `dns-sd -B _hangar-agent._tcp`（macOS）或 `avahi-browse -rt _hangar-agent._tcp`（Linux）看得到嗎；再用 `hangar scan --json` 確認那台的 `agent.discovered_by` 是 `mdns` | 看不到就退回「探 5599」，只是慢。**電腦端已經自動處理這個退路**，不用改設定 |
 | B4 | AP 有沒有開 client isolation | 兩支手機互 ping；或電腦 ping 手機 | 有的話整個區網掃描與 agent 都不通，得改走 Tailscale |
 | B5 | 一個 /24 掃完要多久（真實網路，不是 mock） | `time hangar scan` | 太久的話 hub 的 `--scan-interval` 要往上調 |

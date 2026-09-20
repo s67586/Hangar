@@ -74,9 +74,5 @@
         <receiver
             android:name=".RingerActionReceiver"
             android:exported="false" />
-
-        <receiver
-            android:name=".AdbRevertReceiver"
-            android:exported="false" />
     </application>
 </manifest>

@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 249a9b4eadef</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 5af79ccc110d</span><span class="fact">hangar v1.2.0</span></div>
 </header>
 
 <div class="cols">
@@ -143,7 +143,7 @@ hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
 hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
-hangar adb -p work --off    # 關閉偵錯，預設 1800 秒後自動開回
+hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自己開回來）
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
 ./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的動作按鈕要按得動</pre></div>
 <section id="它解決了什麼">
@@ -215,7 +215,7 @@ hangar scan             <span class="c"># 掃描區網，列出看得到的裝�
 hangar enroll           <span class="c"># 用 USB 或網路 ADB 安裝並入伍 agent</span>
 hangar enroll -p work --reinstall   <span class="c"># 只換一支新版 APK（升級舊版 agent）</span>
 hangar ring -p work     <span class="c"># 響鈴識別一支在線上的手機</span>
-hangar adb -p work --off --revert-after 900  <span class="c"># 暫時關閉偵錯</span></pre></div>
+hangar adb -p work --off  <span class="c"># 關閉偵錯（要開回來就 --on，沒有人按就不會變）</span></pre></div>
 <div class="term"><div class="bar">bash</div><pre>hangar --version        <span class="c"># 或 -V</span>
 hangar help             <span class="c"># 或 -h / --help</span></pre></div>
 <p>指令別名：<code>status</code> = <code>st</code>、<code>list</code> = <code>ls</code>、<code>forget</code> = <code>rm</code>。</p>
@@ -298,7 +298,7 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
       &quot;battery&quot;: { &quot;level&quot;: 78, &quot;status&quot;: &quot;discharging&quot;, &quot;temperature_c&quot;: 27.5,
                    &quot;source&quot;: &quot;adb&quot; },
       &quot;agent&quot;: {
-        &quot;reachable&quot;: true, &quot;version&quot;: &quot;0.1.0&quot;, &quot;enrolled&quot;: true,
+        &quot;reachable&quot;: true, &quot;version&quot;: &quot;0.1.1&quot;, &quot;enrolled&quot;: true,
         &quot;can&quot;: { &quot;ring&quot;: true, &quot;toggle_adb&quot;: true, &quot;toggle_wifi_adb&quot;: false },
         &quot;adb&quot;: { &quot;enabled&quot;: true, &quot;wifi_enabled&quot;: null, &quot;wifi_port&quot;: null }
       },
@@ -337,7 +337,7 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
       &quot;device_serial&quot;: &quot;R58M12345AB&quot;,
       &quot;profile_ip_stale&quot;: false,
       &quot;profile_ip_fixed&quot;: false,
-      &quot;agent&quot;: { &quot;version&quot;: &quot;0.1.0&quot;, &quot;enrolled&quot;: true,
+      &quot;agent&quot;: { &quot;version&quot;: &quot;0.1.1&quot;, &quot;enrolled&quot;: true,
                   &quot;model&quot;: &quot;Pixel 7 Pro&quot;, &quot;discovered_by&quot;: &quot;mdns&quot; },
       &quot;is_gateway&quot;: false
     }
@@ -451,7 +451,7 @@ cd .. &amp;&amp; hangar enroll -p work          <span class="c"># USB，或已�
  ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
 ==&gt; 4/5 把 agent 叫起來
 ==&gt; 5/5 驗證：直接問 agent
- ok  agent 0.1.0 回應正常
+ ok  agent 0.1.1 回應正常
      機型  Pixel 7 Pro
      電量  78%  放電中  27.5°C</pre></div>
 <p><code>--apk</code> 可以指定別的檔案；不給的話會找這個 repo 裡 build 出來的那份。</p>
@@ -479,11 +479,11 @@ cd .. &amp;&amp; hangar enroll -p work --reinstall</pre></div>
 <div class="tw"><table><tr><th></th><th>沒有 agent</th><th>有 agent</th></tr><tr><td class="wrap">手機重開機後（5555 沒了）</td><td class="wrap"><code>list</code> 只剩「連不上」</td><td class="wrap">機型、電量照樣看得到</td></tr><tr><td class="wrap">沒開偵錯時</td><td class="wrap">只有 IP / MAC / 廠商</td><td class="wrap">完整裝置資訊</td></tr><tr><td class="wrap">電量</td><td class="wrap">要 adb 進得去才拿得到</td><td class="wrap">agent 直接回報</td></tr></table></div>
 <p><code>hangar list --json --probe</code> 的 <code>battery.source</code> 會告訴你這筆電量是誰量的 （<code>adb</code> 還是 <code>agent</code>），<code>agent</code> 物件則說得出 agent 在不在：</p>
 <div class="term"><div class="bar">json</div><pre>{ &quot;battery&quot;: { &quot;level&quot;: 42, &quot;status&quot;: &quot;discharging&quot;, &quot;source&quot;: &quot;agent&quot; },
-  &quot;agent&quot;:   { &quot;reachable&quot;: true, &quot;version&quot;: &quot;0.1.0&quot;, &quot;enrolled&quot;: true } }</pre></div>
+  &quot;agent&quot;:   { &quot;reachable&quot;: true, &quot;version&quot;: &quot;0.1.1&quot;, &quot;enrolled&quot;: true } }</pre></div>
 <p><code>agent.reachable</code> 是 <code>false</code> 而 profile 又有 token，意思是<strong>這支手機入伍過但 agent 現在叫不動</strong> —— 現在可能還沒事（adb 還通），但下次重開機就會失聯。 裝置牆會把這件事標出來。</p>
 <p><code>hangar scan</code> 也會順手探每台的 5599：探得到就在 <code>agent</code> 欄標「有」。它先用 <code>nc</code> 測埠、只對有回應的發 HTTP —— 一個 /24 上大多數東西沒有 agent，每台都等 逾時的話掃描會從幾秒變成幾分鐘。</p>
 <h3 id="限制">限制</h3>
-<ul><li><strong>需要 <code>curl</code></strong>（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。</li><li><strong>agent 拿不到自己的 MAC</strong>（Android 6+ 對一般 app 回傳假的 <code>02:00:00:00:00:00</code>），所以 agent 回報的資料裡沒有這一欄。MAC 由另外兩條路 取得：<code>hangar scan</code> 從 ARP 表學，或 <code>hangar list --probe</code> 用 <code>adb shell cmd wifi status</code> 問 —— 後者連 adb 通得到但不在同一段區網的手機 也拿得到。</li><li><strong>agent 也拿不到硬體序號</strong>（Android 10+ 要特權權限），所以序號是入伍時由電腦 這一側寫進去的 —— 兩邊因此一定是同一個字串。</li><li><strong>切偵錯已由 agent 實作。</strong> <code>POST /hangar/v1/adb</code> 支援雙向切換；關閉時可帶 <code>revert_after_s</code>，agent 會用鬧鐘在期限到時自動開回。CLI 是 <code>hangar adb -p work --off --revert-after 1800</code>。能力不足的裝置會明確回報， 不會把「不能寫」誤當成成功。</li><li><strong>響鈴已由 agent 實作。</strong> <code>hangar ring -p work --seconds 30</code> 走 alarm stream、 震動與高優先度通知，最長 120 秒；<code>--stop</code> 或手機通知上的「找到了」都能停止。</li></ul>
+<ul><li><strong>需要 <code>curl</code></strong>（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。</li><li><strong>agent 拿不到自己的 MAC</strong>（Android 6+ 對一般 app 回傳假的 <code>02:00:00:00:00:00</code>），所以 agent 回報的資料裡沒有這一欄。MAC 由另外兩條路 取得：<code>hangar scan</code> 從 ARP 表學，或 <code>hangar list --probe</code> 用 <code>adb shell cmd wifi status</code> 問 —— 後者連 adb 通得到但不在同一段區網的手機 也拿得到。</li><li><strong>agent 也拿不到硬體序號</strong>（Android 10+ 要特權權限），所以序號是入伍時由電腦 這一側寫進去的 —— 兩邊因此一定是同一個字串。</li><li><strong>切偵錯已由 agent 實作，而且是全手動的。</strong> <code>POST /hangar/v1/adb</code> 支援雙向 切換，CLI 是 <code>hangar adb -p work --off</code> / <code>--on</code>。偵錯的開關<strong>只會因為有人按 了才改變</strong>：agent 不排鬧鐘、不在開機時改它，關掉之後就一直關著。能力不足的 裝置會明確回報，不會把「不能寫」誤當成成功。</li><li><strong>響鈴已由 agent 實作。</strong> <code>hangar ring -p work --seconds 30</code> 走 alarm stream、 震動與高優先度通知，最長 120 秒；<code>--stop</code> 或手機通知上的「找到了」都能停止。</li></ul>
 </section>
 <section id="hub裝置牆網頁">
 <h2 id="hub裝置牆網頁">hub（裝置牆網頁）</h2>
@@ -586,9 +586,10 @@ WantedBy=default.target</pre></div>
 <p>除了投影，這個 helper 也承接兩個不應由 hub 直接發出的動作：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar ring -p work --seconds 30             <span class="c"># 用聲音、震動與通知識別手機</span>
 hangar ring -p work --stop                   <span class="c"># 立刻停止</span>
-hangar adb -p work --off --revert-after 1800 <span class="c"># 暫時關閉偵錯，時間到自動開回</span>
-hangar adb -p work --on                      <span class="c"># 重新開啟偵錯</span></pre></div>
-<p>這三個動作共用 helper 的 localhost、Origin 與 token 三道鎖。響鈴的最長時間由 agent 再夾到 120 秒；偵錯關閉的自動恢復由手機端 agent 排程，因此 CLI 或 helper 在中途退出也不會讓手機永久停在關閉狀態。</p>
+hangar adb -p work --off                     <span class="c"># 關閉偵錯（QA 測加固版的常態）</span>
+hangar adb -p work --on                      <span class="c"># 重新開啟偵錯（RD 要 build 進去）</span></pre></div>
+<p>這三個動作共用 helper 的 localhost、Origin 與 token 三道鎖。響鈴會自己停（最長 由 agent 夾到 120 秒），因為一支在抽屜裡響一整天的手機是災難。<strong>偵錯剛好相反： 它是一個狀態，不是一個動作，所以沒有任何東西會自動把它改回去</strong> —— 機房的常態 就是關著測加固版，一顆半小時後把偵錯開回來的鬧鐘等於在長測中途偷改條件。</p>
+<p>代價要講清楚：偵錯關著的時候，手機上那支 agent 的 HTTP 端點是唯一回得去的路。 agent 掛了就得有人拿著手機處理。這個代價是選的，不是忘的 —— 用自動復原去換它 並不划算，因為那只是每隔一段時間開一扇隨機的窗，並沒有讓那條路變可靠。</p>
 <h3 id="從裝置牆自動入伍">從裝置牆自動入伍</h3>
 <p>如果某張卡的 ADB 狀態是 <code>device</code>，但還沒有能回應的 agent，卡片會在投影按鈕右邊顯示 「註冊 agent」。如果 profile 還留著舊 token、但手機上的 APK 已被解除安裝，這顆按鈕 也會出現，讓它用同一條 ADB 路徑補裝。按下去後，<strong>按按鈕的這台電腦</strong>上的 helper 會透過 profile 的 USB 或網路／Tailscale ADB 執行：</p>
 <div class="term"><div class="bar">bash</div><pre>hangar enroll -p &lt;這台電腦上的 profile&gt;</pre></div>
@@ -777,7 +778,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 249a9b4eadef</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 5af79ccc110d</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>

@@ -34,7 +34,7 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-SCHEMA = 2
+SCHEMA = 3
 VERSION = "0.1.0-fake"
 STARTED = time.time()
 
@@ -89,18 +89,11 @@ class Handler(BaseHTTPRequestHandler):
         enabled = body.get("enabled")
         if not isinstance(enabled, bool):
             return self._json(400, self._err("bad_request", "enabled 必須是布林值"))
-        revert = body.get("revert_after_s", 1800)
-        if isinstance(revert, bool) or not isinstance(revert, int) or revert < 0:
-            return self._json(400, self._err("bad_request", "revert_after_s 必須是非負整數"))
+        if body.get("revert_after_s") is not None:
+            return self._json(400, self._err(
+                "bad_request", "revert_after_s 已移除：偵錯狀態全手動"))
         self.cfg.adb_enabled = enabled
-        if enabled:
-            self.cfg.revert_at = 0
-            actual_revert = 0
-        else:
-            actual_revert = min(revert or 1800, 86400)
-            self.cfg.revert_at = time.time() + actual_revert
         return self._json(200, {"schema": SCHEMA, "enabled": enabled,
-                                "revert_after_s": actual_revert,
                                 "adb": {"enabled": enabled, "wifi_enabled": False,
                                         "wifi_port": None}})
 
@@ -111,9 +104,6 @@ class Handler(BaseHTTPRequestHandler):
         return auth[7:] == self.cfg.token
 
     def _status(self):
-        if getattr(self.cfg, "revert_at", 0) and time.time() >= self.cfg.revert_at:
-            self.cfg.adb_enabled = True
-            self.cfg.revert_at = 0
         if getattr(self.cfg, "ring_until", 0) and time.time() >= self.cfg.ring_until:
             self.cfg.ring_until = 0
         return {
@@ -152,7 +142,6 @@ def main():
     ap.add_argument("--not-enrolled", dest="enrolled", action="store_false")
     cfg = ap.parse_args()
     cfg.adb_enabled = True
-    cfg.revert_at = 0
     cfg.ring_until = 0
 
     Handler.cfg = cfg

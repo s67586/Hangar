@@ -49,7 +49,6 @@ class AgentService : Service() {
     override fun onCreate() {
         super.onCreate()
         startedAt = System.currentTimeMillis()
-        AdbController.restore(this)
         startForeground(NOTIFICATION_ID, notification())
         server = HttpServer(this).also { it.start() }
         mdns = MdnsBroadcast(this).also { it.start() }

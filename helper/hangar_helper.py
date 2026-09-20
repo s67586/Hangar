@@ -20,7 +20,7 @@ hub 在角落那台常駐機器上，它跑起來的 scrcpy 視窗開在那台�
                       body 多給 {"reinstall": true} 就只換一支新版 APK（升級舊版
                       agent），入伍狀態與 token 都留著
     POST /ring        讓一支已入伍的手機響鈴（再加 seconds）
-    POST /adb         開／關偵錯（再加 enabled、revert_after_s）
+    POST /adb         開／關偵錯（再加 enabled）。全手動：關掉就一直關著
 
 「網頁叫得動本機程式」本來就是一件要小心的事，所以有三道鎖：
 
@@ -482,16 +482,13 @@ class Handler(BaseHTTPRequestHandler):
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
                 return self._json(400, {"ok": False, "reason": "enabled 必須是布林值"}, origin)
-            revert = body.get("revert_after_s", 1800)
-            if isinstance(revert, bool) or not isinstance(revert, int) or revert < 0:
-                return self._json(400, {"ok": False,
-                                        "reason": "revert_after_s 必須是非負整數"}, origin)
-            # CLI/agent 對 0 的定義是「使用預設值」，helper 回應也要跟實際採用的
-            # 1800 秒一致，否則裝置牆會顯示錯誤倒數。
-            if not enabled and revert == 0:
-                revert = 1800
-            if revert > 86400:
-                revert = 86400
+            # 自動復原已經拿掉。舊版頁面還會送這個欄位，明講比默默忽略好 ——
+            # 被忽略的話，操作的人會以為手機等一下會自己把偵錯開回來。
+            if body.get("revert_after_s") is not None:
+                return self._json(400, {
+                    "ok": False,
+                    "reason": "revert_after_s 已移除：偵錯狀態全手動",
+                    "hint": "瀏覽器可能是舊頁面，重新整理一次"}, origin)
 
         name, matched_by, err = self.state.resolve(profile, serial)
         if name is None:
@@ -521,24 +518,23 @@ class Handler(BaseHTTPRequestHandler):
                     name,
                     self.command_timeout)
             else:
-                adb_args = ["adb", "--on" if enabled else "--off"]
-                if not enabled:
-                    adb_args += ["--revert-after-s", str(revert)]
                 ok, message, detail = launch_agent_command(
-                    self.state.hangar, adb_args, name, self.command_timeout)
+                    self.state.hangar,
+                    ["adb", "--on" if enabled else "--off"],
+                    name,
+                    self.command_timeout)
         finally:
             self.state.release(name)
         result = {"ok": ok, "profile": name, "matched_by": matched_by,
                   "host": hostname(), "message": message, "detail": detail}
-        # 牆上的倒數與狀態要使用 agent 實際採用的值；helper 先把本次受安全上限
-        # 夾過的輸入帶回來，CLI 也會再由 agent 回應實際值並印在人類訊息裡。
+        # 響鈴那條仍然要回實際採用的秒數（agent 端有 120 秒上限），偵錯則沒有
+        # 任何會被夾過或會自己改變的值可回。
         if path == "/enroll":
             result["reinstall"] = reinstall
         elif path == "/ring":
             result.update({"ringing": seconds > 0, "seconds": seconds})
         elif path == "/adb":
-            result.update({"enabled": enabled,
-                           "revert_after_s": 0 if enabled else revert})
+            result.update({"enabled": enabled})
         return self._json(200 if ok else 502, result, origin)
 
     # ---- 雜事 ----

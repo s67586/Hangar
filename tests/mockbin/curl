@@ -30,12 +30,12 @@ f="$S/agent_${ip}_${port}.json"
 case "$path" in
   */hangar/v1/hello)
     if [ -f "$S/agent_omit_enrolled" ]; then
-      printf '{"schema":2,"agent":"hangar-agent","version":"0.1.0-mock"}\n'
+      printf '{"schema":3,"agent":"hangar-agent","version":"0.1.0-mock"}\n'
       exit 0
     fi
     enrolled=true
     [ -f "$S/agent_not_enrolled" ] && enrolled=false
-    printf '{"schema":2,"agent":"hangar-agent","version":"0.1.0-mock","enrolled":%s}\n' "$enrolled"
+    printf '{"schema":3,"agent":"hangar-agent","version":"0.1.0-mock","enrolled":%s}\n' "$enrolled"
     ;;
   */hangar/v1/status)
     want="$(cat "$S/agent_token" 2>/dev/null || true)"
@@ -51,21 +51,22 @@ case "$path" in
     [ -n "$seconds" ] || exit 22
     if [ "$seconds" -gt 120 ]; then seconds=120; fi
     if [ "$seconds" -eq 0 ]; then
-      printf '{"schema":2,"ringing":false,"seconds":0}\n'
+      printf '{"schema":3,"ringing":false,"seconds":0}\n'
     else
-      printf '{"schema":2,"ringing":true,"seconds":%s}\n' "$seconds"
+      printf '{"schema":3,"ringing":true,"seconds":%s}\n' "$seconds"
     fi
     ;;
   */hangar/v1/adb)
     [ "$method" = "POST" ] || exit 22
     enabled="false"
     printf '%s' "$data" | grep -q '"enabled"[[:space:]]*:[[:space:]]*true' && enabled="true"
-    if [ "$enabled" = "true" ]; then
-      printf '{"schema":2,"enabled":true,"revert_after_s":0,"adb":{"enabled":true}}\n'
+    # schema 3 的 agent 不收 revert_after_s；舊呼叫端送了就是 400。
+    if printf '%s' "$data" | grep -q '"revert_after_s"'; then
+      printf '{"schema":3,"error":{"code":"bad_request","message":"revert_after_s 已移除"}}\n'
+    elif [ "$enabled" = "true" ]; then
+      printf '{"schema":3,"enabled":true,"adb":{"enabled":true}}\n'
     else
-      revert="$(printf '%s' "$data" | sed -nE 's/.*"revert_after_s"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
-      [ -n "$revert" ] || revert=1800
-      printf '{"schema":2,"enabled":false,"revert_after_s":%s,"adb":{"enabled":false}}\n' "$revert"
+      printf '{"schema":3,"enabled":false,"adb":{"enabled":false}}\n'
     fi
     ;;
   *) exit 22 ;;

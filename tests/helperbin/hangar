@@ -51,12 +51,11 @@ case "${1:-}" in
     fi
     ;;
   adb)
-    enabled="false"; name=""; revert=1800
+    enabled="false"; name=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --on) enabled="true"; shift ;;
         --off) enabled="false"; shift ;;
-        --revert-after-s) revert="${2:-}"; shift 2 ;;
         -p) name="${2:-}"; shift 2 ;;
         *) shift ;;
       esac
@@ -64,7 +63,7 @@ case "${1:-}" in
     if [ "$enabled" = "true" ]; then
       printf ' ok  [%s] 偵錯已開啟\n' "$name"
     else
-      printf ' ok  [%s] 偵錯已關閉，%s 秒後自動開回\n' "$name" "$revert"
+      printf ' ok  [%s] 偵錯已關閉（不會自己開回來）\n' "$name"
     fi
     ;;
   -p)

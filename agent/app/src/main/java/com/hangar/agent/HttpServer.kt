@@ -187,20 +187,14 @@ class HttpServer(
             return
         }
 
+        // schema 3 拿掉了自動復原。舊版呼叫端仍會送這個欄位，寧可明確擋下來：
+        // 靜默忽略會讓人以為那顆鬧鐘還武裝著，而這次改動的重點正是狀態不能有歧義。
         val rawRevert = body.opt("revert_after_s")
-        val revert = when {
-            rawRevert == null || rawRevert == JSONObject.NULL -> null
-            rawRevert is Number -> rawRevert.toDouble()
-                .takeIf { it.isFinite() && it == it.toInt().toDouble() }
-                ?.toInt()
-            else -> null
-        }
-        if (rawRevert != null && rawRevert != JSONObject.NULL && revert == null) {
-            respond(s, 400, err("bad_request", "revert_after_s 必須是整數"))
-            return
-        }
-        if (!enabled && revert != null && revert < 0) {
-            respond(s, 400, err("bad_request", "revert_after_s 不可以是負數"))
+        if (rawRevert != null && rawRevert != JSONObject.NULL) {
+            respond(s, 400, err(
+                "bad_request",
+                "revert_after_s 已移除：偵錯狀態全手動，請更新這台電腦上的 hangar",
+            ))
             return
         }
         if (!Status.canToggleAdb(ctx)) {
@@ -208,8 +202,8 @@ class HttpServer(
             return
         }
 
-        val actualRevert = try {
-            AdbController.set(ctx, enabled, revert)
+        try {
+            AdbController.set(ctx, enabled)
         } catch (_: SecurityException) {
             respond(s, 403, err("forbidden", "Android 拒絕寫入偵錯設定"))
             return
@@ -218,7 +212,6 @@ class HttpServer(
         respond(s, 200, JSONObject().apply {
             put("schema", BuildConfig.PROTOCOL_SCHEMA)
             put("enabled", enabled)
-            put("revert_after_s", if (enabled) 0 else actualRevert)
             put("adb", current.getJSONObject("adb"))
         })
     }

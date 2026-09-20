@@ -27,7 +27,7 @@ hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
 hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
-hangar adb -p work --off    # 關閉偵錯，預設 1800 秒後自動開回
+hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自己開回來）
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
 ./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的動作按鈕要按得動
 ```
@@ -199,7 +199,7 @@ hangar scan             # 掃描區網，列出看得到的裝置
 hangar enroll           # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar enroll -p work --reinstall   # 只換一支新版 APK（升級舊版 agent）
 hangar ring -p work     # 響鈴識別一支在線上的手機
-hangar adb -p work --off --revert-after 900  # 暫時關閉偵錯
+hangar adb -p work --off  # 關閉偵錯（要開回來就 --on，沒有人按就不會變）
 ```
 
 ```bash
@@ -401,7 +401,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5,
                    "source": "adb" },
       "agent": {
-        "reachable": true, "version": "0.1.0", "enrolled": true,
+        "reachable": true, "version": "0.1.1", "enrolled": true,
         "can": { "ring": true, "toggle_adb": true, "toggle_wifi_adb": false },
         "adb": { "enabled": true, "wifi_enabled": null, "wifi_port": null }
       },
@@ -488,7 +488,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "device_serial": "R58M12345AB",
       "profile_ip_stale": false,
       "profile_ip_fixed": false,
-      "agent": { "version": "0.1.0", "enrolled": true,
+      "agent": { "version": "0.1.1", "enrolled": true,
                   "model": "Pixel 7 Pro", "discovered_by": "mdns" },
       "is_gateway": false
     }
@@ -739,7 +739,7 @@ agent 確認活著。成功之後 token 寫進 profile，手機上的 agent 頁�
  ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
 ==> 4/5 把 agent 叫起來
 ==> 5/5 驗證：直接問 agent
- ok  agent 0.1.0 回應正常
+ ok  agent 0.1.1 回應正常
      機型  Pixel 7 Pro
      電量  78%  放電中  27.5°C
 ```
@@ -802,7 +802,7 @@ cd .. && hangar enroll -p work --reinstall
 
 ```json
 { "battery": { "level": 42, "status": "discharging", "source": "agent" },
-  "agent":   { "reachable": true, "version": "0.1.0", "enrolled": true } }
+  "agent":   { "reachable": true, "version": "0.1.1", "enrolled": true } }
 ```
 
 `agent.reachable` 是 `false` 而 profile 又有 token，意思是**這支手機入伍過但
@@ -823,10 +823,10 @@ agent 現在叫不動** —— 現在可能還沒事（adb 還通），但下次
   也拿得到。
 - **agent 也拿不到硬體序號**（Android 10+ 要特權權限），所以序號是入伍時由電腦
   這一側寫進去的 —— 兩邊因此一定是同一個字串。
-- **切偵錯已由 agent 實作。** `POST /hangar/v1/adb` 支援雙向切換；關閉時可帶
-  `revert_after_s`，agent 會用鬧鐘在期限到時自動開回。CLI 是
-  `hangar adb -p work --off --revert-after 1800`。能力不足的裝置會明確回報，
-  不會把「不能寫」誤當成成功。
+- **切偵錯已由 agent 實作，而且是全手動的。** `POST /hangar/v1/adb` 支援雙向
+  切換，CLI 是 `hangar adb -p work --off` / `--on`。偵錯的開關**只會因為有人按
+  了才改變**：agent 不排鬧鐘、不在開機時改它，關掉之後就一直關著。能力不足的
+  裝置會明確回報，不會把「不能寫」誤當成成功。
 - **響鈴已由 agent 實作。** `hangar ring -p work --seconds 30` 走 alarm stream、
   震動與高優先度通知，最長 120 秒；`--stop` 或手機通知上的「找到了」都能停止。
 
@@ -1073,13 +1073,18 @@ hangar helper: http://127.0.0.1:8788/（只有這台電腦連得到）
 ```bash
 hangar ring -p work --seconds 30             # 用聲音、震動與通知識別手機
 hangar ring -p work --stop                   # 立刻停止
-hangar adb -p work --off --revert-after 1800 # 暫時關閉偵錯，時間到自動開回
-hangar adb -p work --on                      # 重新開啟偵錯
+hangar adb -p work --off                     # 關閉偵錯（QA 測加固版的常態）
+hangar adb -p work --on                      # 重新開啟偵錯（RD 要 build 進去）
 ```
 
-這三個動作共用 helper 的 localhost、Origin 與 token 三道鎖。響鈴的最長時間由
-agent 再夾到 120 秒；偵錯關閉的自動恢復由手機端 agent 排程，因此 CLI 或 helper
-在中途退出也不會讓手機永久停在關閉狀態。
+這三個動作共用 helper 的 localhost、Origin 與 token 三道鎖。響鈴會自己停（最長
+由 agent 夾到 120 秒），因為一支在抽屜裡響一整天的手機是災難。**偵錯剛好相反：
+它是一個狀態，不是一個動作，所以沒有任何東西會自動把它改回去** —— 機房的常態
+就是關著測加固版，一顆半小時後把偵錯開回來的鬧鐘等於在長測中途偷改條件。
+
+代價要講清楚：偵錯關著的時候，手機上那支 agent 的 HTTP 端點是唯一回得去的路。
+agent 掛了就得有人拿著手機處理。這個代價是選的，不是忘的 —— 用自動復原去換它
+並不划算，因為那只是每隔一段時間開一扇隨機的窗，並沒有讓那條路變可靠。
 
 ### 從裝置牆自動入伍
 

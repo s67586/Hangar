@@ -254,10 +254,13 @@ assert "響鈴成功回 200"       "200" "$(code "$r")"
 assert "響鈴輸入夾到上限"     "120" "$(q 'd["seconds"]' "$(body "$r")")"
 check  "helper 真的叫 hangar ring" "ring --seconds 120 -p work" "$(cat "$MOCK_STATE/argv_log")"
 r="$(req POST "$URL/adb" "$ORIGIN" "$TOKEN" \
-     '{"profile":"work","serial":"R58M12345AB","enabled":false,"revert_after_s":1800}')"
+     '{"profile":"work","serial":"R58M12345AB","enabled":false}')"
 assert "切偵錯成功回 200"       "200" "$(code "$r")"
 assert "回報偵錯已關閉"         "False" "$(q 'd["enabled"]' "$(body "$r")")"
-check  "helper 真的叫 hangar adb" "adb --off --revert-after-s 1800 -p work" "$(cat "$MOCK_STATE/argv_log")"
+check  "helper 真的叫 hangar adb" "adb --off -p work" "$(cat "$MOCK_STATE/argv_log")"
+r="$(req POST "$URL/adb" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB","enabled":false,"revert_after_s":1800}')"
+assert "舊頁面送 revert_after_s 回 400" "400" "$(code "$r")"
 r="$(req POST "$URL/ring" "http://evil.example" "$TOKEN" \
      '{"profile":"work","serial":"R58M12345AB","seconds":30}')"
 assert "響鈴也受 Origin 保護"    "403" "$(code "$r")"

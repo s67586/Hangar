@@ -34,7 +34,7 @@ ARP
   export HANGAR_OUI_FILE="$MOCK_STATE/no-such-oui-db"
   printf '192.168.1.77:5555\tdevice\n' > "$MOCK_STATE/adb_devices"
   cat > "$MOCK_STATE/agent_192.168.1.77_5599.json" <<'JSON'
-{ "schema": 2,
+{ "schema": 3,
   "agent": { "version": "0.1.0-mock", "uptime_s": 3600 },
   "device_serial": "PIX0000001",
   "model": "Pixel 7 Pro",
@@ -158,9 +158,11 @@ check "ring 送到 agent"         "已響鈴 120 秒" "$out"
 check "ring 真的打到端點"       "/hangar/v1/ring" "$(cat "$MOCK_STATE/curl_log")"
 out="$("$PM" ring -p work --stop 2>&1)"
 check "ring --stop 可以停"       "已停止響鈴" "$out"
-out="$("$PM" adb -p work --off --revert-after-s 1800 2>&1)"
-check "adb 關閉有自動復原提示"  "自動開回" "$out"
+out="$("$PM" adb -p work --off 2>&1)"
+check "adb 關閉說清楚不會自己開回" "不會自己開回來" "$out"
 check "adb 真的打到端點"        "/hangar/v1/adb" "$(cat "$MOCK_STATE/curl_log")"
+out="$("$PM" adb -p work --off --revert-after-s 1800 2>&1 || true)"
+check "舊的 --revert-after-s 直接擋下" "已移除" "$out"
 out="$("$PM" adb -p work --on 2>&1)"
 check "adb 可以再開"             "偵錯已開啟" "$out"
 

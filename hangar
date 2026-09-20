@@ -12,7 +12,7 @@
 #   hangar status [-p 手機]                            顯示連線 / 裝置狀態
 #   hangar reset  [-p 手機]                            重建 adb 連線
 #   hangar ring [-p 手機] [--seconds 秒]               讓 agent 響鈴識別（0 = 停）
-#   hangar adb [-p 手機] --on|--off                    切換偵錯，關閉後自動開回
+#   hangar adb [-p 手機] --on|--off                    切換偵錯（全手動，不會自己變回去）
 #   hangar help
 #
 set -uo pipefail
@@ -1195,15 +1195,12 @@ agent_ring() {
   agent_post "http://${1}:$(agent_port_of "${2:-}")/hangar/v1/ring" "$3" "$body"
 }
 
-# agent_adb <ip> <port> <token> <enabled 0/1> [revert_after_s]
+# agent_adb <ip> <port> <token> <enabled 0/1>
+# 偵錯狀態全手動：這裡不送 revert_after_s，schema 3 的 agent 也不收。
 agent_adb() {
   local enabled="false" body
   [ "$4" -eq 1 ] && enabled="true"
-  if [ -n "${5:-}" ]; then
-    body="$(printf '{"enabled":%s,"revert_after_s":%s}' "$enabled" "$5")"
-  else
-    body="$(printf '{"enabled":%s}' "$enabled")"
-  fi
+  body="$(printf '{"enabled":%s}' "$enabled")"
   agent_post "http://${1}:$(agent_port_of "${2:-}")/hangar/v1/adb" "$3" "$body"
 }
 
@@ -2681,28 +2678,23 @@ cmd_ring() {
 }
 
 cmd_adb() {
-  local want="" enabled="" revert="1800" body state
+  local want="" enabled="" body state
   while [ $# -gt 0 ]; do
     case "$1" in
       -p|--phone) want="${2:-}"; [ -n "$want" ] || die "-p 後面要接手機名稱"; shift 2 ;;
       --on|on|--enable|enable) enabled=1; shift ;;
       --off|off|--disable|disable) enabled=0; shift ;;
       --enabled) case "${2:-}" in true|1|on) enabled=1 ;; false|0|off) enabled=0 ;; *) die "--enabled 要接 true 或 false" ;; esac; shift 2 ;;
-      --revert-after|--revert-after-s) revert="${2:-}"; [ -n "$revert" ] || die "$1 後面要接秒數"; shift 2 ;;
-      --revert-after=*|--revert-after-s=*) revert="${1#*=}"; shift ;;
+      # 這個旗標刻意硬錯而不是默默吃掉：留著它的腳本是在預期一個不會再發生的
+      # 自動復原，那種誤會比一次失敗更貴。
+      --revert-after|--revert-after-s|--revert-after=*|--revert-after-s=*)
+        die "--revert-after-s 已移除：偵錯狀態現在全手動，關掉就會一直關著" ;;
       *) die "adb 不認得參數：$1" ;;
     esac
   done
-  [ -n "$enabled" ] || die "用法：hangar adb -p <手機> --on|--off [--revert-after-s 秒]"
-  if [ "$enabled" -eq 0 ]; then
-    printf '%s' "$revert" | grep -qE '^[0-9]+$' || die "--revert-after-s 必須是非負整數"
-  fi
+  [ -n "$enabled" ] || die "用法：hangar adb -p <手機> --on|--off"
   agent_action_prepare "$want"
-  if [ "$enabled" -eq 1 ]; then
-    body="$(agent_adb "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" 1)"
-  else
-    body="$(agent_adb "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" 0 "$revert")"
-  fi
+  body="$(agent_adb "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" "$enabled")"
   [ -n "$body" ] || {
     err "叫不到「${PROFILE}」的 agent，或 agent 沒有切偵錯的權限"
     hint "確認入伍時授予了 WRITE_SECURE_SETTINGS，再跑：hangar status -p $PROFILE"
@@ -2712,11 +2704,10 @@ cmd_adb() {
   if [ "$state" = "true" ]; then
     ok "[$PROFILE] 偵錯已開啟"
   elif [ "$state" = "false" ]; then
-    local actual_revert
-    actual_revert="$(agent_field "$body" '.revert_after_s')"
-    ok "[$PROFILE] 偵錯已關閉，${actual_revert:-$revert} 秒後自動開回"
+    ok "[$PROFILE] 偵錯已關閉（不會自己開回來）"
   else
     err "agent 回了看不懂的偵錯結果"
+    hint "手機上的 agent 可能是舊版（還帶自動復原）：hangar enroll -p $PROFILE --reinstall"
     exit 1
   fi
 }
@@ -3035,8 +3026,8 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
                                    與入伍狀態都留著，其他電腦不會被踢掉
   hangar ring [-p 手機] [--seconds 秒]
                                    讓已入伍的手機響鈴識別（0 或 --stop = 停）
-  hangar adb [-p 手機] --on|--off [--revert-after-s 秒]
-                                   開／關偵錯；關閉時預設 1800 秒後自動開回
+  hangar adb [-p 手機] --on|--off
+                                   開／關偵錯；全手動，不會自己變回去
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態

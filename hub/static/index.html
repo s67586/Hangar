@@ -183,8 +183,10 @@
       helper 執行 <code>hangar enroll -p &lt;profile&gt; --reinstall</code>，用 ADB 把新版
       APK 就地換上去。<b>token 不會變</b> —— 就地升級不清資料，所以其他也入伍過這支
       手機的電腦不會因此被鎖在門外。這需要 adb 通得到那支手機（USB 或網路／Tailscale）。</p>
-    <p class="foot">關閉偵錯時 agent 會在手機上排定自動復原；預設 30 分鐘後開回。
-      這是為了避免 QA 測完後 agent 也被關掉，最後只能拿手機處理。</p>
+    <p class="foot">偵錯是一個<b>全手動</b>的狀態：按了才會變，沒有任何鬧鐘會把它改回去。
+      機房的常態是關著讓 QA 測加固版，所以一顆「半小時後自動開回」的鬧鐘等於在長測
+      中途偷改條件。代價是偵錯關著時，手機上那支 agent 是唯一回得去的路 —— agent
+      掛了就得有人拿著手機處理。</p>
   </section>
 </div>
 
@@ -301,8 +303,8 @@ function helperLine() {
 // 每張卡按鈕底下那句話。key → { busy, action, msg, bad }
 const says = new Map();
 // key → 結束時間（毫秒）。裝置牆每 0.5 秒重畫一次，倒數不依賴 hub 輪詢。
+// 只有響鈴需要這個：它會自己停。偵錯是全手動的狀態，沒有倒數可數。
 const ringings = new Map();
-const adbReverts = new Map();
 let byKey = new Map();
 
 function needsEnroll(d) {
@@ -364,7 +366,7 @@ function reinstallCommand(d) { return `hangar enroll -p ${d.name} --reinstall`; 
 function adbCommand(d) {
   const enabled = d.agent && d.agent.adb && d.agent.adb.enabled === true;
   return enabled
-    ? `hangar adb -p ${d.name} --off --revert-after-s 1800`
+    ? `hangar adb -p ${d.name} --off`
     : `hangar adb -p ${d.name} --on`;
 }
 
@@ -421,16 +423,8 @@ function adbRow(d) {
     return `<button class="adb" type="button" data-copy-adb="${esc(d.key)}">複製偵錯指令</button>
       <span class="action-note">偵錯操作需要這台電腦的 helper（目前沒有連上）</span>`;
   }
-  const until = adbReverts.get(d.key);
-  const left = until ? secondsLeft(until) : 0;
-  if (!enabled && left > 0) {
-    return `<button class="adb" type="button" data-adb="on" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>開啟偵錯</button>
-      <span class="action-note">偵錯已關閉，${left} 秒後自動開回</span>`;
-  }
-  if (!enabled && until) adbReverts.delete(d.key);
   if (enabled) {
-    return `<button class="adb" type="button" data-adb="off" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>
-      關閉偵錯（30 分鐘後自動開回）</button>`;
+    return `<button class="adb" type="button" data-adb="off" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>關閉偵錯</button>`;
   }
   return `<button class="adb" type="button" data-adb="on" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>開啟偵錯</button>`;
 }
@@ -630,7 +624,6 @@ async function toggleAdb(key, enabled) {
   let st;
   try {
     const body = { profile: d.name, serial: d.device_serial || "", enabled };
-    if (!enabled) body.revert_after_s = 1800;
     const r = await fetch(`http://127.0.0.1:${cfg.port}/adb`, {
       method: "POST",
       headers: { "Content-Type": "application/json",
@@ -640,14 +633,7 @@ async function toggleAdb(key, enabled) {
     const j = await r.json().catch(() => ({}));
     if (j.ok) {
       d.agent.adb = { ...(d.agent.adb || {}), enabled: j.enabled === true };
-      if (j.enabled === false) {
-        const actual = Number.isInteger(j.revert_after_s) ? j.revert_after_s : 1800;
-        adbReverts.set(key, Date.now() + actual * 1000);
-        st = { msg: `偵錯已關閉，${actual} 秒後自動開回` };
-      } else {
-        adbReverts.delete(key);
-        st = { msg: "偵錯已開啟" };
-      }
+      st = { msg: j.enabled === false ? "偵錯已關閉（不會自己開回來）" : "偵錯已開啟" };
     } else {
       st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
                               .filter(Boolean).join(" —— ") };
@@ -995,8 +981,7 @@ helperTick();
 setInterval(tick, 10000);
 setInterval(helperTick, 15000);
 setInterval(() => {
-  const active = [...ringings.values(), ...adbReverts.values()]
-    .some(t => secondsLeft(t) > 0);
+  const active = [...ringings.values()].some(t => secondsLeft(t) > 0);
   if (active) paint();
 }, 500);
 </script>
