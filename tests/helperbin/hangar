@@ -13,14 +13,58 @@ case "${1:-}" in
     cat "$MOCK_STATE/list_json"
     ;;
   enroll)
-    name=""
-    [ "${2:-}" = "-p" ] && name="${3:-}"
+    name=""; again=0
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -p) name="${2:-}"; shift 2 ;;
+        --reinstall) again=1; shift ;;
+        *) shift ;;
+      esac
+    done
     if [ -f "$MOCK_STATE/enroll_fail" ]; then
       printf '\033[31m xx \033[0m agent 入伍失敗\n' >&2
       exit 1
     fi
-    printf '==> 1/5 安裝 agent\n'
-    printf ' ok  入伍完成（%s）\n' "$name"
+    if [ "$again" -eq 1 ]; then
+      printf '==> 1/4 換上新版 agent（保留入伍狀態）\n'
+      printf ' ok  重新安裝完成（%s）\n' "$name"
+    else
+      printf '==> 1/5 安裝 agent\n'
+      printf ' ok  入伍完成（%s）\n' "$name"
+    fi
+    ;;
+  ring)
+    seconds=30; name=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --seconds) seconds="${2:-}"; shift 2 ;;
+        -p) name="${2:-}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ "$seconds" -le 120 ] || seconds=120
+    if [ "$seconds" -eq 0 ]; then
+      printf ' ok  [%s] 已停止響鈴\n' "$name"
+    else
+      printf ' ok  [%s] 已響鈴 %s 秒\n' "$name" "$seconds"
+    fi
+    ;;
+  adb)
+    enabled="false"; name=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --on) enabled="true"; shift ;;
+        --off) enabled="false"; shift ;;
+        -p) name="${2:-}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ "$enabled" = "true" ]; then
+      printf ' ok  [%s] 偵錯已開啟\n' "$name"
+    else
+      printf ' ok  [%s] 偵錯已關閉（不會自己開回來）\n' "$name"
+    fi
     ;;
   -p)
     name="${2:-}"

@@ -12,10 +12,11 @@ android {
         // 26：前景服務與通知頻道的分水嶺。比這更舊的機器不在這個專案的守備範圍。
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         // 協定版本。改了要同時改 ROADMAP 的「M3 協定」與 tests/test_agent_protocol.sh
-        buildConfigField("int", "PROTOCOL_SCHEMA", "1")
+        // 3：拿掉切偵錯的自動復原，revert_after_s 從此是不接受的欄位。
+        buildConfigField("int", "PROTOCOL_SCHEMA", "3")
     }
 
     buildFeatures { buildConfig = true }

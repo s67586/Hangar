@@ -15,7 +15,8 @@
 | `GET /hangar/v1/status` | 好了（電量、機型、Android 版本、偵錯開關現況、能力宣告） |
 | 入伍（收 profile 名字、序號與 token） | 好了（手機頁面會把 profile 名字大字顯示） |
 | 重開機後自己起來 | 程式寫好了，**但還沒在實機上驗過重開機那一段**（把無線偵錯打開是 M3c，還沒做） |
-| `POST /hangar/v1/adb` 切偵錯 | 還沒（M4），現在回 501 |
+| `POST /hangar/v1/adb` 切偵錯 | 好了（M4；全手動，agent 不會自己把它改回去） |
+| `POST /hangar/v1/ring` 響鈴 | 好了（M3d；最長 120 秒，通知可停止） |
 | mDNS 廣播 | 還沒（M3b） |
 | `hangar enroll` | 好了 —— 電腦那一側接上了（實機跑過），下面那段手動流程留著當參考 |
 
@@ -112,9 +113,21 @@ adb shell pm clear com.hangar.agent
 
 而那本來就需要 adb，也就是需要已經有人實體碰過這支手機。
 
+**但升級不必清掉它。** `adb install -r` 是就地升級，app 的資料（也就是那組
+token）會留著，所以換新版之後手機仍然是入伍狀態，電腦端那份 profile 也不用動：
+
+```bash
+hangar enroll -p work --reinstall
+```
+
+這件事是刻意的。token 是每台電腦各自保管的，`pm clear` 一次就等於把所有入伍過
+這支手機的電腦一起鎖在門外；升級不該有這種代價。反過來說，如果新裝上去的 agent
+發現自己沒有 token（有人清過、或 app 曾被解除安裝），那就是一支全新的 agent，
+`hangar enroll --reinstall` 會在同一條 adb 上補完整的入伍流程。
+
 ## 設計上的幾個決定
 
-- **零外部相依，連 AndroidX 都沒有。** 三個端點、全部回 JSON，用得到的東西
+- **零外部相依，連 AndroidX 都沒有。** 四個端點、全部回 JSON，用得到的東西
   framework 都有（`java.net.ServerSocket`、`org.json`）。跟 `hangar` 是一支無相依
   bash script、hub 只用 Python 標準函式庫是同一個理由。
 - **profile 名字、序號與 token 都是電腦端給的**，不是 app 自己去問系統的。Android 10 以上一般
@@ -152,7 +165,7 @@ HANGAR_AGENT_URL=http://192.168.1.77:5599 HANGAR_AGENT_TOKEN=<token> \
 |---|---|
 | Kotlin 編譯 | **過了**（`kotlinc` 對著 `android.jar` 編，7 個檔） |
 | AndroidManifest | **過了**（`aapt2 link` 通過，權限與元件都在） |
-| 協定 | **過了** —— 同一份測試打真的 agent，25/25 |
+| 協定 | **過了** —— fake agent 與 Kotlin agent 共用同一份端點測試 |
 | 裝到手機上跑起來 | **過了** —— Pixel 4 / Android 13 |
 | `WRITE_SECURE_SETTINGS` | **拿得到** —— `pm grant` 之後 `granted=true` |
 | Gradle 真的產出 APK | **過了** —— CI 上 `./gradlew assembleDebug` 一次就成功，812 KB 的 `app-debug.apk`，`aapt2` 認得 `com.hangar.agent` v0.1.0 |

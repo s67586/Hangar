@@ -78,5 +78,28 @@ assert "helper API_SCHEMA 行號" "$(line_of "$HELPER" '^API_SCHEMA')" "$roadmap
 echo "=== V4. agent reference implementation uses the same protocol schema ==="
 assert "fake agent schema 跟 Android 一致" "$agent_schema" "$fake_schema"
 
+echo "=== V5. 中文訊息裡的變數要包大括號 ==="
+# macOS 的 bash 3.2 在 UTF-8 locale 底下，會把緊接在變數後面那個中文字的第一個
+# 位元組算進變數名字裡 —— 裸寫的那種形式會被讀成一個不存在的變數名，配上
+# set -u 就是 unbound variable：整行指令當場死掉，而且錯誤訊息本身是亂碼。
+#
+# test_scan.sh 的 S15 已經用真的 locale 擋過一次，但那一節要機器上裝有
+# zh_TW.UTF-8 才重現得了，沒有就 SKIP —— CI 的 macOS 腿正是這樣漏掉的：它的
+# locale 是 en_US.UTF-8，一樣會炸，卻沒有任何一項在看。
+#
+# 所以這裡改成靜態檢查：不必任何 locale、也不必真的執行到那一行，就擋得下來。
+# 整行註解不算（S15 的說明本身就引用了那個寫法）。
+offenders=""
+while IFS= read -r f; do
+  [ -f "$ROOT/$f" ] || continue
+  head -1 "$ROOT/$f" | grep -q bash || continue
+  hits="$(LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$ROOT/$f" 2>/dev/null \
+          | LC_ALL=C grep -vE '^[0-9]+:[[:space:]]*#')"
+  [ -z "$hits" ] || offenders="$offenders$f:$(printf '%s' "$hits" | head -1 | cut -d: -f1) "
+done <<EOF
+$(cd "$ROOT" && git ls-files)
+EOF
+assert "沒有裸寫變數直接接中文的地方" "" "$offenders"
+
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

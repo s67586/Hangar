@@ -11,6 +11,8 @@
 #   hangar forget <手機>                               刪除該手機的設定
 #   hangar status [-p 手機]                            顯示連線 / 裝置狀態
 #   hangar reset  [-p 手機]                            重建 adb 連線
+#   hangar ring [-p 手機] [--seconds 秒]               讓 agent 響鈴識別（0 = 停）
+#   hangar adb [-p 手機] --on|--off                    切換偵錯（全手動，不會自己變回去）
 #   hangar help
 #
 set -uo pipefail
@@ -651,10 +653,10 @@ scan_match_profiles() {
 
   # 先把 profile 讀成一張表。每台主機都重讀一次檔案在 /24 上是幾百次 grep，
   # hub 之後會固定輪詢，沒必要這樣花。
-  while IFS= read -r n; do
+  while IFS= read -r n <&3; do
     [ -n "$n" ] || continue
     ptab="${ptab}${n}|$(profile_field "$n" PHONE_IP)|$(profile_field "$n" PHONE_MAC)|$(profile_field "$n" TRANSPORT)"$'\n'
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   # 第一輪：MAC 對得上就是它，IP 換過也一樣。一個 profile 只認領一台。
   while IFS='|' read -r ip mac rest; do
@@ -1062,10 +1064,27 @@ agent_status() {
   agent_get "http://${1}:$(agent_port_of "${2:-}")/hangar/v1/status" "$3"
 }
 
+# agent_post <url> <token> <JSON body> — 成功時把 body 印到 stdout。
+# agent 的寫入端點都走這個包裝，CLI、helper 與裝置牆不各自發明 HTTP 細節。
+agent_post() {
+  local url="$1" token="${2:-}" body="${3:-}" out rc
+  agent_have_curl || return 1
+  [ -n "$token" ] || return 1
+  out="$(curl -fsS -m 5 -X POST \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d "$body" "$url" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
 # agent_field <json> <jq 路徑> — 取不到就印空字串（jq 沒裝也是空字串）
 agent_field() {
   command -v jq >/dev/null 2>&1 || return 0
-  printf '%s' "$1" | jq -r "${2} // empty" 2>/dev/null
+  # `// empty` 會把合法的 false/0 也當成「沒有值」。能力宣告與 adb.enabled
+  # 正好需要保留 false，所以只把 null 轉成空字串。
+  printf '%s' "$1" | jq -r "${2} | if . == null then empty else . end" 2>/dev/null
 }
 
 # 產一組 token。openssl 不在的話退回 /dev/urandom —— 兩條路都只用系統本來就有的東西。
@@ -1094,8 +1113,18 @@ AGENT_REACHABLE=0     # 0/1
 AGENT_VERSION=""
 AGENT_ENROLLED=""     # true / false / 空（問不到）
 AGENT_SOURCE=""       # 機型與電量是誰給的：adb / agent / 空
+AGENT_CAN_RING=""     # true / false / 空（舊版或尚未問到 status）
+AGENT_CAN_TOGGLE_ADB=""
+AGENT_CAN_TOGGLE_WIFI_ADB=""
+AGENT_ADB_ENABLED=""  # true / false / 空
+AGENT_WIFI_ADB_ENABLED=""
+AGENT_WIFI_ADB_PORT=""
 
-agent_reset() { AGENT_REACHABLE=0; AGENT_VERSION=""; AGENT_ENROLLED=""; AGENT_SOURCE=""; }
+agent_reset() {
+  AGENT_REACHABLE=0; AGENT_VERSION=""; AGENT_ENROLLED=""; AGENT_SOURCE=""
+  AGENT_CAN_RING=""; AGENT_CAN_TOGGLE_ADB=""; AGENT_CAN_TOGGLE_WIFI_ADB=""
+  AGENT_ADB_ENABLED=""; AGENT_WIFI_ADB_ENABLED=""; AGENT_WIFI_ADB_PORT=""
+}
 
 # agent_ping <ip> [port] — 這支手機上有 agent 在聽嗎。便宜，不需要 token。
 agent_ping() {
@@ -1108,6 +1137,34 @@ agent_ping() {
   return 0
 }
 
+# agent_apply_status <JSON> — 只把 status 的可選欄位放進全域變數；沒有的欄位留空，
+# 舊版 agent 仍然可以被問，且「沒有 can.ring」會在 JSON 層安全地當成 false。
+agent_apply_status() {
+  local body="$1" v
+  v="$(agent_field "$body" '.can.ring | if . == null then empty else tostring end')"
+  [ -n "$v" ] && AGENT_CAN_RING="$v"
+  v="$(agent_field "$body" '.can.toggle_adb | if . == null then empty else tostring end')"
+  [ -n "$v" ] && AGENT_CAN_TOGGLE_ADB="$v"
+  v="$(agent_field "$body" '.can.toggle_wifi_adb | if . == null then empty else tostring end')"
+  [ -n "$v" ] && AGENT_CAN_TOGGLE_WIFI_ADB="$v"
+  v="$(agent_field "$body" '.adb.enabled | if . == null then empty else tostring end')"
+  [ -n "$v" ] && AGENT_ADB_ENABLED="$v"
+  v="$(agent_field "$body" '.adb.wifi_enabled | if . == null then empty else tostring end')"
+  [ -n "$v" ] && AGENT_WIFI_ADB_ENABLED="$v"
+  v="$(agent_field "$body" '.adb.wifi_port')"
+  [ -n "$v" ] && AGENT_WIFI_ADB_PORT="$v"
+}
+
+# agent_status_probe <ip> <port> <token> — hello + status，但不改資料來源標記。
+agent_status_probe() {
+  local ip="$1" port="${2:-}" token="${3:-}" body
+  agent_ping "$ip" "$port" || return 1
+  [ -n "$token" ] || return 0
+  body="$(agent_status "$ip" "$port" "$token")" || return 0
+  agent_apply_status "$body"
+  return 0
+}
+
 # agent_probe <ip> <port> <token> — 問 agent 拿裝置資訊，補進 DEV_* / BATTERY_*。
 # adb 拿得到的時候不該叫這個：adb 那份比較完整（序號、SDK 都有）。
 agent_probe() {
@@ -1117,6 +1174,7 @@ agent_probe() {
   # 沒有 token 就只能停在「看得到它」。這是入伍前的正常狀態，不是錯誤。
   [ -n "$token" ] || return 0
   body="$(agent_status "$ip" "$port" "$token")" || return 0
+  agent_apply_status "$body"
 
   local v
   v="$(agent_field "$body" '.model')";           [ -n "$v" ] && DEV_MODEL="$v"
@@ -1128,6 +1186,22 @@ agent_probe() {
   v="$(agent_field "$body" '.battery.temperature_c')"; [ -n "$v" ] && BATTERY_TEMP="$v"
   AGENT_SOURCE="agent"
   return 0
+}
+
+# agent_ring <ip> <port> <token> <seconds> — 回傳 agent 原樣 JSON。
+agent_ring() {
+  local body
+  body="$(printf '{"seconds":%s}' "$4")"
+  agent_post "http://${1}:$(agent_port_of "${2:-}")/hangar/v1/ring" "$3" "$body"
+}
+
+# agent_adb <ip> <port> <token> <enabled 0/1>
+# 偵錯狀態全手動：這裡不送 revert_after_s，schema 3 的 agent 也不收。
+agent_adb() {
+  local enabled="false" body
+  [ "$4" -eq 1 ] && enabled="true"
+  body="$(printf '{"enabled":%s}' "$enabled")"
+  agent_post "http://${1}:$(agent_port_of "${2:-}")/hangar/v1/adb" "$3" "$body"
 }
 
 # -------------------------------------------------------------- profiles ----
@@ -1162,6 +1236,15 @@ profile_set_field() {
   return 0
 }
 
+# 走訪這份清單的迴圈一律用 fd 3 讀（`while … read -r n <&3; do … done 3< <(…)`），
+# 不要用預設的 stdin。
+#
+# 為什麼：`adb … shell …` 會把 stdin 整個吸乾（它要把 stdin 轉發給手機，讀到
+# EOF 為止）。迴圈體裡只要碰一次 adb，process substitution 剩下的行就沒了，
+# 迴圈**安靜地**在第一支手機之後結束 —— 不是錯誤、不是逾時，就是少了幾支，
+# exit code 還是 0。只有一個 profile 的時候完全看不出來，第二支一加就中。
+# 實際踩過：`hangar list` 只印得出排在前面的那一支，裝置牆跟著少一張卡。
+# 把迴圈的輸入挪到 fd 3，迴圈體再怎麼吃 stdin 都跟這份清單無關。
 list_profiles() {
   [ -d "$PROFILE_DIR" ] || return 0
   local f n
@@ -1224,7 +1307,7 @@ EOF
 print_profile_table() {
   local def n; def="$(get_default_profile 2>/dev/null)"
   local i=0
-  while IFS= read -r n; do
+  while IFS= read -r n <&3; do
     [ -n "$n" ] || continue
     i=$((i + 1))
     local PHONE_HOST="" PHONE_IP=""
@@ -1232,7 +1315,7 @@ print_profile_table() {
     . "$(profile_path "$n")" 2>/dev/null
     local mark=" "; [ "$n" = "$def" ] && mark="*"
     printf '   %2d) %s %-16s %-16s %s\n' "$i" "$mark" "$n" "$PHONE_IP" "${PHONE_HOST:-}"
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 }
 
 # resolve_profile [name] — 決定要操作哪一支手機，結果放進 $PROFILE
@@ -1701,12 +1784,12 @@ pick_usb_serial() {
   # 插了多支手機 → 讓使用者選
   info "偵測到 $total 支 USB 裝置：" >&2
   local i=0 s model
-  while IFS= read -r s; do
+  while IFS= read -r s <&3; do
     [ -n "$s" ] || continue
     i=$((i + 1))
     model="$(run_timeout 8 adb -s "$s" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
     printf '   %2d) %-20s %s\n' "$i" "$s" "${model:-?}" >&2
-  done < <(printf '%s\n' "$serials")
+  done 3< <(printf '%s\n' "$serials")
   local n
   while :; do
     printf '%s' "  選擇要設定的手機（1-${total}）＞ " >&2
@@ -1905,12 +1988,12 @@ cmd_setup() {
   fi
   # 不同名稱卻指到同一個 IP → 提醒重複
   local other
-  while IFS= read -r other; do
+  while IFS= read -r other <&3; do
     [ -n "$other" ] && [ "$other" != "$PROFILE" ] || continue
     if grep -qE "^PHONE_IP=\"$PHONE_IP\"" "$(profile_path "$other")" 2>/dev/null; then
       warn "profile「${other}」也指向 ${PHONE_IP}，兩者是同一支手機"
     fi
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   SERIAL="${PHONE_IP}:${ADB_PORT}"
   # setup 目前只走 Tailscale 這條路（節點選單、取 IP 都是 tailnet 的概念）。
@@ -2050,7 +2133,7 @@ cmd_all() {
   [ "$total" -gt 0 ] || { err "還沒有設定任何手機"; hint "hangar setup"; exit 1; }
 
   local started=0 failed=0 name
-  while IFS= read -r name; do
+  while IFS= read -r name <&3; do
     [ -n "$name" ] || continue
     echo
     info "── $name ──"
@@ -2076,7 +2159,7 @@ cmd_all() {
       rm -f "$CONFIG_DIR/.pid-$name"
       failed=$((failed + 1))
     fi
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   echo
   ok "已啟動 $started 個視窗${failed:+，失敗 $failed 支}"
@@ -2109,6 +2192,7 @@ probe_reset() {
   DEV_MODEL=""; DEV_RELEASE=""; DEV_SDK=""; DEV_SERIALNO=""
   DEV_MAC=""; DEV_MAC_SSID=""
   BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
+  agent_reset
 }
 
 # 探測分成 transport 與 adb 兩段，因為 status 要在這兩段中間印東西，
@@ -2188,7 +2272,12 @@ probe_adb() { # <deep 0/1> <try_connect 0/1>
       AGENT_SOURCE="adb"
       # 入伍過的手機順手確認 agent 還活著。agent 死掉而 adb 還通，是「現在沒事、
       # 但下次重開機就會失聯」的預警 —— 那是會想提早知道的事。
-      [ -n "${AGENT_TOKEN:-}" ] && agent_ping "$PHONE_IP" "$AGENT_PORT" >/dev/null 2>&1
+      if [ -n "${AGENT_TOKEN:-}" ]; then
+        # adb 通時資料主體仍以 adb 為準，但 agent 的能力宣告與偵錯現況要上牆，
+        # M3d/M4 的按鈕才知道這台是否真的能響、能切。
+        agent_status_probe "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" >/dev/null 2>&1 || true
+        AGENT_SOURCE="adb"
+      fi
     elif [ -n "${AGENT_TOKEN:-}" ]; then
       # adb 碰不到，但 agent 住在手機裡 —— 這正是整支 agent 存在的理由。
       # 注意不看 PROBE_REACH：那一欄量的是 5555 通不通，而手機重開機之後
@@ -2205,7 +2294,7 @@ scrcpy_pids_for() { pgrep -f "scrcpy .*${1}" 2>/dev/null | tr '\n' ' '; }
 #
 # 這是之後 web 後端讀 hangar 的介面，schema 有變動就要把 schema 號碼往上加。
 
-JSON_SCHEMA=3
+JSON_SCHEMA=4
 
 # device_json <is_default 0/1> — 依目前的 probe 結果組出一個 device 物件
 device_json() {
@@ -2243,6 +2332,12 @@ device_json() {
     --argjson areach    "$AGENT_REACHABLE" \
     --arg     aver      "$AGENT_VERSION" \
     --arg     aenrolled "$AGENT_ENROLLED" \
+    --arg     acanring  "$AGENT_CAN_RING" \
+    --arg     acantoggle "$AGENT_CAN_TOGGLE_ADB" \
+    --arg     acanwifi  "$AGENT_CAN_TOGGLE_WIFI_ADB" \
+    --arg     aadbenabled "$AGENT_ADB_ENABLED" \
+    --arg     awifienabled "$AGENT_WIFI_ADB_ENABLED" \
+    --arg     awifiport "$AGENT_WIFI_ADB_PORT" \
     --arg     atoken    "${AGENT_TOKEN:-}" \
     --argjson errors    "$errs" \
     --argjson pids      "$pids" '
@@ -2282,7 +2377,18 @@ device_json() {
       agent:         (if $areach == 1 then
                         { reachable: true, version: ($aver | s),
                           enrolled: (if $aenrolled == "" then null
-                                     else $aenrolled == "true" end) }
+                                     else $aenrolled == "true" end),
+                          # 能力欄位一律是布林；舊版沒有 can.ring 時安全地當 false，
+                          # UI 才不會把不認得的 agent 當成可寫入的新版。
+                          can: { ring: ($acanring == "true"),
+                                 toggle_adb: ($acantoggle == "true"),
+                                 toggle_wifi_adb: ($acanwifi == "true") },
+                          adb: (if $aadbenabled == "" and $awifienabled == "" and $awifiport == ""
+                                then null
+                                else { enabled: (if $aadbenabled == "" then null else $aadbenabled == "true" end),
+                                       wifi_enabled: (if $awifienabled == "" then null else $awifienabled == "true" end),
+                                       wifi_port: ($awifiport | n) }
+                                end) }
                       elif $atoken != "" then
                         { reachable: false, version: null, enrolled: null }
                       else null end),
@@ -2422,7 +2528,7 @@ cmd_list() {
 
   if [ "$JSON_MODE" -eq 1 ]; then
     local objs="" n isdef
-    while IFS= read -r n; do
+    while IFS= read -r n <&3; do
       [ -n "$n" ] || continue
       load_profile_soft "$n" || { warn "略過壞掉的 profile：$n"; continue; }
       transport_prepare
@@ -2430,7 +2536,7 @@ cmd_list() {
       probe_device "$deep" 0
       isdef=0; [ "$n" = "$def" ] && isdef=1
       objs="${objs}$(device_json "$isdef")"$'\n'
-    done < <(list_profiles)
+    done 3< <(list_profiles)
     printf '%s' "$objs" | jq -s --argjson schema "$JSON_SCHEMA" \
       '{ schema: $schema, devices: . }'
     return 0
@@ -2445,7 +2551,7 @@ cmd_list() {
   printf '  %s\n' "$(printf '─%.0s' $(seq 1 84))"
 
   local n
-  while IFS= read -r n; do
+  while IFS= read -r n <&3; do
     [ -n "$n" ] || continue
     load_profile_soft "$n" || continue
     transport_prepare
@@ -2487,7 +2593,7 @@ cmd_list() {
       "$adb_col" "$(pad "$adb_txt" 13)" "$C_0" \
       "$bat_col" "$(pad "$bat_txt" 10)" "$C_0" \
       "${PHONE_HOST:-}"
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   printf '\n  %s* = 預設（hangar use <名稱> 可更換）　!= 電量偏低%s\n\n' "$C_DIM" "$C_0"
 }
@@ -2522,6 +2628,90 @@ cmd_forget() {
   fi
 }
 
+# -------------------------------------------------------------- agent actions
+
+# ring/adb 不需要 scrcpy 或 adb；只要能連到 agent 的 transport、jq 與 curl 即可。
+agent_action_prepare() {
+  local want="${1:-}"
+  migrate_legacy
+  resolve_profile "$want"
+  load_profile "$PROFILE"
+  command -v jq >/dev/null 2>&1 || { err "找不到 jq"; hint "brew install jq"; exit 1; }
+  agent_have_curl || { err "找不到 curl（跟手機裡的 agent 溝通需要它）"; exit 1; }
+  [ -n "${AGENT_TOKEN:-}" ] || {
+    err "「${PROFILE}」還沒有入伍 agent，不能做這個動作"
+    hint "先跑：hangar enroll -p $PROFILE"
+    exit 1
+  }
+  [ -n "${PHONE_IP:-}" ] || die "profile「${PROFILE}」沒有 PHONE_IP"
+  TS="$(find_tailscale 2>/dev/null || true)"
+  transport_prepare
+  transport_require_deps
+  transport_require_up
+}
+
+cmd_ring() {
+  local want="" seconds=30 body actual
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p|--phone) want="${2:-}"; [ -n "$want" ] || die "-p 後面要接手機名稱"; shift 2 ;;
+      --seconds) seconds="${2:-}"; [ -n "$seconds" ] || die "--seconds 後面要接秒數"; shift 2 ;;
+      --seconds=*) seconds="${1#*=}"; shift ;;
+      --stop) seconds=0; shift ;;
+      *) die "ring 不認得參數：$1" ;;
+    esac
+  done
+  printf '%s' "$seconds" | grep -qE '^[0-9]+$' || die "--seconds 必須是非負整數"
+  agent_action_prepare "$want"
+  body="$(agent_ring "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" "$seconds")" || {
+    err "叫不到「${PROFILE}」的 agent，或 agent 拒絕響鈴"
+    hint "先確認手機與這台電腦在同一個可互通的網路上，再跑：hangar status -p $PROFILE"
+    exit 1
+  }
+  actual="$(agent_field "$body" '.seconds')"
+  [ -n "$actual" ] || { err "agent 回了看不懂的響鈴結果"; exit 1; }
+  if [ "$actual" -eq 0 ]; then
+    ok "[$PROFILE] 已停止響鈴"
+  else
+    ok "[$PROFILE] 已響鈴 ${actual} 秒（agent 端上限 ${RINGER_MAX_SECONDS:-120} 秒）"
+  fi
+}
+
+cmd_adb() {
+  local want="" enabled="" body state
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p|--phone) want="${2:-}"; [ -n "$want" ] || die "-p 後面要接手機名稱"; shift 2 ;;
+      --on|on|--enable|enable) enabled=1; shift ;;
+      --off|off|--disable|disable) enabled=0; shift ;;
+      --enabled) case "${2:-}" in true|1|on) enabled=1 ;; false|0|off) enabled=0 ;; *) die "--enabled 要接 true 或 false" ;; esac; shift 2 ;;
+      # 這個旗標刻意硬錯而不是默默吃掉：留著它的腳本是在預期一個不會再發生的
+      # 自動復原，那種誤會比一次失敗更貴。
+      --revert-after|--revert-after-s|--revert-after=*|--revert-after-s=*)
+        die "--revert-after-s 已移除：偵錯狀態現在全手動，關掉就會一直關著" ;;
+      *) die "adb 不認得參數：$1" ;;
+    esac
+  done
+  [ -n "$enabled" ] || die "用法：hangar adb -p <手機> --on|--off"
+  agent_action_prepare "$want"
+  body="$(agent_adb "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" "$enabled")"
+  [ -n "$body" ] || {
+    err "叫不到「${PROFILE}」的 agent，或 agent 沒有切偵錯的權限"
+    hint "確認入伍時授予了 WRITE_SECURE_SETTINGS，再跑：hangar status -p $PROFILE"
+    exit 1
+  }
+  state="$(agent_field "$body" '.enabled')"
+  if [ "$state" = "true" ]; then
+    ok "[$PROFILE] 偵錯已開啟"
+  elif [ "$state" = "false" ]; then
+    ok "[$PROFILE] 偵錯已關閉（不會自己開回來）"
+  else
+    err "agent 回了看不懂的偵錯結果"
+    hint "手機上的 agent 可能是舊版（還帶自動復原）：hangar enroll -p $PROFILE --reinstall"
+    exit 1
+  fi
+}
+
 # ---------------------------------------------------------------- reset -----
 
 # --------------------------------------------------------------- enroll -----
@@ -2532,13 +2722,102 @@ cmd_forget() {
 # 為什麼是獨立指令而不是 `setup --enroll`：已經設定好的手機也要能補裝 agent，
 # 而 setup 是「從零建立一支 profile」的流程，兩件事的前提不一樣。
 
+# 入伍流程拆成幾個小步驟，因為「第一次入伍」與「只換一支新的 APK」用的是同一
+# 條 adb 通道、同樣的安裝與授權動作，差別只在中間那一步要不要交出新的 token。
+
+# 安裝（或就地升級）APK。`install -r` 會保留 app 的資料 —— 這就是 --reinstall
+# 不需要重新入伍的原因：token 還在手機裡，profile 那份也就還對得上。
+enroll_install_apk() { # <apk>
+  local out
+  out="$(run_timeout 120 adb -s "$SERIAL" install -r "$1" 2>&1)" || true
+  if printf '%s' "$out" | grep -qi 'success'; then
+    ok "安裝完成"
+    return 0
+  fi
+  printf '%s\n' "$out"
+  # 換了簽章金鑰（debug 版 ↔ release 版、或換了一台電腦 build）就會是這個。
+  # 這件事光看 adb 的訊息不好懂，而解法很明確，值得直接講。
+  if printf '%s' "$out" | grep -q 'INSTALL_FAILED_UPDATE_INCOMPATIBLE'; then
+    err "手機上那支 agent 是用另一把金鑰簽的，不能就地更新"
+    hint "先移除再裝（會一併清掉入伍狀態，之後這個指令會重新入伍）："
+    hint "  adb -s ${SERIAL} uninstall com.hangar.agent"
+    exit 1
+  fi
+  die "安裝失敗"
+}
+
+# 這一步就是整套的破口：一次性授予，重開機後仍然有效。失敗不致命 ——
+# 沒有它 agent 照樣回報電量，只是之後切不了偵錯（M4）。
+enroll_grant_secure_settings() {
+  local out
+  out="$(run_timeout 20 adb -s "$SERIAL" shell pm grant com.hangar.agent \
+          android.permission.WRITE_SECURE_SETTINGS 2>&1)" || true
+  if [ -n "$out" ]; then
+    warn "授權沒成功：$out"
+    hint "agent 仍然可以回報電量與裝置資訊，但之後切不了偵錯"
+  else
+    ok "已授予"
+  fi
+}
+
+# 交出 profile 名字、裝置序號與 token，並把 token 寫進本機 profile。
+enroll_handoff() { # <port>
+  local out serial_now token
+  serial_now="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+  [ -n "$serial_now" ] && DEVICE_SERIAL="$serial_now"
+  [ -n "$DEVICE_SERIAL" ] || die "拿不到裝置序號，沒有序號就沒有穩定的識別碼"
+
+  token="$(agent_gen_token)"
+  [ -n "$token" ] || die "產不出 token"
+  out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
+          -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.ENROLL \
+          --es serial "$DEVICE_SERIAL" --es token "$token" \
+          --es name "$PROFILE" 2>&1)"
+  if printf '%s' "$out" | grep -q 'already_enrolled'; then
+    err "這支手機已經入伍過了"
+    hint "只是想換一支新版 agent 的話（舊版不會響鈴之類的），用："
+    hint "  hangar enroll -p $PROFILE --reinstall"
+    hint "真的要重新入伍才先清掉它的狀態："
+    hint "  adb -s $SERIAL shell pm clear com.hangar.agent"
+    exit 1
+  fi
+  printf '%s' "$out" | grep -q 'data="enrolled"' || {
+    printf '%s\n' "$out"
+    die "agent 沒有回報入伍成功（它有在跑嗎？手機上打開一次 Hangar Agent 再試）"; }
+  AGENT_TOKEN="$token"
+  AGENT_PORT="$1"
+  save_profile --quiet
+  ok "序號 ${DEVICE_SERIAL}，token 已寫進 $(profile_path "$PROFILE")"
+}
+
+# Android 12+ 不准 app 從背景啟動前景服務，所以 agent 收完入伍廣播是叫不起
+# 自己的（實機實測過）。把 app 叫到前景一次就合法了 —— 而這個流程手上本來
+# 就有 adb，這一步不需要任何人碰手機。
+enroll_wake_agent() {
+  run_timeout 20 adb -s "$SERIAL" shell am start \
+    -n com.hangar.agent/.MainActivity >/dev/null 2>&1 || true
+  sleep 2
+}
+
+# 能力宣告攤成人看得懂的一行。欄位是空的 = 那個版本根本沒有宣告這件事。
+agent_can_human() {
+  local out=""
+  [ "$AGENT_CAN_RING" = "true" ]            && out="${out}響鈴、"
+  [ "$AGENT_CAN_TOGGLE_ADB" = "true" ]      && out="${out}切偵錯、"
+  [ "$AGENT_CAN_TOGGLE_WIFI_ADB" = "true" ] && out="${out}切無線偵錯、"
+  printf '%s' "${out%、}"
+}
+
 cmd_enroll() {
-  local want="" apk_arg="" port="$AGENT_PORT_DEFAULT"
+  local want="" apk_arg="" port="$AGENT_PORT_DEFAULT" reinstall=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      -p)      want="${2:-}"; shift 2 ;;
-      --apk)   apk_arg="${2:-}"; shift 2 ;;
-      --port)  port="${2:-}"; shift 2 ;;
+      -p)          want="${2:-}"; shift 2 ;;
+      --apk)       apk_arg="${2:-}"; shift 2 ;;
+      --port)      port="${2:-}"; shift 2 ;;
+      # 舊版 agent 升級用。名字刻意不是 --force：它不繞過任何保護，它是
+      # 「同一支手機、同一組 token，只把 APK 換成新的」。
+      --reinstall) reinstall=1; shift ;;
       *) die "enroll 不認得參數：$1" ;;
     esac
   done
@@ -2550,6 +2829,13 @@ cmd_enroll() {
   command -v adb >/dev/null 2>&1 || { err "找不到 adb"; hint "brew install --cask android-platform-tools"; exit 1; }
   agent_have_curl || { err "找不到 curl（驗證入伍結果需要它）"; exit 1; }
 
+  # 沒有 token 的「重新安裝」沒有意義：裝上去也問不到話。那條路本來就叫 enroll。
+  if [ "$reinstall" -eq 1 ] && [ -z "${AGENT_TOKEN:-}" ]; then
+    err "這台電腦上沒有「${PROFILE}」的 agent token，沒辦法只換 APK"
+    hint "這支手機還沒在這台電腦入伍過，直接跑：hangar enroll -p $PROFILE"
+    exit 1
+  fi
+
   local apk
   apk="$(agent_find_apk "$apk_arg")" || {
     err "找不到 agent 的 APK"
@@ -2559,6 +2845,7 @@ cmd_enroll() {
   info "APK：$apk"
 
   # 入伍要 adb，而且只有這一次。之後 agent 自己住在手機裡，不再需要。
+  # （升級是第二次 —— 但那同樣是一次性的動作，不是常態依賴。）
   if [ "$(adb_state "$SERIAL")" != "device" ]; then
     info "adb connect $SERIAL"
     adb_connect "$SERIAL" >/dev/null 2>&1 || true
@@ -2570,69 +2857,20 @@ cmd_enroll() {
     hint "入伍需要 adb 通得到 —— 可用 USB，或先讓網路／Tailscale ADB 回到 device 狀態"
     exit 1; }
 
+  [ "$reinstall" -eq 1 ] && { enroll_reinstall "$apk" "$port"; return; }
+
   echo
   info "1/5 安裝 agent"
-  local out
-  out="$(run_timeout 120 adb -s "$SERIAL" install -r "$apk" 2>&1)" || true
-  if ! printf '%s' "$out" | grep -qi 'success'; then
-    printf '%s\n' "$out"
-    # 換了簽章金鑰（debug 版 ↔ release 版、或換了一台電腦 build）就會是這個。
-    # 這件事光看 adb 的訊息不好懂，而解法很明確，值得直接講。
-    if printf '%s' "$out" | grep -q 'INSTALL_FAILED_UPDATE_INCOMPATIBLE'; then
-      err "手機上那支 agent 是用另一把金鑰簽的，不能就地更新"
-      hint "先移除再裝（會一併清掉入伍狀態，之後這個指令會重新入伍）："
-      hint "  adb -s ${SERIAL} uninstall com.hangar.agent"
-      exit 1
-    fi
-    die "安裝失敗"
-  fi
-  ok "安裝完成"
+  enroll_install_apk "$apk"
 
   info "2/5 授予 WRITE_SECURE_SETTINGS"
-  # 這一步就是整套的破口：一次性授予，重開機後仍然有效。失敗不致命 ——
-  # 沒有它 agent 照樣回報電量，只是之後切不了偵錯（M4）。
-  out="$(run_timeout 20 adb -s "$SERIAL" shell pm grant com.hangar.agent \
-          android.permission.WRITE_SECURE_SETTINGS 2>&1)" || true
-  if [ -n "$out" ]; then
-    warn "授權沒成功：$out"
-    hint "agent 仍然可以回報電量與裝置資訊，但之後切不了偵錯"
-  else
-    ok "已授予"
-  fi
+  enroll_grant_secure_settings
 
   info "3/5 交出 profile 名字、裝置序號與 token"
-  local serial_now
-  serial_now="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
-  [ -n "$serial_now" ] && DEVICE_SERIAL="$serial_now"
-  [ -n "$DEVICE_SERIAL" ] || die "拿不到裝置序號，沒有序號就沒有穩定的識別碼"
+  enroll_handoff "$port"
 
-  local token; token="$(agent_gen_token)"
-  [ -n "$token" ] || die "產不出 token"
-  out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
-          -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.ENROLL \
-          --es serial "$DEVICE_SERIAL" --es token "$token" \
-          --es name "$PROFILE" 2>&1)"
-  if printf '%s' "$out" | grep -q 'already_enrolled'; then
-    err "這支手機已經入伍過了"
-    hint "一台手機只入伍一次。要重來的話先清掉它的狀態："
-    hint "  adb -s $SERIAL shell pm clear com.hangar.agent"
-    exit 1
-  fi
-  printf '%s' "$out" | grep -q 'data="enrolled"' || {
-    printf '%s\n' "$out"
-    die "agent 沒有回報入伍成功（它有在跑嗎？手機上打開一次 Hangar Agent 再試）"; }
-  AGENT_TOKEN="$token"
-  AGENT_PORT="$port"
-  save_profile --quiet
-  ok "序號 ${DEVICE_SERIAL}，token 已寫進 $(profile_path "$PROFILE")"
-
-  # Android 12+ 不准 app 從背景啟動前景服務，所以 agent 收完入伍廣播是叫不起
-  # 自己的（實機實測過）。把 app 叫到前景一次就合法了 —— 而入伍這個流程手上
-  # 本來就有 adb，這一步不需要任何人碰手機。
   info "4/5 把 agent 叫起來"
-  run_timeout 20 adb -s "$SERIAL" shell am start \
-    -n com.hangar.agent/.MainActivity >/dev/null 2>&1 || true
-  sleep 2
+  enroll_wake_agent
 
   info "5/5 驗證：直接問 agent"
   agent_reset
@@ -2648,6 +2886,75 @@ cmd_enroll() {
     hint "手機與這台電腦要在同一個區網；也可能是 agent 還沒起來"
     hint "在手機上打開一次 Hangar Agent，然後：hangar status -p $PROFILE"
   fi
+}
+
+# --reinstall：手機上那支 agent 還在、也還入伍著，只是版本太舊 —— 例如牆上那句
+# 「這支 agent 沒宣告 ring 能力（可能是舊版）」。這條路只做三件事：換 APK、補
+# 授權、把它叫起來，然後用**原本那組 token** 問一次確認新版真的在跑。
+#
+# 為什麼不是「先 pm clear 再重新入伍」：那會換掉 token，而 token 是每台電腦
+# 自己保管的。清掉之後，其他也入伍過這支手機的電腦全部會被鎖在門外。就地升級
+# 不動資料，所以誰都不會掉線。
+enroll_reinstall() { # <apk> <port>
+  local apk="$1" port="$2"
+  [ -n "${AGENT_PORT:-}" ] || AGENT_PORT="$port"
+
+  echo
+  info "1/4 換上新版 agent（保留入伍狀態）"
+  enroll_install_apk "$apk"
+
+  # 權限在就地升級後本來就還在。再來一次是為了另一種情況：上次入伍時這一步
+  # 失敗（手機沒解鎖、OEM 擋掉），那支 agent 從此切不了偵錯。
+  info "2/4 重新授予 WRITE_SECURE_SETTINGS"
+  enroll_grant_secure_settings
+
+  info "3/4 把 agent 叫起來"
+  enroll_wake_agent
+
+  info "4/4 驗證：用原本那組 token 問一次"
+  agent_reset
+  if ! agent_ping "$PHONE_IP" "$AGENT_PORT"; then
+    echo
+    warn "新版 agent 裝上去了，但現在問不到它（${PHONE_IP}:${AGENT_PORT}）"
+    hint "手機與這台電腦要在同一個區網；也可能是 agent 還沒起來"
+    hint "在手機上打開一次 Hangar Agent，然後：hangar status -p $PROFILE"
+    exit 1
+  fi
+
+  # 手機上的入伍資料不見了（有人 pm clear 過，或 app 曾被解除安裝再裝回來）。
+  # 這時候手上還有 adb，直接補一次入伍 —— 不要叫人再跑一個指令。
+  local re_enrolled=0
+  if [ "$AGENT_ENROLLED" = "false" ]; then
+    warn "手機上的入伍資料不見了，順手重新入伍一次（token 會換新的）"
+    enroll_handoff "$AGENT_PORT"
+    enroll_wake_agent
+    re_enrolled=1
+  fi
+
+  agent_reset
+  if agent_probe "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" && [ "$AGENT_SOURCE" = "agent" ]; then
+    ok "agent ${AGENT_VERSION:-?} 回應正常"
+    [ -n "$DEV_MODEL" ] && kv "機型" "$DEV_MODEL"
+    local can; can="$(agent_can_human)"
+    kv "能力" "${can:-這個版本沒有宣告任何能力}"
+    echo
+    # 這兩句不能講反：補過入伍的那一次 token 真的換了，其他電腦手上那組會失效。
+    if [ "$re_enrolled" -eq 1 ]; then
+      ok "重新安裝完成，並且補了一次入伍。token 是新的 —— 其他電腦要重新入伍才問得到它。"
+    else
+      ok "重新安裝完成。token 沒有變，牆上那張卡不用重新入伍。"
+    fi
+    return 0
+  fi
+
+  # ping 得到、卻問不出 status：新版在跑，但它不認這台電腦手上那組 token。
+  echo
+  err "新版 agent 在跑，但它不接受這台電腦的 token"
+  hint "手機上那支多半是別台電腦入伍的。要讓這台電腦接手，得清掉它的狀態："
+  hint "  adb -s $SERIAL shell pm clear com.hangar.agent"
+  hint "  hangar enroll -p $PROFILE"
+  hint "注意：清掉之後，其他電腦手上的 token 也會一起失效"
+  exit 1
 }
 
 cmd_reset() {
@@ -2714,6 +3021,13 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
   hangar scan --json              同上，輸出 JSON
   hangar enroll [-p 手機] [--apk <檔>]
                                    用 USB 或網路 ADB 在這支手機上裝 agent
+  hangar enroll [-p 手機] --reinstall
+                                   只換一支新版 APK（升級舊版 agent），token
+                                   與入伍狀態都留著，其他電腦不會被踢掉
+  hangar ring [-p 手機] [--seconds 秒]
+                                   讓已入伍的手機響鈴識別（0 或 --stop = 停）
+  hangar adb [-p 手機] --on|--off
+                                   開／關偵錯；全手動，不會自己變回去
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
@@ -2723,6 +3037,7 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
   hangar --version                印出版本（-V 也可以）
 
   指令別名：status=st　list=ls　forget=rm
+  adb 也可寫成 debug；--off 是 QA 測試用，agent 會自己排定復原，不必再有人走到手機旁。
   -p 的名稱支援唯一前綴（-p wo 等同 -p work）。
 
 多台手機：
@@ -3003,6 +3318,8 @@ main() {
     list|ls)         shift; cmd_list "$@" ;;
     scan)            shift; cmd_scan "$@" ;;
     enroll)          shift; cmd_enroll "$@" ;;
+    ring)            shift; cmd_ring "$@" ;;
+    adb|debug)       shift; cmd_adb "$@" ;;
     use)             shift; cmd_use "${1:-}" ;;
     forget|rm)       shift; cmd_forget "${1:-}" ;;
     all)             shift; cmd_all "$@" ;;

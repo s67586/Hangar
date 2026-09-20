@@ -133,11 +133,21 @@ assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 check  "首頁不快取舊版按鈕事件" "Cache-Control: no-store" "$(get_headers "$HUB_URL/")"
 check  "首頁含註冊 handler" "async function enroll" "$(get "$HUB_URL/")"
+check  "首頁含響鈴 handler" "async function ring" "$(get "$HUB_URL/")"
+check  "首頁含切偵錯 handler" "async function toggleAdb" "$(get "$HUB_URL/")"
 check  "註冊中只保留一顆按鈕" 'st.action === "enroll" && st.busy' "$(get "$HUB_URL/")"
 check  "agent 無回應且 adb ready 可補裝" \
   'd.agent.reachable === false && d.agent.enrolled === null' "$(get "$HUB_URL/")"
+check  "首頁含重新安裝 handler" "async function reinstall" "$(get "$HUB_URL/")"
+# 舊版的判斷點只能是「有沒有宣告 can.ring」；can.toggle_adb 是 false 的理由
+# 太多（權限沒授予），拿它判斷會把好好的新版誤判成舊版
+check  "舊版是用 can.ring 判斷的" "d.agent.can && d.agent.can.ring === true" "$(get "$HUB_URL/")"
+check  "重裝按鈕要 adb 通得到"    'd.adb_state !== "device"' "$(get "$HUB_URL/")"
+check  "重裝走的是 helper 的 enroll" "reinstall: true" "$(get "$HUB_URL/")"
+# 這一條是整條路的重點：hub 自己永遠不會動手機
+nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "6" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "7" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -276,6 +286,49 @@ assert "掃到但沒 MAC 時不清空" "f0:5c:77:aa:bb:01" "$(m "${no_arp}[0]['m
 only_scan='merge(None, {"hosts":[{"ip":"192.168.1.77","mac":"a4:03:e7:01:02:03","profile":"work","device_serial":"S1","adb_port":"open"}]})'
 assert "名字還在"     "work"    "$(m "${only_scan}[0]['name']")"
 assert "狀態說不知道" "unknown" "$(m "${only_scan}[0]['state']")"
+
+# --- 掃描那側對不上 profile 名字時的兩條退路 -------------------------------
+# scan_match_profiles 只認得「profile 的 PHONE_IP／PHONE_MAC 對得上」的手機。
+# 走 tailscale 的手機 PHONE_IP 是 100.x，PHONE_MAC 又還沒學到，所以掃描回來的
+# 那一筆 profile 是 null —— 但 list 那側用 adb 問得到同一張網卡的 MAC。
+# 不接這條退路的話，同一支手機會在牆上出現兩次（實際踩過：A34 一張走 tailscale
+# 的卡，加一張匿名的區網卡）。
+
+# (1) 序號對得上就是同一台，即使掃描沒認出 profile
+by_ser='merge(
+  {"devices":[{"profile":"work","ip":"100.1.1.1","device_serial":"S1","adb_state":"device"}]},
+  {"hosts":[{"ip":"192.168.1.77","mac":"a4:03:e7:01:02:03","profile":None,"device_serial":"S1"}]})'
+assert "序號對得上就不另開一張" "1"            "$(m "len(${by_ser})")"
+assert "併進原本那張卡"         "work"         "$(m "${by_ser}[0]['name']")"
+assert "區網位址補上去"         "192.168.1.77" "$(m "${by_ser}[0]['lan_ip']")"
+
+# (2) 連序號都沒有時，用 adb 問到的 MAC 對 —— 這就是 A34 那個情境
+by_mac='merge(
+  {"devices":[{"profile":"work","ip":"100.1.1.1","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"3e:19:e2:35:b1:6b","randomized":True,
+                      "vendor":None,"ssid":"TestNet"}}]},
+  {"hosts":[{"ip":"192.168.0.155","mac":"3e:19:e2:35:b1:6b","profile":None,
+             "device_serial":None,"adb_port":"closed"}]})'
+assert "MAC 對得上就不另開一張" "1"             "$(m "len(${by_mac})")"
+assert "併進原本那張卡"         "work"          "$(m "${by_mac}[0]['name']")"
+assert "區網位址補上去"         "192.168.0.155" "$(m "${by_mac}[0]['lan_ip']")"
+assert "兩個來源都記著"         "['list', 'scan']" "$(m "${by_mac}[0]['sources']")"
+
+# (3) 大小寫不一樣也要對得上：adb 給小寫，某些系統的 ARP 表給大寫
+mixed='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"3e:19:e2:35:b1:6b","randomized":True,
+                      "vendor":None,"ssid":None}}]},
+  {"hosts":[{"ip":"192.168.0.155","mac":"3E:19:E2:35:B1:6B","profile":None}]})'
+assert "大小寫不同仍是同一台" "1" "$(m "len(${mixed})")"
+
+# (4) 反過來：MAC 不一樣就是不同的兩台，不可以亂併
+diff_mac='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"3e:19:e2:35:b1:6b","randomized":True,
+                      "vendor":None,"ssid":None}}]},
+  {"hosts":[{"ip":"192.168.0.155","mac":"aa:bb:cc:dd:ee:ff","profile":None}]})'
+assert "MAC 不同就分開兩張" "2" "$(m "len(${diff_mac})")"
 
 echo "=== H9. 接真的 hangar（不是假的）—— 兩邊的 JSON 不可以各走各的 ==="
 # 前面幾節餵的是手寫的 JSON，擋得住 hub 自己的迴歸，擋不住「hangar 改了欄位、
@@ -424,7 +477,7 @@ for i in $(seq 1 50); do
   sleep 0.2
 done
 if [ "$n2" -gt "$n1" ]; then echo "  PASS  真的又問了一次（間隔還有 600 秒）"; PASS=$((PASS+1));
-else echo "  FAIL  沒有提早問（$n1 → $n2）"; FAIL=$((FAIL+1)); fi
+else echo "  FAIL  沒有提早問（$n1 → ${n2}）"; FAIL=$((FAIL+1)); fi
 
 # 掃描那一邊的門檻高很多：它會對 254 個位址各送一個封包，按住不放不該變成洗 ping
 r="$(post "$HUB_URL/api/refresh?what=scan")"
@@ -436,6 +489,9 @@ nocheck "主動輪詢也不帶 --fix-ip" "fix-ip" "$(cat "$MOCK_STATE/argv_log")
 # GET 不該是觸發器 —— 那會讓任何預抓網址的東西都去戳一次手機
 assert "GET 不觸發輪詢"    "404" "$(code1 "$(get_code "$HUB_URL/api/refresh")")"
 assert "不認得的 what 回 400" "400" "$(code1 "$(post "$HUB_URL/api/refresh?what=nonesuch")")"
+# M3d/M4 的寫入仍然走本機 helper；hub 不可以悄悄長出直連手機的端點。
+assert "hub 沒有響鈴寫入端點" "404" "$(code1 "$(post "$HUB_URL/api/ring")")"
+assert "hub 沒有偵錯寫入端點" "404" "$(code1 "$(post "$HUB_URL/api/adb")")"
 hub_stop
 
 echo "=== H13. 起不來的時候要講人話，不要丟 traceback ==="

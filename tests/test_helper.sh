@@ -219,12 +219,56 @@ assert "註冊回 ok=true"       "True" "$(q 'd["ok"]' "$(body "$r")")"
 check  "回報 agent 已入伍"     "入伍完成" "$(body "$r")"
 check  "執行的是 enroll"       "enroll -p work" "$(cat "$MOCK_STATE/argv_log")"
 
+# 舊版 agent：同一個端點多帶一個 reinstall，換一支新的 APK 上去
+r="$(req POST "$URL/enroll" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB","reinstall":true}')"
+assert "重新安裝回 200"       "200" "$(code "$r")"
+assert "回報這次是重裝"        "True" "$(q 'd["reinstall"]' "$(body "$r")")"
+check  "訊息說得出是重裝"      "重新安裝完成" "$(body "$r")"
+check  "CLI 有收到 --reinstall" "enroll -p work --reinstall" "$(cat "$MOCK_STATE/argv_log")"
+
+# 一般入伍不可以偷偷變成重裝
+r="$(req POST "$URL/enroll" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB"}')"
+assert "沒講就不是重裝"        "False" "$(q 'd["reinstall"]' "$(body "$r")")"
+
+r="$(req POST "$URL/enroll" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB","reinstall":"yes"}')"
+assert "reinstall 不是布林就擋" "400" "$(code "$r")"
+check  "並且說得出哪裡不對"     "reinstall 必須是布林值" "$(body "$r")"
+
 touch "$MOCK_STATE/enroll_fail"
 r="$(req POST "$URL/enroll" "$ORIGIN" "$TOKEN" \
      '{"profile":"work","serial":"R58M12345AB"}')"
 assert "註冊失敗回 502"       "502" "$(code "$r")"
 assert "註冊失敗回 ok=false"   "False" "$(q 'd["ok"]' "$(body "$r")")"
 check  "帶回 hangar 錯誤"      "入伍失敗" "$(body "$r")"
+
+echo "=== L10b. 響鈴與切偵錯也走同一個 helper 三道鎖 ==="
+helper_stop
+helper_env
+helper_start || { echo "  FAIL  helper 起不來"; FAIL=$((FAIL+1)); }
+r="$(req POST "$URL/ring" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB","seconds":999}')"
+assert "響鈴成功回 200"       "200" "$(code "$r")"
+assert "響鈴輸入夾到上限"     "120" "$(q 'd["seconds"]' "$(body "$r")")"
+check  "helper 真的叫 hangar ring" "ring --seconds 120 -p work" "$(cat "$MOCK_STATE/argv_log")"
+r="$(req POST "$URL/adb" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB","enabled":false}')"
+assert "切偵錯成功回 200"       "200" "$(code "$r")"
+assert "回報偵錯已關閉"         "False" "$(q 'd["enabled"]' "$(body "$r")")"
+check  "helper 真的叫 hangar adb" "adb --off -p work" "$(cat "$MOCK_STATE/argv_log")"
+r="$(req POST "$URL/adb" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB","enabled":false,"revert_after_s":1800}')"
+assert "舊頁面送 revert_after_s 回 400" "400" "$(code "$r")"
+r="$(req POST "$URL/ring" "http://evil.example" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB","seconds":30}')"
+assert "響鈴也受 Origin 保護"    "403" "$(code "$r")"
+r="$(req POST "$URL/ring" "$ORIGIN" "wrong" \
+     '{"profile":"work","serial":"R58M12345AB","seconds":30}')"
+assert "響鈴也受 token 保護"     "401" "$(code "$r")"
+r="$(req POST "$URL/adb" "$ORIGIN" "$TOKEN" '{bad-json')"
+assert "切偵錯 body 非 JSON 回 400" "400" "$(code "$r")"
 
 echo "=== L11. normalize_origin：使用者貼進來的網址要收斂得起來 ==="
 out="$(python3 - "$ROOT" <<'PY'

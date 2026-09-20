@@ -34,14 +34,14 @@ ARP
   export HANGAR_OUI_FILE="$MOCK_STATE/no-such-oui-db"
   printf '192.168.1.77:5555\tdevice\n' > "$MOCK_STATE/adb_devices"
   cat > "$MOCK_STATE/agent_192.168.1.77_5599.json" <<'JSON'
-{ "schema": 1,
+{ "schema": 3,
   "agent": { "version": "0.1.0-mock", "uptime_s": 3600 },
   "device_serial": "PIX0000001",
   "model": "Pixel 7 Pro",
   "android": { "release": "14", "sdk": 34 },
   "battery": { "level": 42, "status": "discharging", "temperature_c": 29.0 },
   "adb": { "enabled": true, "wifi_enabled": false, "wifi_port": null },
-  "can": { "toggle_adb": true, "toggle_wifi_adb": true } }
+  "can": { "toggle_adb": true, "toggle_wifi_adb": true, "ring": true } }
 JSON
 }
 
@@ -93,15 +93,78 @@ out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"
 check "安裝失敗就停下來"    "安裝失敗" "$out"
 assert "不會留下半套設定"   "" "$(pfield work AGENT_TOKEN)"
 
+echo "=== C2b. hangar enroll --reinstall：只換 APK，不動 token ==="
+env_one; : > "$MOCK_STATE/fake.apk"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --reinstall 2>&1)"
+check "還沒入伍過就不給只換 APK" "沒辦法只換 APK" "$out"
+check "並且指回正規入伍"          "hangar enroll -p work" "$out"
+assert "沒有裝任何東西"           "0" "$(nlines "$MOCK_STATE/adb_log" "install")"
+
+env_one; : > "$MOCK_STATE/fake.apk"
+"$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
+t1="$(pfield work AGENT_TOKEN)"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --reinstall 2>&1)"
+check "說得出是重新安裝"      "重新安裝完成" "$out"
+check "有再裝一次 APK"        "install .*fake.apk" "$(cat "$MOCK_STATE/adb_log")"
+assert "而且真的裝了兩次"     "2" "$(nlines "$MOCK_STATE/adb_log" "install")"
+check "順手補了一次授權"      "WRITE_SECURE_SETTINGS" "$(cat "$MOCK_STATE/adb_log")"
+check "把新版的能力印出來"    "能力" "$out"
+assert "token 沒有變"         "$t1" "$(pfield work AGENT_TOKEN)"
+# 這是整條路的重點：沒有重新入伍，所以其他也入伍過這支手機的電腦不會被踢掉
+assert "沒有再發一次入伍廣播" "1" "$(nlines "$MOCK_STATE/adb_log" "EnrollReceiver")"
+
+# 手機上的資料被清掉（pm clear）或 app 被解除安裝過：新裝上去的是一支空的
+# agent，這時候手上還有 adb，要順手補完入伍，不是丟一個錯誤給人
+env_one; : > "$MOCK_STATE/fake.apk"
+"$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
+t1="$(pfield work AGENT_TOKEN)"
+touch "$MOCK_STATE/agent_not_enrolled"; rm -f "$MOCK_STATE/agent_token"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --reinstall 2>&1)"
+check "空的 agent 要講出來"   "入伍資料不見了" "$out"
+check "並且自己補完"          "重新安裝完成" "$out"
+# 這一次 token 真的換了，收尾那句話不可以照抄「token 沒有變」
+check "換了 token 要講實話"   "token 是新的" "$out"
+nocheck "不可以說 token 沒變" "token 沒有變" "$out"
+assert "這次才會換 token"     "2" "$(nlines "$MOCK_STATE/adb_log" "EnrollReceiver")"
+if [ -n "$t1" ] && [ "$t1" != "$(pfield work AGENT_TOKEN)" ]; then
+  echo "  PASS  補入伍會寫一組新 token"; PASS=$((PASS+1));
+else echo "  FAIL  補入伍之後 token 沒換"; FAIL=$((FAIL+1)); fi
+
+# 手機上那支是別台電腦入伍的：裝得上去，但問不出 status。這不能假裝成功
+env_one; : > "$MOCK_STATE/fake.apk"
+"$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
+printf 'someone-elses-token' > "$MOCK_STATE/agent_token"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --reinstall 2>&1)"; rc=$?
+check "token 不對要說清楚"    "不接受這台電腦的 token" "$out"
+check "並且說清楚代價"        "其他電腦手上的 token 也會一起失效" "$out"
+assert "離開碼不是 0"         "1" "$rc"
+
 echo "=== C3. list --json：adb 通的時候，agent 只是附帶資訊 ==="
 env_one; : > "$MOCK_STATE/fake.apk"
 "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
 out="$("$PM" list --json --probe 2>/dev/null)"
-assert "schema 往上加了"     "3" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "4" "$(q '.schema' "$out")"
 assert "adb 通就用 adb 的資料" "adb" "$(q '.devices[0].battery.source' "$out")"
 assert "電量是 adb 那份"      "78" "$(q '.devices[0].battery.level' "$out")"
 assert "agent 也看得到"       "true" "$(q '.devices[0].agent.reachable' "$out")"
 assert "說得出 agent 版本"    "0.1.0-mock" "$(q '.devices[0].agent.version' "$out")"
+assert "能力宣告帶上牆"        "true" "$(q '.devices[0].agent.can.ring' "$out")"
+
+echo "=== C3b. hangar ring / adb：不需要 adb 通也能走 agent ==="
+env_one; : > "$MOCK_STATE/fake.apk"
+"$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
+out="$("$PM" ring -p work --seconds 999 2>&1)"
+check "ring 送到 agent"         "已響鈴 120 秒" "$out"
+check "ring 真的打到端點"       "/hangar/v1/ring" "$(cat "$MOCK_STATE/curl_log")"
+out="$("$PM" ring -p work --stop 2>&1)"
+check "ring --stop 可以停"       "已停止響鈴" "$out"
+out="$("$PM" adb -p work --off 2>&1)"
+check "adb 關閉說清楚不會自己開回" "不會自己開回來" "$out"
+check "adb 真的打到端點"        "/hangar/v1/adb" "$(cat "$MOCK_STATE/curl_log")"
+out="$("$PM" adb -p work --off --revert-after-s 1800 2>&1 || true)"
+check "舊的 --revert-after-s 直接擋下" "已移除" "$out"
+out="$("$PM" adb -p work --on 2>&1)"
+check "adb 可以再開"             "偵錯已開啟" "$out"
 
 echo "=== C4. adb 碰不到時，改問 agent —— 這就是 agent 存在的理由 ==="
 env_one; : > "$MOCK_STATE/fake.apk"

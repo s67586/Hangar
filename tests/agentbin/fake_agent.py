@@ -34,7 +34,7 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-SCHEMA = 1
+SCHEMA = 3
 VERSION = "0.1.0-fake"
 STARTED = time.time()
 
@@ -56,14 +56,46 @@ class Handler(BaseHTTPRequestHandler):
             if not self._token_ok():
                 return self._json(401, self._err("unauthorized", "token 不對"))
             return self._json(200, self._status())
-        if path == "/hangar/v1/adb":
-            return self._json(501, self._err("not_implemented", "切偵錯是 M4 的事"))
         return self._json(404, self._err("not_found", "沒有這個端點：%s" % path))
 
     def do_POST(self):
-        if self.path.split("?", 1)[0] == "/hangar/v1/adb":
-            return self._json(501, self._err("not_implemented", "切偵錯是 M4 的事"))
-        return self._json(404, self._err("not_found", "沒有這個端點"))
+        path = self.path.split("?", 1)[0]
+        if path not in ("/hangar/v1/ring", "/hangar/v1/adb"):
+            return self._json(404, self._err("not_found", "沒有這個端點"))
+        if not self.cfg.enrolled:
+            return self._json(409, self._err("not_enrolled", "這支手機還沒入伍"))
+        if not self._token_ok():
+            return self._json(401, self._err("unauthorized", "token 不對"))
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n > 4096:
+            return self._json(400, self._err("bad_request", "body 太大"))
+        try:
+            body = json.loads(self.rfile.read(max(n, 0)).decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return self._json(400, self._err("bad_request", "body 不是 JSON"))
+        if not isinstance(body, dict):
+            return self._json(400, self._err("bad_request", "body 必須是 JSON 物件"))
+        if path.endswith("/ring"):
+            seconds = body.get("seconds")
+            if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 0:
+                return self._json(400, self._err("bad_request", "seconds 必須是非負整數"))
+            actual = min(seconds, 120)
+            self.cfg.ring_until = time.time() + actual if actual else 0
+            return self._json(200, {"schema": SCHEMA, "ringing": actual > 0,
+                                    "seconds": actual})
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return self._json(400, self._err("bad_request", "enabled 必須是布林值"))
+        if body.get("revert_after_s") is not None:
+            return self._json(400, self._err(
+                "bad_request", "revert_after_s 已移除：偵錯狀態全手動"))
+        self.cfg.adb_enabled = enabled
+        return self._json(200, {"schema": SCHEMA, "enabled": enabled,
+                                "adb": {"enabled": enabled, "wifi_enabled": False,
+                                        "wifi_port": None}})
 
     def _token_ok(self):
         auth = self.headers.get("Authorization", "")
@@ -72,6 +104,8 @@ class Handler(BaseHTTPRequestHandler):
         return auth[7:] == self.cfg.token
 
     def _status(self):
+        if getattr(self.cfg, "ring_until", 0) and time.time() >= self.cfg.ring_until:
+            self.cfg.ring_until = 0
         return {
             "schema": SCHEMA,
             "agent": {"version": VERSION, "uptime_s": int(time.time() - STARTED)},
@@ -80,8 +114,9 @@ class Handler(BaseHTTPRequestHandler):
             "android": {"release": "14", "sdk": 34},
             "battery": {"level": 78, "status": "discharging", "temperature_c": 27.5},
             # wifi_port 是隨機的而且一般 app 讀不到 —— M3c 之前誠實回 null
-            "adb": {"enabled": True, "wifi_enabled": False, "wifi_port": None},
-            "can": {"toggle_adb": True, "toggle_wifi_adb": True},
+            "adb": {"enabled": getattr(self.cfg, "adb_enabled", True),
+                    "wifi_enabled": False, "wifi_port": None},
+            "can": {"toggle_adb": True, "toggle_wifi_adb": True, "ring": True},
         }
 
     def _err(self, code, message):
@@ -106,6 +141,8 @@ def main():
     ap.add_argument("--serial", default="R58M12345AB")
     ap.add_argument("--not-enrolled", dest="enrolled", action="store_false")
     cfg = ap.parse_args()
+    cfg.adb_enabled = True
+    cfg.ring_until = 0
 
     Handler.cfg = cfg
     httpd = Server(("127.0.0.1", cfg.port), Handler)

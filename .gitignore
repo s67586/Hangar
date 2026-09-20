@@ -10,3 +10,6 @@ __pycache__/
 
 # 測試暫存（tests/run.sh 預設寫到 $TMPDIR，這裡是保險）
 hangar-test/
+
+# IDE 個人設定
+.idea/

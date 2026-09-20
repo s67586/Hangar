@@ -19,6 +19,8 @@ import org.json.JSONObject
  */
 object Status {
 
+    fun canToggleAdb(ctx: Context): Boolean = hasSecureSettings(ctx)
+
     fun hello(ctx: Context): JSONObject = JSONObject().apply {
         put("schema", BuildConfig.PROTOCOL_SCHEMA)
         put("agent", "hangar-agent")
@@ -49,6 +51,9 @@ object Status {
             // 無線偵錯是 Android 11（API 30）才有的東西。介面一致、能力不一致，
             // 比同一個端點在不同機器上行為不同好除錯。
             put("toggle_wifi_adb", granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            // 響鈴使用 framework 的 alarm stream / vibrator，不依賴 Android 版本上的
+            // 特權設定；通知權限被使用者拒絕時仍有聲音與震動，所以能力仍宣告為 true。
+            put("ring", true)
         })
         return o
     }

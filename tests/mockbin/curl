@@ -9,10 +9,12 @@
 # 在測試機上不是慢就是打到不該打的地方。
 #
 S="$MOCK_STATE"
-url=""; token=""
+url=""; token=""; method="GET"; data=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -H) case "$2" in Authorization:*) token="${2#*Bearer }" ;; esac; shift 2 ;;
+    -X) method="${2:-GET}"; shift 2 ;;
+    -d|--data|--data-raw|--data-binary) data="${2:-}"; shift 2 ;;
     -*) shift ;;
     http*) url="$1"; shift ;;
     *) shift ;;
@@ -28,12 +30,12 @@ f="$S/agent_${ip}_${port}.json"
 case "$path" in
   */hangar/v1/hello)
     if [ -f "$S/agent_omit_enrolled" ]; then
-      printf '{"schema":1,"agent":"hangar-agent","version":"0.1.0-mock"}\n'
+      printf '{"schema":3,"agent":"hangar-agent","version":"0.1.0-mock"}\n'
       exit 0
     fi
     enrolled=true
     [ -f "$S/agent_not_enrolled" ] && enrolled=false
-    printf '{"schema":1,"agent":"hangar-agent","version":"0.1.0-mock","enrolled":%s}\n' "$enrolled"
+    printf '{"schema":3,"agent":"hangar-agent","version":"0.1.0-mock","enrolled":%s}\n' "$enrolled"
     ;;
   */hangar/v1/status)
     want="$(cat "$S/agent_token" 2>/dev/null || true)"
@@ -42,6 +44,30 @@ case "$path" in
       exit 22
     fi
     cat "$f"
+    ;;
+  */hangar/v1/ring)
+    [ "$method" = "POST" ] || exit 22
+    seconds="$(printf '%s' "$data" | sed -nE 's/.*"seconds"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p')"
+    [ -n "$seconds" ] || exit 22
+    if [ "$seconds" -gt 120 ]; then seconds=120; fi
+    if [ "$seconds" -eq 0 ]; then
+      printf '{"schema":3,"ringing":false,"seconds":0}\n'
+    else
+      printf '{"schema":3,"ringing":true,"seconds":%s}\n' "$seconds"
+    fi
+    ;;
+  */hangar/v1/adb)
+    [ "$method" = "POST" ] || exit 22
+    enabled="false"
+    printf '%s' "$data" | grep -q '"enabled"[[:space:]]*:[[:space:]]*true' && enabled="true"
+    # schema 3 的 agent 不收 revert_after_s；舊呼叫端送了就是 400。
+    if printf '%s' "$data" | grep -q '"revert_after_s"'; then
+      printf '{"schema":3,"error":{"code":"bad_request","message":"revert_after_s 已移除"}}\n'
+    elif [ "$enabled" = "true" ]; then
+      printf '{"schema":3,"enabled":true,"adb":{"enabled":true}}\n'
+    else
+      printf '{"schema":3,"enabled":false,"adb":{"enabled":false}}\n'
+    fi
     ;;
   *) exit 22 ;;
 esac
