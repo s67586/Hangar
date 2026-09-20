@@ -2,8 +2,12 @@
 
 一整隊 Android 測試機的停放、維護與調度。
 
-透過 **Tailscale** 遠端連到手機、用 **scrcpy** 投影畫面（手機在 4G/5G、在別的網段、
-在公司 NAT 後面都能投），並且管得到那些**沒開偵錯、adb 碰不到**的手機。
+主場是**同一個區網**：掃得出網段上有哪些裝置、用 **scrcpy** 投影畫面，並且管得到
+那些**沒開偵錯、adb 碰不到**的手機。
+
+手機不在同一個區網時（4G/5G、在別的網段、在公司 NAT 後面），加上 **Tailscale**
+就照樣投得到 —— 那是**建議的加值選項，不是前提**。裝置牆的掃描（ARP）與 agent 的
+mDNS 廣播則本來就只在區網成立。
 
 | | |
 |---|---|
@@ -13,8 +17,8 @@
 | [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
 
 > **[📖 使用手冊（一頁可讀版）](https://claude.ai/artifact/WyegAVdz2UzVitcvwB5kZ8)**
-> —— 這份 README 的內容整理成一頁，適合傳給同事。頁尾有它對應的 commit，
-> 落後了看得出來；**內容以這份 README 為準**。
+> —— 這份 README 的內容整理成一頁，適合傳給同事。頁尾蓋著來源 README 的
+> sha256，對不上就是那一頁落後了；**內容以這份 README 為準**。
 > 連結預設是私人的，要給別人看得先在那一頁上分享。
 
 > 專案方向、程式分層、測試涵蓋範圍與待確認清單見 [ROADMAP.md](ROADMAP.md)。
@@ -32,18 +36,29 @@ hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自�
 ./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的動作按鈕要按得動
 ```
 
+`setup` 預設建立的是**區網直連**的 profile。手機要拿去別的網段、4G/5G 或 NAT
+後面才需要 Tailscale：
+
+```bash
+hangar setup --transport tailscale --name work
+```
+
+兩者的差別見「[兩種連線方式](#兩種連線方式)」。
+
 ---
 
 ## 它解決了什麼
 
-`adb` 本來只能走 USB 或同一個區網。要跨網路投影，得處理一堆狀態問題：
+`adb` 本來只能走 USB 或同一個區網。就算只在自己的區網裡用，狀態也一堆要處理；
+跨網路再多兩條。下面這張表預設講的是區網，標**（跨網路）**的那兩列只有走
+Tailscale 時才碰得到：
 
 | 問題 | Hangar 的處理 |
 |---|---|
 | `adb tcpip 5555` 必須先有一條既有連線 | `setup` 會先找 USB，沒有就帶你走無線偵錯配對 |
-| 無線偵錯的 port 是隨機的、mDNS 不穿 Tailscale | `setup` 明講必須在同區網做一次，之後就不用了 |
+| **（跨網路）**無線偵錯的 port 是隨機的、mDNS 不穿 Tailscale | `setup` 明講必須在同區網做一次，之後就不用了 |
 | 手機重開機後 5555 消失 | 連不上時直接告訴你「手機重開過，請重跑 setup」，不是丟原始 adb 錯誤 |
-| 走 DERP relay 時很卡 | 自動偵測 direct / relay，relay 時降到低頻寬參數並警告 |
+| **（跨網路）**走 DERP relay 時很卡 | 自動偵測 direct / relay，relay 時降到低頻寬參數並警告 |
 | adb 卡在 `offline` | 自動 disconnect + reconnect 重試 |
 | adb 顯示 `unauthorized` | 提示去手機上按「一律允許」 |
 | 重複執行累積殘留視窗 | 啟動前先清掉同一支手機的舊 scrcpy process |
@@ -57,16 +72,23 @@ hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自�
 ```bash
 brew install --cask android-platform-tools
 brew install scrcpy jq
+```
+
+同區網的手機這三個就夠了。`TRANSPORT=lan` 的 profile 改用 `nc` 測 5555 埠通不通
+—— macOS 內建，通常不用管。
+
+**要跨網路才需要 Tailscale**（選配）：
+
+```bash
 brew install tailscale
 ```
 
-`tailscale` 也可以用 Mac App Store 版的 Tailscale.app，Hangar 會自動找到
+也可以用 Mac App Store 版的 Tailscale.app，Hangar 會自動找到
 `/Applications/Tailscale.app/Contents/MacOS/Tailscale`。
 裝在其他地方的話，用 `HANGAR_TAILSCALE=/path/to/tailscale` 指定。
 
-`tailscale` 只有 `TRANSPORT=tailscale` 的手機需要。純用 `TRANSPORT=lan`
-（同區網直連）的話不必裝，改成需要 `nc`——macOS 內建，通常不用管。
-用法見「[同區網直連](#同區網直連不經-tailscale)」。
+`hangar setup` 只有在你加了 `--transport tailscale` 時才會要求 `tailscale` CLI，
+區網的手機不必裝 —— 見「[兩種連線方式](#兩種連線方式)」。
 
 `hangar scan`（區網掃描）用的是 `ping` 與 `arp`，兩個都是系統內建。想讓它顯示
 裝置廠商就要有一份 OUI 資料庫，裝 `nmap` 或 `arp-scan` 任一個就有：
@@ -100,12 +122,45 @@ PREFIX=~/.local ./hangar_install.sh
 
 - 開發機：macOS（Apple Silicon / Intel 都可以）
 - 手機：Android 11 以上，已開啟「開發人員選項」
+- 電腦與手機在**同一個區網**，而且 AP 沒有開 client isolation
+
+手機要跨網路用（`TRANSPORT=tailscale`）再加兩條：
+
 - 兩邊都登入**同一個 tailnet**
 - 手機端 Tailscale App 保持連線
 
 ---
 
 ## 使用
+
+### 兩種連線方式
+
+**預設是同一個區網直連**（`TRANSPORT=lan`）：手機跟電腦連著同一個 Wi-Fi，
+`hangar setup` 不用加任何參數。這種 profile 不需要 `tailscale` CLI，改用 `nc`
+測 5555 埠通不通（macOS 內建）。
+
+手機要拿去別的網段、4G/5G 或公司 NAT 後面，才改走 **Tailscale**：
+`hangar setup --transport tailscale`。
+
+| | `lan`（預設） | `tailscale` |
+|---|---|---|
+| 什麼時候用 | 手機跟電腦在同一個 Wi-Fi | 手機會離開這個網路 |
+| 需要的工具 | `nc`（macOS 內建） | `tailscale` |
+| `setup` 怎麼拿到位址 | 問手機自己，挑同網段的那個 IPv4 | 從 `tailscale status` 挑節點 |
+| 連線路徑 | 一律當 direct，所以預設走高畫質 | `tailscale ping` 判斷 direct / relay |
+| 節點名 | 沒有，`PHONE_HOST` 留空 | 有，`PHONE_HOST` 用得到 |
+| 位址會不會變 | DHCP 換位址就要改 `PHONE_IP`，建議在路由器上綁固定 IP。`hangar scan` 靠 MAC 認得出換過位址的手機，`hangar scan --fix-ip` 直接改好 | Tailscale IP 基本上不變 |
+| 手機重開機後 | 一樣要重下一次 `adb tcpip 5555` | 一樣要重跑 `setup`（5555 消失） |
+| `hangar scan` 看得到嗎 | 看得到 | 手機不在這個網段時看不到 —— 掃描走 ARP，只在區網成立 |
+
+> **區網直連沒有 ACL 這層保護。** `adb tcpip 5555` 在區網上是全開的，
+> 同一個 Wi-Fi 下的任何人都連得到你手機的 adb，而 adb 等於完整的裝置控制權。
+> 只在自己信得過的網路用；公司、咖啡廳、公共 Wi-Fi 請一律走 Tailscale 並設
+> [ACL](#tailscale-acl強烈建議)。
+
+兩種可以混用：每支手機一份 profile，各自記著自己的 `TRANSPORT`。選哪一種都不
+影響日常用法 —— `hangar -p`、`status`、`list`、`reset`、`all` 完全一樣，只有訊息
+裡的措辭會換成「區網」或 tailnet。
 
 ### 初始化（每支手機做一次，需同區網或插 USB）
 
@@ -117,43 +172,76 @@ PREFIX=~/.local ./hangar_install.sh
 1. **開發人員選項**：設定 → 關於手機 → 連點「版本號碼」7 次
 2. **USB 偵錯**：設定 → 系統 → 開發人員選項 → USB 偵錯（打開）
 3. **無線偵錯**：同一頁往下打開 —— 只有走配對碼流程（手邊沒有 USB 線）時才需要
-4. **Tailscale App**：登入同一個 tailnet 並保持連線，`setup` 才找得到這個節點
+4. **Tailscale App**：登入同一個 tailnet 並保持連線 —— 只有走 Tailscale
+   （`--transport tailscale`）時才需要
 
 插 USB 的話，第一次接上這台電腦時手機會跳「允許 USB 偵錯」，勾**「一律允許透過
 這台電腦」**再按允許。沒按這個，`setup` 會停在 `unauthorized`。
 
-#### 跑 setup
+#### 跑 setup（區網 —— 預設）
 
 ```bash
-hangar setup
+hangar setup --name deskphone
 ```
 
 流程：
 
-1. 檢查 adb / scrcpy / jq / tailscale 是否都在
+1. 檢查 adb / scrcpy / jq / `nc`（**不查 `tailscale`**）
 2. 找 USB 裝置（插了多支會讓你選）
 3. 沒有 USB 就走「無線偵錯 → 使用配對碼配對裝置」，依提示輸入 `IP:PORT` 與 6 位數配對碼
-4. `adb tcpip 5555`，讓 adbd 改在 `0.0.0.0:5555` 監聽（包含 Tailscale 的 tun 介面）
+4. `adb tcpip 5555`，讓 adbd 改在 `0.0.0.0:5555` 監聽
+5. **問手機要它的區網 IP** —— 手機上所有 IPv4 裡，挑落在**這台電腦同一個 /24**
+   的那一個
+6. 寫入 profile（`TRANSPORT="lan"`），並實際連一次驗證
+
+第 5 步刻意不用 `ip route get`：手機開著行動網路時那條路會回答 4G 的位址，而那個
+位址在這台電腦上連不到 —— 寫進 profile 之後每次投影都會失敗，錯誤訊息還會指向手機。
+
+位址也可以直接給，省掉問手機那一步：
+
+```bash
+hangar setup 192.168.1.50 --name deskphone
+```
+
+不加 `--name` 的話，profile 名稱預設取位址的最後一段（`192.168.1.50` →
+`phone-50`）—— 區網沒有節點名可以借。
+
+#### 改走 Tailscale（手機會離開這個網路時）
+
+```bash
+hangar setup --transport tailscale
+```
+
+只有第 1 步與第 5 步不一樣 —— 它不問手機，改去 tailnet 挑節點：
+
+1. 檢查 adb / scrcpy / jq / **`tailscale`**
+2. 找 USB 裝置（插了多支會讓你選）
+3. 沒有 USB 就走「無線偵錯 → 使用配對碼配對裝置」
+4. `adb tcpip 5555`，adbd 在 `0.0.0.0:5555` 監聽（包含 Tailscale 的 tun 介面）
 5. 從 `tailscale status` 找出這支手機的節點，取 Tailscale IP
-6. 寫入 profile，並用 Tailscale IP 實際連一次驗證
+6. 寫入 profile（`TRANSPORT="tailscale"`），並用 Tailscale IP 實際連一次驗證
 
 指定節點名稱可以跳過選單：
 
 ```bash
-hangar setup pixel-7
+hangar setup --transport tailscale pixel-7 --name work
 ```
 
-自訂 profile 名稱（多台手機時很有用）：
+不加 `--name` 的話，profile 名稱取自節點名。走這條**記得設
+[Tailscale ACL](#tailscale-acl強烈建議)**：`adb tcpip 5555` 會讓 adbd 在所有介面
+上監聽，而 tailnet 預設是全通的。
+
+#### 這支手機已經由別台電腦設定過
+
+5555 已經開著的話，這台電腦不需要 USB，也不用再跑 `adb tcpip`：
 
 ```bash
-hangar setup --name work
+hangar setup --existing 192.168.1.50                     # 區網
+hangar setup --transport tailscale --existing pixel-4    # Tailscale
 ```
 
-如果這支手機已經由**別台電腦**設定過（5555 已經開著），這台電腦不需要 USB：
-
-```bash
-hangar setup --existing pixel-4
-```
+區網這條沒有 adb 可以問位址，所以不給 IP 的話 `setup` 會跑一次 `hangar scan`，
+把區網上看得到的裝置列出來讓你挑。
 
 細節見下面「[多台電腦共用同一支手機](#多台電腦共用同一支手機)」。
 
@@ -175,7 +263,8 @@ hangar -- --window-x=100    # 額外參數直接傳給 scrcpy
 > scrcpy 關掉之後，手機螢幕會維持關著——按一下手機電源鍵就回來，這是 scrcpy 的行為。
 > 不想關螢幕就加 `--screen-on`，`hangar all --screen-on` 也吃這個旗標。
 
-hangar 會先 `tailscale ping -c 3` 判斷路徑，再決定參數：
+走 Tailscale 的 profile 會先 `tailscale ping -c 3` 判斷路徑，再決定參數；
+區網 profile 一律當 direct，直接走下面第一列：
 
 | 路徑 | scrcpy 參數 |
 |---|---|
@@ -556,13 +645,24 @@ AGENT_TOKEN="…64 個十六進位字元…"  # 手機端 agent 的 token，由 
 AGENT_PORT="5599"              # agent 聽的埠
 ```
 
+區網的 profile 最少只要兩行（`PHONE_HOST` 是 Tailscale 節點名，區網用不到）：
+
+```sh
+PHONE_IP="192.168.1.50"
+TRANSPORT="lan"
+```
+
 > **有 `AGENT_TOKEN` 的 profile 是有祕密的檔案。** 那組 token 等於「可以問這支
 > 手機的狀態、之後還能切它的偵錯開關」。檔案權限是 600，不要隨手貼給別人，也
 > 不要丟進版控。沒入伍過的手機沒有這一行，那種 profile 仍然只是幾行純文字。
 
-前兩行以外都是可選的。舊版只有兩行的 profile 照樣能用，讀不到時
-`TRANSPORT` 當作 `tailscale`、`DEVICE_SERIAL` 與 `PHONE_MAC` 當作空的，
-不需要做任何轉換。`PHONE_MAC` 是 `hangar scan` 第一次用 IP 對上這支手機時
+`PHONE_IP` 以外都是可選的，`DEVICE_SERIAL` 與 `PHONE_MAC` 讀不到就當空的。
+
+`TRANSPORT` 是唯一有遷移動作的欄位。**沒有這一行的 profile 一律當
+`tailscale`** —— 那些檔案都是 `lan` backend 出現以前建的，那時 `setup` 只做得出
+Tailscale profile；現在預設值是 `lan`，讓它們跟著預設值走等於靜默改掉語意。
+所以 hangar 會在下次執行時就地把 `TRANSPORT="tailscale"` 補進那些檔案，讓檔案
+自己講清楚（檔案唯讀就跳過，讀進記憶體時仍然當 tailscale）。`PHONE_MAC` 是 `hangar scan` 第一次用 IP 對上這支手機時
 自己補上去的，你不用手寫；重跑 `setup` 而 IP 沒變的話也會留著。
 
 ### 典型流程
@@ -1234,48 +1334,6 @@ macOS（launchd，存成 `~/Library/LaunchAgents/com.hangar.helper.plist`）：
 
 `PATH` 那一段不能省：launchd 給的環境很乾淨，`adb` 與 `scrcpy` 在 Homebrew
 底下，找不到的話按鈕會說投影沒起來。
-
-## 同區網直連（不經 Tailscale）
-
-手機跟電腦本來就在同一個區網、不需要跨網路時，可以不走 Tailscale ——
-profile 裡把 `TRANSPORT` 寫成 `lan` 就好。這種 profile 不需要 `tailscale` CLI，
-改用 `nc` 測 5555 埠通不通（macOS 內建）。
-
-**`hangar setup` 目前只會產生 `tailscale` 的 profile**，所以 lan 的要自己寫一份
-（`hangar scan` 已經列得出區網上有哪些裝置，但還沒有「從掃描結果直接建 profile」
-這條路）：
-
-```bash
-# 1. 手機插 USB（或已經在同一區網、adb 連得到），把 adbd 切到 TCP 模式
-adb tcpip 5555
-
-# 2. 查手機的區網 IP：設定 → 關於手機 → 狀態資訊 → IP 位址
-
-# 3. 寫 profile
-mkdir -p ~/.config/hangar/profiles
-cat > ~/.config/hangar/profiles/deskphone.conf <<'EOF'
-PHONE_HOST=""
-PHONE_IP="192.168.1.50"
-TRANSPORT="lan"
-EOF
-chmod 600 ~/.config/hangar/profiles/deskphone.conf
-```
-
-之後 `hangar -p deskphone`、`status`、`list`、`reset`、`all` 全部照常用，
-訊息裡的措辭會自動換成「區網」而不是 tailnet。
-
-| | `tailscale` | `lan` |
-|---|---|---|
-| 需要的工具 | `tailscale` | `nc`（macOS 內建） |
-| 連線路徑 | `tailscale ping` 判斷 direct / relay | 一律當 direct，所以預設走高畫質 |
-| 節點名 | 有，`PHONE_HOST` 用得到 | 沒有，`PHONE_HOST` 留空即可 |
-| 位址會不會變 | Tailscale IP 基本上不變 | DHCP 換位址就要改 `PHONE_IP`，建議在路由器上綁固定 IP。`hangar scan` 靠 MAC 認得出換過位址的手機，`hangar scan --fix-ip` 直接改好 |
-| 手機重開機後 | 一樣要重跑 `setup`（5555 消失） | 一樣要重下一次 `adb tcpip 5555` |
-
-> **區網直連沒有 ACL 這層保護。** `adb tcpip 5555` 在區網上是全開的，
-> 同一個 Wi-Fi 下的任何人都連得到你手機的 adb，而 adb 等於完整的裝置控制權。
-> 只在自己信得過的網路用；公司、咖啡廳、公共 Wi-Fi 請一律走 Tailscale 並設
-> [ACL](#tailscale-acl強烈建議)。
 
 ---
 
