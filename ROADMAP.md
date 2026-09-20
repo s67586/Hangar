@@ -88,7 +88,7 @@ adb），而那條路上有兩個還沒有解的地方。真的要動它之前�
 | # | 要確認什麼 | 沒解的話 |
 |---|---|---|
 | D1 | MediaProjection 能不能不要每次都要人在手機上按同意（Android 14 起每個 session 都要）；常駐 app 有沒有豁免路徑 | 沒消掉「要人碰手機」，跟現在插 USB 的差別只剩少走幾步 |
-| D2 | FLAG_SECURE 的頁面照樣全黑（見 README 的 FLAG_SECURE 那節），這是系統層排除所有擷取管道，換掉 scrcpy 不會變好 | 加固／金流／密碼頁一樣投不出來，而那常常正是 QA 要看的畫面 |
+| D2 | FLAG_SECURE 的頁面照樣全黑（見 [docs/flag-secure.md](docs/flag-secure.md)），這是系統層排除所有擷取管道，換掉 scrcpy 不會變好 | 加固／金流／密碼頁一樣投不出來，而那常常正是 QA 要看的畫面 |
 
 D1 若是「每次都要人按」，這件事就不是「遠端管得動」，只是「不用開偵錯的投影」
 —— 那時要重新判斷值不值得做。
@@ -921,7 +921,7 @@ adb shell input tap <x> <y>
 
 | | |
 |---|---|
-| 對話框是不是 `FLAG_SECURE` | 是的話投影全黑（見 README 的 FLAG_SECURE 那節）。**但 tap 不看畫面** —— 只要 `uiautomator dump` 撈得到座標就還點得到。兩個都撈不到才是死路 |
+| 對話框是不是 `FLAG_SECURE` | 是的話投影全黑（見 [docs/flag-secure.md](docs/flag-secure.md)）。**但 tap 不看畫面** —— 只要 `uiautomator dump` 撈得到座標就還點得到。兩個都撈不到才是死路 |
 | OEM ROM 擋不擋注入 | MIUI／HyperOS 要另外開「USB 偵錯（安全設定）」才准注入，Samsung 也有自己一套。AOSP 系的應該沒事 |
 | 新連線會不會踢掉 hub 自己 | 另一把金鑰連上 5555 的時候，hub 那條已授權連線要撐得住 —— 不然要按的那隻手先斷了 |
 | 對話框跨版本穩不穩 | 文字與元件 id 各版本不一定一樣。要靠 resource-id 去找，不要把座標寫死 |
@@ -1043,15 +1043,23 @@ agent 的端點目前定為明文 HTTP + token。要不要上 TLS、還是乾脆
 ```
 hangar/
 ├── hangar                # 主 script（bash，無外部相依）
-├── README.md             # 安裝與使用
+├── README.md             # 入口：安裝、設定一支手機、每天投影
 ├── ROADMAP.md            # 這份：方向、里程碑、程式分層、測試
 ├── hangar_install.sh     # symlink 到 /usr/local/bin
 ├── LICENSE
-├── docs/
-│   ├── manual.html       # 從 README 產生的單檔使用手冊（給不看 GitHub 的人）
+├── docs/                 # 一個題目一份，由 README 連過去
+│   ├── scan.md           # 區網掃描
+│   ├── json.md           # --json 的 schema 與 error code
+│   ├── multi-host.md     # 多台電腦共用同一支手機
+│   ├── agent.md          # 手機端 agent：入伍、升級、限制
+│   ├── hub.md            # 裝置牆網頁
+│   ├── wall-actions.md   # 牆上那幾顆按鈕與 helper 的三道鎖
+│   ├── tailscale.md      # Tailscale ACL
+│   ├── flag-secure.md    # 投影全黑（FLAG_SECURE）
+│   ├── manual.html       # 上面那些接成一頁的使用手冊（給不看 GitHub 的人）
 │   └── logo-agent*.svg   # agent 的圖示來源
 ├── tools/
-│   └── make_manual.py    # README → docs/manual.html 的轉換器
+│   └── make_manual.py    # README + docs/*.md → docs/manual.html
 ├── agent/                # 手機端 app（Kotlin，零外部相依，連 AndroidX 都沒有）
 │   ├── README.md         # 怎麼蓋、怎麼手動入伍、驗證到什麼程度
 │   └── app/src/main/     # HttpServer / Status / Enrollment / AgentService / MdnsBroadcast …
@@ -1074,7 +1082,7 @@ hangar/
     ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
     ├── test_agent_client.sh     # 電腦這一側：enroll、改問 agent、掃描探 5599
     ├── test_versions.sh         # ROADMAP 現況速查與程式宣告的版本／schema 一致性
-    ├── test_manual.sh    # 手冊：Markdown 有沒有轉乾淨、內容有沒有掉、印記可不可決定
+    ├── test_manual.sh    # 手冊：轉得乾不乾淨、多份來源接得對不對、錨點死了沒
     ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / curl / arp / ip / ping
     │                     #   / route / avahi-browse / dns-sd
     ├── hubbin/           # 假的 hangar（吐固定的 JSON 給 hub 吃）
@@ -1141,8 +1149,8 @@ CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是�
 
 | 腿 | 跑什麼 | 抓得到什麼 |
 |---|---|---|
-| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（746 項），不是 SKIP |
-| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（738 項）|
+| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（799 項），不是 SKIP |
+| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（791 項）|
 | `macos` | `macos-latest` | 修 Linux 的時候不要把開發機那邊弄壞 |
 
 三條腿都設 `timeout-minutes`。預設是 6 小時，而這個專案已經有過「卡住而不是失敗」
@@ -1170,7 +1178,7 @@ CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是�
 | `test_scan.sh` | `scan --json` 的形狀、排除自己與別的網段、`incomplete` 不算裝置、macOS 省略 0 的 MAC 正規化、隨機 MAC 的判定、5555 探測與 `--no-probe`、已設定的 profile 標記、ping sweep 與 `--no-ping`、缺工具不可誤報成「區網上沒東西」、`/16` 與 `/28` 的網段判斷、`--subnet` 的三種寫法、OUI 兩種格式與沒有資料庫時不亂猜、廠商含中文時的欄位對齊、`lan` backend 的候選清單、識別合併（記住 MAC、換 IP 仍認得出、舊 IP 被別台拿走不誤認、一個 profile 只認領一台、隨機 MAC 換過會重學、序號附在輸出裡）、`--fix-ip` 只改認得出來的那幾支且不碰 tailscale profile、mDNS 兩條路（`avahi-browse` 與 `dns-sd`）都找得到 agent 且拿得到序號與機型、沒有 mDNS 工具時退回探 5599 仍然找得到、未解析的 `+` 紀錄不算數、profile 的序號優先於 mDNS 的、`--no-probe` 連 mDNS 都不問 |
 | `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳、`POST /api/refresh` 的節流（剛問過回 429 並說還要等幾秒）、`GET /api/refresh` 是 404、不認得的 `what` 回 400 |
 | `test_agent_protocol.sh` | `/hello` 不需要 token 也不吐序號、`/status` 要 token、status 的每個欄位型別（電量是 0-100 整數、充電狀態用小寫那一套、`wifi_enabled` 可以是 null 但不能用 false 混充、拿不到的東西回 null 不塞假值、協定裡根本沒有 MAC 這一欄）、501 與 404 要分得出來、沒入伍是 409 不是 401。**帶 `HANGAR_AGENT_URL` 就直接打真的手機** |
-| `test_manual.sh` | `tools/make_manual.py`：Markdown 轉乾淨了沒（讀者不該看到 `**這樣**` 或一整列 `| --- |`）、區段與表格有沒有整段掉、README 裡的錨點連結在手冊裡對不對得上、同一份 README 跑兩次印記要一模一樣（`--check` 才有意義） |
+| `test_manual.sh` | `tools/make_manual.py`：Markdown 轉乾淨了沒（讀者不該看到 `**這樣**` 或一整列 `| --- |`）、區段與表格有沒有整段掉、`docs/` 每一份都接進手冊了沒（標題降級、跨檔連結變頁內錨點、沒被 README 連到的就是孤兒）、README 與 `docs/` 之間有沒有死錨點、同一份來源跑兩次印記要一模一樣（`--check` 才有意義） |
 | `test_agent_client.sh` | `hangar enroll` 的四個步驟與三種失敗（沒 APK、已入伍過、安裝失敗）、每次入伍都是新 token、廣播帶的序號與 profile 名字都一致、adb 通時用 adb 的資料、**adb 不通時改問 agent 拿電量與機型**、入伍過但 agent 死掉看得出來、掃描只對探得到 5599 的發 HTTP、缺 `curl` 時安靜降級但入伍要明講 |
 | `test_versions.sh` | ROADMAP「現況速查」裡的 hangar／hub／helper／agent 版本與 schema 對上程式宣告、行號參照沒有漂移、Android 與 fake agent 的協定 schema 一致 |
 
