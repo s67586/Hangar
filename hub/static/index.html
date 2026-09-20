@@ -888,7 +888,9 @@ function card(d) {
     ? "（隨機" + (d.mac_ssid ? "・" + d.mac_ssid : "") + "）" : "";
   rows += row("MAC", d.mac ? d.mac + macNote : null, "mono");
   rows += row("序號", d.device_serial, "mono");
-  rows += row("連線方式", d.transport);
+  // profile 裡存的是 backend 名稱（lan / tailscale）；卡片上給的是人話
+  const TRANSPORT_ZH = { lan: "區網直連", tailscale: "Tailscale" };
+  rows += row("連線方式", d.transport ? (TRANSPORT_ZH[d.transport] || d.transport) : null);
   rows += row("5555", d.adb_port === "open" ? "開著" : d.adb_port === "closed" ? "關著" : null);
   if (d.usb) {
     const USB_ZH = { device: "接著（已授權）", unauthorized: "接著（未授權）",

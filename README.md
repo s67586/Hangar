@@ -166,6 +166,12 @@ PREFIX=~/.local ./hangar_install.sh
 手機要拿去別的網段、4G/5G 或公司 NAT 後面，才改走 **Tailscale**：
 `hangar setup --transport tailscale`。
 
+> 位址是 `100.64.0.0/10` 開頭的話，`setup` 會自己判定成 Tailscale —— 那一段是
+> Tailscale 發給節點的位址，區網不會用（RFC 6598）。所以
+> `hangar setup 100.77.7.104` 不必再多打 `--transport tailscale`；真的要當區網
+> 直連就加 `--lan`。舊 profile 若寫著 `TRANSPORT="lan"` 卻配著 `100.x` 的位址，
+> 下次執行任何指令時會被就地更正（那種檔案連得上，但顯示與診斷訊息全指向區網）。
+
 | | `lan`（預設） | `tailscale` |
 |---|---|---|
 | 什麼時候用 | 手機跟電腦在同一個 Wi-Fi | 手機會離開這個網路 |

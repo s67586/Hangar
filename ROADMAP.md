@@ -101,7 +101,7 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.5.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2464` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2533` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:181` |
 | hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
@@ -153,13 +153,25 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
    翻預設值真正的風險不在 `transport_name`，在**舊 profile**：它們沒有
    `TRANSPORT` 那一行，跟著新預設走就等於被靜默改判成區網直連，而它們的
    `PHONE_IP` 是 Tailscale IP，連線診斷會整片指錯方向。所以沒有讓它們吃預設值
-   —— `migrate_transport_field`（`hangar:1329`）在每次執行時就地把
+   —— `migrate_transport_field`（`hangar:1363`）在每次執行時就地把
    `TRANSPORT="tailscale"` 補進那些檔案，讓檔案自己講清楚；檔案唯讀寫不進去時，
    `load_profile_soft` 還留著一道同樣結論的保險絲。**「沒寫就是 lan」只適用於
    完全沒有 profile 的情境，不適用於沒寫那一行的舊檔。**
 
+   **同一個道理的第二種錯標籤**：有那一行、寫的是 `lan`，但 `PHONE_IP`
+   落在 `100.64.0.0/10`。`setup` 只看 `--transport` 旗標、不看位址，所以
+   `hangar setup 100.77.7.104`（直接把 Tailscale IP 貼進去）就會生出這種檔案 ——
+   adb 連得上（位址是對的），因此沒人發現，但 `status` / 裝置牆顯示的是「區網
+   直連」，連不上時每一句提示都在叫人「確認手機連著同一個 Wi-Fi」，而手機其實
+   在別的城市。位址是這裡最硬的證據（RFC 6598 明講那一段不該出現在使用者自己
+   的區網），所以兩頭都堵：`cmd_setup` 在決定位址之後就地改判（明確給了
+   `--lan` 就照做，只警告），`migrate_transport_mislabel`（`hangar:1389`）則把
+   已經寫壞的檔案更正過來。後者只在這台電腦找得到 tailscale CLI 時才動手 ——
+   真有人的區網開在那一段的話，改成 tailscale 只會讓他原本好好的指令全部死在
+   「找不到 tailscale CLI」。
+
    `setup` 第 3 步（決定要寫哪個位址）是兩種連線方式唯一分岔的地方：tailscale
-   去 tailnet 挑節點，lan 則問手機自己 —— `device_lan_ip`（`hangar:1857`）把手機
+   去 tailnet 挑節點，lan 則問手機自己 —— `device_lan_ip`（`hangar:1928`）把手機
    所有 IPv4 拿回來，挑落在這台電腦同一個 /24 的那一個。**刻意不用
    `adb shell ip route get`**：手機開著行動網路時那條路回答的是 4G 位址，寫進
    profile 之後每次投影都失敗，而錯誤會指向手機。`--existing` 沒有 adb 可問，

@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 c5b21a0d4049</span><span class="fact">hangar v1.5.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 b0595198a16f</span><span class="fact">hangar v1.5.0</span></div>
 </header>
 
 <div class="cols">
@@ -193,6 +193,7 @@ brew install scrcpy jq</pre></div>
 <h3 id="兩種連線方式">兩種連線方式</h3>
 <p><strong>預設是同一個區網直連</strong>（<code>TRANSPORT=lan</code>）：手機跟電腦連著同一個 Wi-Fi， <code>hangar setup</code> 不用加任何參數。這種 profile 不需要 <code>tailscale</code> CLI，改用 <code>nc</code> 測 5555 埠通不通（macOS 內建）。</p>
 <p>手機要拿去別的網段、4G/5G 或公司 NAT 後面，才改走 <strong>Tailscale</strong>： <code>hangar setup --transport tailscale</code>。</p>
+<div class="note"><p>位址是 <code>100.64.0.0/10</code> 開頭的話，<code>setup</code> 會自己判定成 Tailscale —— 那一段是 Tailscale 發給節點的位址，區網不會用（RFC 6598）。所以 <code>hangar setup 100.77.7.104</code> 不必再多打 <code>--transport tailscale</code>；真的要當區網 直連就加 <code>--lan</code>。舊 profile 若寫著 <code>TRANSPORT=&quot;lan&quot;</code> 卻配著 <code>100.x</code> 的位址， 下次執行任何指令時會被就地更正（那種檔案連得上，但顯示與診斷訊息全指向區網）。</p></div>
 <div class="tw"><table><tr><th></th><th><code>lan</code>（預設）</th><th><code>tailscale</code></th></tr><tr><td class="wrap">什麼時候用</td><td class="wrap">手機跟電腦在同一個 Wi-Fi</td><td class="wrap">手機會離開這個網路</td></tr><tr><td class="wrap">需要的工具</td><td class="wrap"><code>nc</code>（macOS 內建）</td><td class="wrap"><code>tailscale</code></td></tr><tr><td class="wrap"><code>setup</code> 怎麼拿到位址</td><td class="wrap">問手機自己，挑同網段的那個 IPv4</td><td class="wrap">從 <code>tailscale status</code> 挑節點</td></tr><tr><td class="wrap">連線路徑</td><td class="wrap">一律當 direct，所以預設走高畫質</td><td class="wrap"><code>tailscale ping</code> 判斷 direct / relay</td></tr><tr><td class="wrap">節點名</td><td class="wrap">沒有，<code>PHONE_HOST</code> 留空</td><td class="wrap">有，<code>PHONE_HOST</code> 用得到</td></tr><tr><td class="wrap">位址會不會變</td><td class="wrap">DHCP 換位址就要改 <code>PHONE_IP</code>，建議在路由器上綁固定 IP。<code>hangar scan</code> 靠 MAC 認得出換過位址的手機，<code>hangar scan --fix-ip</code> 直接改好</td><td class="wrap">Tailscale IP 基本上不變</td></tr><tr><td class="wrap">手機重開機後</td><td class="wrap">一樣要重下一次 <code>adb tcpip 5555</code></td><td class="wrap">一樣要重跑 <code>setup</code>（5555 消失）</td></tr><tr><td class="wrap"><code>hangar scan</code> 看得到嗎</td><td class="wrap">看得到</td><td class="wrap">手機不在這個網段時看不到 —— 掃描走 ARP，只在區網成立</td></tr></table></div>
 <div class="note"><p><strong>區網直連沒有 ACL 這層保護。</strong> <code>adb tcpip 5555</code> 在區網上是全開的， 同一個 Wi-Fi 下的任何人都連得到你手機的 adb，而 adb 等於完整的裝置控制權。 只在自己信得過的網路用；公司、咖啡廳、公共 Wi-Fi 請一律走 Tailscale 並設 <a href="#tailscale-acl強烈建議">ACL</a>。</p></div>
 <p>兩種可以混用：每支手機一份 profile，各自記著自己的 <code>TRANSPORT</code>。選哪一種都不 影響日常用法 —— <code>hangar -p</code>、<code>status</code>、<code>list</code>、<code>reset</code>、<code>all</code> 完全一樣，只有訊息 裡的措辭會換成「區網」或 tailnet。</p>
@@ -833,7 +834,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 c5b21a0d4049</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 b0595198a16f</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
