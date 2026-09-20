@@ -401,7 +401,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "battery": { "level": 78, "status": "discharging", "temperature_c": 27.5,
                    "source": "adb" },
       "agent": {
-        "reachable": true, "version": "0.1.1", "enrolled": true,
+        "reachable": true, "version": "0.1.2", "enrolled": true,
         "can": { "ring": true, "toggle_adb": true, "toggle_wifi_adb": false },
         "adb": { "enabled": true, "wifi_enabled": null, "wifi_port": null }
       },
@@ -488,7 +488,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "device_serial": "R58M12345AB",
       "profile_ip_stale": false,
       "profile_ip_fixed": false,
-      "agent": { "version": "0.1.1", "enrolled": true,
+      "agent": { "version": "0.1.2", "enrolled": true,
                   "model": "Pixel 7 Pro", "discovered_by": "mdns" },
       "is_gateway": false
     }
@@ -739,7 +739,7 @@ agent 確認活著。成功之後 token 寫進 profile，手機上的 agent 頁�
  ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
 ==> 4/5 把 agent 叫起來
 ==> 5/5 驗證：直接問 agent
- ok  agent 0.1.1 回應正常
+ ok  agent 0.1.2 回應正常
      機型  Pixel 7 Pro
      電量  78%  放電中  27.5°C
 ```
@@ -767,11 +767,11 @@ cd .. && hangar enroll -p work --reinstall
  ok  已授予
 ==> 3/4 把 agent 叫起來
 ==> 4/4 驗證：用原本那組 token 問一次
- ok  agent 0.2.0 回應正常
+ ok  agent 0.1.2 回應正常
      機型  Pixel 7 Pro
      能力  響鈴、切偵錯、切無線偵錯
 
- ok  重新安裝完成。token 沒有變，牆上那張卡不用重新入伍。
+ ok  agent 更新完成。token 沒有變，牆上那張卡不用重新入伍。
 ```
 
 `adb install -r` 是**就地升級**，app 的資料不會被清掉 —— 所以 token 還在手機裡，
@@ -802,7 +802,7 @@ cd .. && hangar enroll -p work --reinstall
 
 ```json
 { "battery": { "level": 42, "status": "discharging", "source": "agent" },
-  "agent":   { "reachable": true, "version": "0.1.1", "enrolled": true } }
+  "agent":   { "reachable": true, "version": "0.1.2", "enrolled": true } }
 ```
 
 `agent.reachable` 是 `false` 而 profile 又有 token，意思是**這支手機入伍過但
@@ -1108,21 +1108,21 @@ profile。若 agent 其實還在手機上、只是暫時沒有回應，Android �
 
 ### 從裝置牆升級舊版 agent
 
-入伍過的手機也可能停在舊版：牆上那句「這支 agent 沒宣告 `ring` 能力」就是這種。
-這時候卡片會多一顆**「重新安裝 agent」**，按下去等於在這台電腦上執行：
+入伍過的手機也可能停在舊版：裝置牆會把低於目前標準 `0.1.2` 的 agent 標出來。
+這時候卡片會多一顆**「更新agent」**，按下去等於在這台電腦上執行：
 
 ```bash
 hangar enroll -p <這台電腦上的 profile> --reinstall
 ```
 
-判斷「是不是舊版」用的是 `can.ring`：新版一律宣告它 `true`（響鈴不看權限、也不看
-Android 版本），所以「答得出話、也入伍了，卻沒有 `can.ring`」只會是 APK 太舊。
-`can.toggle_adb` 不能拿來判斷 —— 它是 `false` 的理由太多（`WRITE_SECURE_SETTINGS`
-沒授予），會把好好的新版誤判成舊版。
+判斷「是不是舊版」看的是 agent 回報的數字版號，並以目前標準 `0.1.2` 做比較：
+`0.1.1` 會被視為舊版，`0.1.2` 以及更高版本不會被降版。`can.ring` 只代表
+響鈴能力，不再拿來推測 APK 版本；`can.toggle_adb` 也不能拿來判斷，因為
+`WRITE_SECURE_SETTINGS` 沒授予時它本來就可能是 `false`。
 
 這顆按鈕只在 ADB 狀態是 `device` 時出現：沒有 ADB 就沒有路把 APK 送上去，卡片
 會直接說明原因，不留一顆按下去一定失敗的按鈕。helper 沒連上時它一樣退成
-「複製重裝指令」。
+「複製更新指令」。
 
 換版**不會動到入伍狀態，token 也不會變**，所以其他也入伍過這支手機的電腦不會
 因此被鎖在門外；理由見上面的 [`--reinstall`](#升級舊版-agent--reinstall)。
@@ -1185,7 +1185,7 @@ hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到
 | `--hangar` | repo 裡那支 | hangar 執行檔的路徑 |
 | `--port` | `8788` | 只在 `127.0.0.1` 上聽 |
 | `--grace` | 30 秒 | 等投影起來的上限 |
-| `--enroll-timeout` | 180 秒 | 等 agent 入伍（或重新安裝）完成的上限 |
+| `--enroll-timeout` | 180 秒 | 等 agent 入伍（或更新）完成的上限 |
 | `--new-token` | | 換一把新鑰匙（舊連結失效） |
 
 ### 按不動的時候
@@ -1206,7 +1206,7 @@ hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到
 
 按不動也不會卡住：helper 不在的時候投影按鈕會變成**複製指令**；如果手機符合
 自動入伍條件，註冊按鈕也會變成複製 `hangar enroll -p <名稱>`，舊版 agent 的
-重裝按鈕則變成複製 `hangar enroll -p <名稱> --reinstall`。貼到終端機的
+更新按鈕則變成複製 `hangar enroll -p <名稱> --reinstall`。貼到終端機的
 結果完全一樣。
 
 ### 讓 helper 開機就自己跑

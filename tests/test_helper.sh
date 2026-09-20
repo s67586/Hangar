@@ -222,9 +222,9 @@ check  "執行的是 enroll"       "enroll -p work" "$(cat "$MOCK_STATE/argv_log
 # 舊版 agent：同一個端點多帶一個 reinstall，換一支新的 APK 上去
 r="$(req POST "$URL/enroll" "$ORIGIN" "$TOKEN" \
      '{"profile":"work","serial":"R58M12345AB","reinstall":true}')"
-assert "重新安裝回 200"       "200" "$(code "$r")"
-assert "回報這次是重裝"        "True" "$(q 'd["reinstall"]' "$(body "$r")")"
-check  "訊息說得出是重裝"      "重新安裝完成" "$(body "$r")"
+assert "更新 agent 回 200"    "200" "$(code "$r")"
+assert "回報這次是更新"        "True" "$(q 'd["reinstall"]' "$(body "$r")")"
+check  "訊息說得出是更新"      "agent 更新完成" "$(body "$r")"
 check  "CLI 有收到 --reinstall" "enroll -p work --reinstall" "$(cat "$MOCK_STATE/argv_log")"
 
 # 一般入伍不可以偷偷變成重裝

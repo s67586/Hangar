@@ -262,12 +262,12 @@ def launch_enroll(hangar, profile, timeout, reinstall=False):
         except (OSError, ProcessLookupError):
             pass
         stdout, stderr = p.communicate()
-        what = "重新安裝" if reinstall else "註冊"
+        what = "更新 agent" if reinstall else "註冊"
         return False, "%s逾時（超過 %g 秒）" % (what, timeout), tidy(
             (stdout or "") + "\n" + (stderr or ""), keep=8)
 
     detail = tidy((stdout or "") + "\n" + (stderr or ""), keep=8)
-    done, failed = ("agent 重新安裝完成", "重新安裝失敗") if reinstall \
+    done, failed = ("agent 更新完成", "agent 更新失敗") if reinstall \
         else ("agent 入伍完成", "agent 入伍失敗")
     if p.returncode == 0:
         return True, done, detail

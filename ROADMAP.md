@@ -100,7 +100,7 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2297` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | hub `/api/devices` | schema **7** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
-| agent 協定 | schema **3**，版本 `0.1.1` | `agent/app/build.gradle.kts` |
+| agent 協定 | schema **3**，版本 `0.1.2` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
 | helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
@@ -284,7 +284,7 @@ agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價
 ```json
 {
   "schema": 1,
-  "agent":  { "version": "0.1.1", "uptime_s": 86400 },
+  "agent":  { "version": "0.1.2", "uptime_s": 86400 },
   "device_serial": "R58M12345AB",
   "model": "Pixel 7 Pro",
   "android": { "release": "14", "sdk": 34 },
@@ -332,10 +332,10 @@ hangar enroll [-p 手機] [--apk agent.apk]
 
 ### 升級（`--reinstall`）：換 APK，不換 token
 
-> **已實作。** `hangar enroll -p <手機> --reinstall`，裝置牆上是「重新安裝 agent」。
+> **已實作。** `hangar enroll -p <手機> --reinstall`，裝置牆上是「更新agent」。
 
 「一台手機只入伍一次」這條規矩擋的是**重新入伍**，不是**換版本**。但兩件事在
-使用者眼前長得很像：牆上那句「這支 agent 沒宣告 `can.ring` 能力（可能是舊版）」
+使用者眼前長得很像：裝置牆把低於目前標準的 agent 標成舊版，
 說完了問題，卻沒有下一步 —— 而正規入伍那條路會撞上 `already_enrolled`，看起來
 像是「被系統擋住了」。所以升級要有自己的一條路。
 
@@ -352,7 +352,7 @@ hangar enroll [-p 手機] [--apk agent.apk]
 | 新裝上去的 agent 說自己沒入伍 → 直接補完整入伍 | 有人 `pm clear` 過，或 app 曾被解除安裝。那一刻 adb 就在手上，不要丟一個錯誤叫人再跑一個指令 |
 | 裝得上去、但新版不認這台電腦的 token → 停下來講清楚 | 手機上那支是別台電腦入伍的。唯一的解法（`pm clear` + 重新入伍）有代價，那個代價要由人決定，不是由指令順手做掉 |
 | 沒有 token 的 profile 不給用這條 | 「只換 APK」對還沒入伍過的手機沒有意義：裝上去也問不到話。那條路本來就叫 `enroll` |
-| 判斷「是不是舊版」用 `can.ring`，不用 `can.toggle_adb` | 新版一律宣告 `can.ring` 為 `true`（不看權限、不看 Android 版本）。`can.toggle_adb` 是 `false` 的理由太多，拿它判斷會把好好的新版誤判成舊版。**之後新增能力時，這個判斷點要跟著換成最新那個「一定為 true」的能力** |
+| 判斷「是不是舊版」看 agent 版號，不用能力欄位推測 | 裝置牆以 `0.1.2` 為目前標準，數字比較後只標出低於標準的版本；`can.ring` 只代表響鈴能力，`can.toggle_adb` 也不能拿來判斷版本 |
 | helper 沿用 `POST /enroll`，只多一個 `reinstall` 布林 | 同一條 adb、同一套三道鎖、同一支 CLI。為了一個旗標開第二個端點只會多一份要一起維護的東西 |
 | hub 一行都不用改 | 「hub 維持唯讀」那條規矩不因為多一顆按鈕就破例 |
 
@@ -542,7 +542,7 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 | `{"seconds": 0}` 就是停 | 找到之後要能立刻關掉 |
 | 手機上那則通知要有一顆「找到了」 | 手機已經在你手上的時候，那是最快的路，比跑回電腦按快 |
 | 重複呼叫 = 重新計時，不疊加 | 按兩下不該變成響兩倍久 |
-| `can.ring` 是能力宣告，跟 `can.toggle_adb` 同一套 | 舊版 agent 根本沒有這個欄位。兩邊都必須忽略不認得的欄位 —— 所以牆上要把「沒有這個欄位」當成 `false`，不是當成壞掉。這個欄位後來還多了一個用途：它是牆上判斷「這支是舊版」的那個點，見「[升級（`--reinstall`）](#升級--reinstall換-apk不換-token)」 |
+| `can.ring` 是能力宣告，跟 `can.toggle_adb` 同一套 | 舊版 agent 根本沒有這個欄位。兩邊都必須忽略不認得的欄位 —— 所以牆上要把「沒有這個欄位」當成 `false`，不是當成壞掉。它只負責表示響鈴能力；牆上的版本判斷改看 `agent.version`，見「[升級（`--reinstall`）](#升級--reinstall換-apk不換-token)」 |
 | 錯誤碼沿用現在那套 | 沒入伍 409、token 不對 401、body 不是 JSON 400。不要為了一個新端點發明第二套 |
 | **不做「全部響」** | 20 支一起響沒有任何識別價值，只有噪音 |
 

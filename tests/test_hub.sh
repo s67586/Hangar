@@ -138,12 +138,36 @@ check  "首頁含切偵錯 handler" "async function toggleAdb" "$(get "$HUB_URL/
 check  "註冊中只保留一顆按鈕" 'st.action === "enroll" && st.busy' "$(get "$HUB_URL/")"
 check  "agent 無回應且 adb ready 可補裝" \
   'd.agent.reachable === false && d.agent.enrolled === null' "$(get "$HUB_URL/")"
-check  "首頁含重新安裝 handler" "async function reinstall" "$(get "$HUB_URL/")"
-# 舊版的判斷點只能是「有沒有宣告 can.ring」；can.toggle_adb 是 false 的理由
-# 太多（權限沒授予），拿它判斷會把好好的新版誤判成舊版
-check  "舊版是用 can.ring 判斷的" "d.agent.can && d.agent.can.ring === true" "$(get "$HUB_URL/")"
-check  "重裝按鈕要 adb 通得到"    'd.adb_state !== "device"' "$(get "$HUB_URL/")"
-check  "重裝走的是 helper 的 enroll" "reinstall: true" "$(get "$HUB_URL/")"
+page="$(get "$HUB_URL/")"
+check  "首頁含更新 agent handler" "async function updateAgent" "$page"
+check  "看板目標 agent 版號"       'const CURRENT_AGENT_VERSION = "0.1.2";' "$page"
+check  "舊版改用版號比較"          'compareAgentVersions(d.agent.version, CURRENT_AGENT_VERSION) === -1' "$page"
+version_logic="$(printf '%s' "$page" | sed -n '/function agentNeedsUpdate/,/^}/p')"
+nocheck "舊版判斷不再看 can.ring"  "can.ring" "$version_logic"
+if command -v node >/dev/null 2>&1; then
+  version_source="$(printf '%s' "$page" | awk '/const CURRENT_AGENT_VERSION/{print; exit}')"
+  version_source="$version_source
+$(printf '%s' "$page" | awk '/function agentVersionParts/{keep=1} /function ringCommand/{exit} keep')"
+  if VERSION_SOURCE="$version_source" node - <<'NODE'
+const source = process.env.VERSION_SOURCE || "";
+eval(source);
+const old = { agent: { reachable: true, enrolled: true, version: "0.1.1" } };
+const current = { agent: { reachable: true, enrolled: true, version: "0.1.2" } };
+const newer = { agent: { reachable: true, enrolled: true, version: "0.1.3" } };
+if (!agentNeedsUpdate(old) || agentNeedsUpdate(current) || agentNeedsUpdate(newer)) process.exit(1);
+if (compareAgentVersions("0.1.10", "0.1.2") !== 1) process.exit(1);
+NODE
+  then
+    echo "  PASS  0.1.1 會更新、0.1.2 不更新、更高版不降版"; PASS=$((PASS+1))
+  else
+    echo "  FAIL  版號比較實際執行結果不對"; FAIL=$((FAIL+1))
+  fi
+else
+  echo "  SKIP  沒有 node，略過版號比較的 JavaScript 執行測試"
+fi
+check  "更新按鈕要 adb 通得到"    'd.adb_state !== "device"' "$page"
+check  "更新走的是 helper 的 enroll" "reinstall: true" "$page"
+check  "更新按鈕文字"            "更新agent" "$page"
 # 這一條是整條路的重點：hub 自己永遠不會動手機
 nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
@@ -389,7 +413,7 @@ cat > "$MOCK_STATE/list_json" <<'JSON'
     "android": { "release": "14", "sdk": 34 },
     "battery": { "level": 42, "status": "discharging", "temperature_c": 29.0,
                  "source": "agent" },
-    "agent": { "reachable": true, "version": "0.1.0", "enrolled": true },
+    "agent": { "reachable": true, "version": "0.1.1", "enrolled": true },
     "scrcpy_pids": [], "errors": [] },
   { "profile": "dead", "default": false, "transport": "lan", "host": "",
     "ip": "192.168.1.88", "adb_serial": "192.168.1.88:5555",

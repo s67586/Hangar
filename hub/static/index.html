@@ -25,16 +25,16 @@
   h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
   .meta { color: var(--dim); font-size: 13px; }
   .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  button.refresh, button.cast, button.enroll, button.ring, button.adb, button.reinstall {
+  button.refresh, button.cast, button.enroll, button.ring, button.adb, button.update-agent {
     font: inherit; font-size: 12.5px; color: var(--fg); background: var(--card);
     border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
   }
   button.refresh:hover:not(:disabled), button.cast:hover:not(:disabled),
   button.enroll:hover:not(:disabled), button.ring:hover:not(:disabled),
-  button.adb:hover:not(:disabled), button.reinstall:hover:not(:disabled) {
+  button.adb:hover:not(:disabled), button.update-agent:hover:not(:disabled) {
     border-color: var(--ok); color: var(--ok); }
   button.refresh:disabled, button.cast:disabled, button.enroll:disabled,
-  button.ring:disabled, button.adb:disabled, button.reinstall:disabled {
+  button.ring:disabled, button.adb:disabled, button.update-agent:disabled {
     opacity: .55; cursor: default;
   }
   .said { font-size: 12.5px; color: var(--dim); }
@@ -50,7 +50,7 @@
   .action-note { flex: 1 1 100%; font-size: 12px; color: var(--dim); }
   .action-note.bad { color: var(--warn); }
   button.ring { border-color: var(--warn); }
-  button.reinstall { border-color: var(--warn); }
+  button.update-agent { border-color: var(--warn); }
   button.adb { border-color: var(--ok); }
   .counts b { color: var(--fg); font-weight: 600; }
 
@@ -102,10 +102,33 @@
   .legend dd { margin: 0; color: var(--dim); }
   .legend code { color: var(--fg); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
   .legend dd code { color: var(--dim); }
-  .legend .foot { margin: 16px 0 0; font-size: 12.5px; color: var(--dim); }
+  .wall-help { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+  .wall-help > h2 { margin-bottom: 4px; color: var(--fg); font-size: 15px; }
+  .help-lead { margin: 0 0 16px; color: var(--dim); font-size: 12.5px; }
+  .help-boundary {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px;
+    overflow: hidden; margin-bottom: 16px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--line);
+  }
+  .help-boundary div { padding: 12px 14px; background: var(--card); }
+  .help-boundary b { display: block; margin-bottom: 2px; font-size: 13px; }
+  .help-boundary p { margin: 0; color: var(--dim); font-size: 12.5px; }
+  .help-setup {
+    margin-bottom: 16px; padding: 12px 14px; border-left: 3px solid var(--ok);
+    border-radius: 0 8px 8px 0; background: var(--card);
+  }
+  .help-setup h3, .help-card h3 { margin: 0 0 6px; font-size: 13px; }
+  .help-setup ol { margin: 0; padding-left: 20px; color: var(--dim); font-size: 12.5px; }
+  .help-setup li + li { margin-top: 4px; }
+  .help-setup code, .help-card code { color: var(--fg); }
+  .help-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .help-card { padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+  .help-card p { margin: 0; color: var(--dim); font-size: 12.5px; }
+  .help-card p + p { margin-top: 8px; }
   @media (max-width: 520px) {
     .legend dl { grid-template-columns: 1fr; gap: 2px; }
     .legend dd { margin-bottom: 10px; }
+    .help-boundary, .help-grid { grid-template-columns: 1fr; }
   }
   .empty { color: var(--dim); padding: 32px 0; }
 </style>
@@ -160,33 +183,54 @@
       <dt><code>unmanaged</code></dt>
       <dd>掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP 與 MAC —— 機型與電量要等它裝上 agent</dd>
     </dl>
-    <p class="foot">hub 本身不會去動手機，也不會去改設定檔 —— 它沒有任何會動手機的端點。
-      <b>立即更新</b>也只是把輪詢提早叫醒，跑的還是同樣那兩個唯讀的指令。
-      卡片上的響鈴與偵錯按鈕若可用，會透過這台電腦本機的 helper 執行。</p>
 
-    <h2 style="margin-top:22px">投影按鈕</h2>
-    <p class="foot">視窗開在<b>你自己這台電腦</b>上，不是 hub 上。hub 多半是一台沒人在看的機器，
-      視窗開在那裡等於沒開。</p>
-    <p class="foot">所以按鈕要按得動，這台電腦要先跑一支 helper：
-      <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再照它印出來的連結進來一次。</p>
-    <p class="foot">如果某張卡的 <code>adb</code> 是 <code>device</code>、但還沒有 agent，
-      卡片會在投影按鈕旁顯示「註冊 agent」。它會請這台電腦的 helper 透過這支 profile
-      的 ADB（USB 或網路／Tailscale）執行 <code>hangar enroll -p &lt;profile&gt;</code>，
-      把 APK 遠端安裝到手機並完成入伍；找不到 helper 時則提供複製註冊指令。</p>
-    <p class="foot">第一次投某一支手機，這台電腦還是要跑過一次 <code>hangar setup</code> ——
-      adb 授權綁的是每台電腦自己的金鑰。</p>
+    <section class="wall-help" aria-labelledby="wall-help-title">
+      <h2 id="wall-help-title">操作按鈕怎麼運作</h2>
+      <p class="help-lead">先分清楚 hub 與這台電腦各自負責什麼，再看個別按鈕。</p>
 
-    <h2 style="margin-top:22px">響鈴與偵錯按鈕</h2>
-    <p class="foot">響鈴只用來識別仍然叫得動的手機；agent 沒回應、尚未入伍、舊版沒有
-      <code>can.ring</code> 能力，卡片會直接說明原因，不會留一顆死按鈕。</p>
-    <p class="foot">遇到「舊版」那一種，卡片會多一顆「重新安裝 agent」：它請這台電腦的
-      helper 執行 <code>hangar enroll -p &lt;profile&gt; --reinstall</code>，用 ADB 把新版
-      APK 就地換上去。<b>token 不會變</b> —— 就地升級不清資料，所以其他也入伍過這支
-      手機的電腦不會因此被鎖在門外。這需要 adb 通得到那支手機（USB 或網路／Tailscale）。</p>
-    <p class="foot">偵錯是一個<b>全手動</b>的狀態：按了才會變，沒有任何鬧鐘會把它改回去。
-      機房的常態是關著讓 QA 測加固版，所以一顆「半小時後自動開回」的鬧鐘等於在長測
-      中途偷改條件。代價是偵錯關著時，手機上那支 agent 是唯一回得去的路 —— agent
-      掛了就得有人拿著手機處理。</p>
+      <div class="help-boundary">
+        <div>
+          <b>hub 只負責看</b>
+          <p>hub 不會動手機或改設定檔，也沒有這類端點。「立即更新」只是提早喚醒輪詢，仍然只跑原本兩個唯讀指令。</p>
+        </div>
+        <div>
+          <b>helper 才負責操作</b>
+          <p>投影、響鈴、註冊、更新 agent 與切換偵錯，都由按按鈕這台電腦上的 helper 執行。</p>
+        </div>
+      </div>
+
+      <div class="help-setup">
+        <h3>先讓這台電腦能操作</h3>
+        <ol>
+          <li>執行 <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次。</li>
+          <li>第一次投影某支手機前，在這台電腦跑一次 <code>hangar setup</code>；adb 授權綁定的是每台電腦自己的金鑰。</li>
+        </ol>
+      </div>
+
+      <div class="help-grid">
+        <section class="help-card">
+          <h3>投影</h3>
+          <p>視窗開在你自己這台電腦，不是 hub。hub 多半是沒人在看的常駐機器，把視窗開在那裡沒有幫助。</p>
+        </section>
+
+        <section class="help-card">
+          <h3>註冊與更新 agent</h3>
+          <p><code>adb</code> 是 <code>device</code>、但還沒有 agent 時，卡片會顯示「註冊 agent」，由 helper 透過該 profile 的 USB 或網路／Tailscale ADB 執行 <code>hangar enroll -p &lt;profile&gt;</code>。helper 不在時，卡片會提供可複製的指令。</p>
+          <p>agent 低於目前標準 <code>0.1.2</code> 時會顯示「更新agent」，執行 <code>hangar enroll -p &lt;profile&gt; --reinstall</code>。這需要 adb 是 <code>device</code>；就地升級不清資料，<b>token 不會變</b>，其他已入伍的電腦仍可使用。</p>
+        </section>
+
+        <section class="help-card">
+          <h3>響鈴</h3>
+          <p>只用來識別仍能回應的手機。agent 沒回應、尚未入伍，或舊版沒有 <code>can.ring</code> 能力時，卡片會直接說明原因，不會留下按不動的按鈕。</p>
+        </section>
+
+        <section class="help-card">
+          <h3>偵錯</h3>
+          <p>這是全手動狀態：按了才改變，不會定時自動恢復，避免在 QA 長測途中偷改測試條件。</p>
+          <p>偵錯關閉時，手機裡的 agent 是唯一能遠端重新開啟的路；agent 若失效，就必須有人拿著手機處理。</p>
+        </section>
+      </div>
+    </section>
   </section>
 </div>
 
@@ -206,6 +250,11 @@ const STATE_ZH = {
   offline: "offline", unmanaged: "unmanaged", unknown: "unknown",
   agent_only: "agent_only",
 };
+
+// 裝置牆判斷「要不要更新」的目標版號。這裡要跟
+// agent/app/build.gradle.kts 的 versionName 一起升版；版號比較走下面的
+// numeric compare，不用字串排序，避免 0.1.10 被排在 0.1.2 前面。
+const CURRENT_AGENT_VERSION = "0.1.2";
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -338,30 +387,39 @@ function agentReason(d, capability) {
   if (d.agent.reachable !== true) return "agent 沒有回應";
   if (d.agent.enrolled !== true) return "agent 尚未入伍";
   if (!d.agent.can || d.agent.can[capability] !== true) {
-    // 舊版的話，卡片上就有一顆「重新安裝 agent」可以按。把話講完整，不要讓
+    // 舊版的話，卡片上就有一顆「更新agent」可以按。把話講完整，不要讓
     // 人看著一句「可能是舊版」卻不知道下一步該做什麼。
-    const fix = agentStale(d) ? "（舊版 agent —— 按「重新安裝 agent」換成新版）" : "（可能是舊版）";
+    const fix = agentNeedsUpdate(d) ? "（舊版 agent —— 按「更新agent」換成新版）" : "（可能是舊版）";
     return `這支 agent 沒宣告 ${capability} 能力${fix}`;
   }
   return "";
 }
 
-// 「這支 agent 是舊版嗎」。
-//
-// 用 can.ring 當判斷點，是因為新版一律宣告它 true：響鈴不看權限、也不看
-// Android 版本。所以「答得出話、也入伍了，卻沒有 can.ring」只會是一種情況 ——
-// 手機上那支 APK 比這套協定舊。can.toggle_adb 不行，它是 false 的理由太多
-// （WRITE_SECURE_SETTINGS 沒授予），會把好好的新版誤判成舊版。
-//
-// 之後新增能力時，這裡要跟著換成「最新那個一定為 true 的能力」。
-function agentStale(d) {
-  return !!d.agent && d.agent.reachable === true && d.agent.enrolled === true &&
-    !(d.agent.can && d.agent.can.ring === true);
+function agentVersionParts(version) {
+  const m = String(version || "").trim().match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+function compareAgentVersions(left, right) {
+  const a = agentVersionParts(left);
+  const b = agentVersionParts(right);
+  if (!a || !b) return null;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+// 「這支 agent 需要更新嗎」只看版號，不再用能力欄位推測版本。
+// 只更新已知比目前標準舊的版本；如果手機回報比看板新的版本，不做降版。
+function agentNeedsUpdate(d) {
+  if (!d.agent || d.agent.reachable !== true || d.agent.enrolled !== true) return false;
+  return compareAgentVersions(d.agent.version, CURRENT_AGENT_VERSION) === -1;
 }
 
 function ringCommand(d) { return `hangar ring -p ${d.name} --seconds 30`; }
 
-function reinstallCommand(d) { return `hangar enroll -p ${d.name} --reinstall`; }
+function updateAgentCommand(d) { return `hangar enroll -p ${d.name} --reinstall`; }
 
 function adbCommand(d) {
   const enabled = d.agent && d.agent.adb && d.agent.adb.enabled === true;
@@ -376,22 +434,22 @@ function secondsLeft(until) {
 
 // 舊版才出現的那一排。沒有 adb 就沒有路把 APK 送上去 —— 那種時候寧可說清楚，
 // 也不要留一顆按下去一定失敗的按鈕。
-function reinstallRow(d) {
-  if (!agentStale(d)) return "";
+function updateAgentRow(d) {
+  if (!agentNeedsUpdate(d)) return "";
   const st = says.get(d.key) || {};
   if (d.adb_state !== "device") {
     return `<span class="action-note bad">這支 agent 是舊版，換新版需要 adb 通得到它
       （接 USB，或先讓網路／Tailscale ADB 回到 device）</span>`;
   }
   if (helper.status !== "ok") {
-    return `<button class="reinstall" type="button" data-copy-reinstall="${esc(d.key)}">複製重裝指令</button>
-      <span class="action-note">重新安裝需要這台電腦的 helper（目前沒有連上）</span>`;
+    return `<button class="update-agent" type="button" data-copy-update-agent="${esc(d.key)}">複製更新指令</button>
+      <span class="action-note">更新agent需要這台電腦的 helper（目前沒有連上）</span>`;
   }
-  if (st.action === "reinstall" && st.busy) {
-    return `<button class="reinstall" type="button" disabled>重新安裝中…</button>`;
+  if (st.action === "update_agent" && st.busy) {
+    return `<button class="update-agent" type="button" disabled>更新agent中…</button>`;
   }
-  return `<button class="reinstall" type="button" data-reinstall="${esc(d.key)}" ${st.busy ? "disabled" : ""}>重新安裝 agent</button>
-    <span class="action-note">這支 agent 是舊版。換新版不會動到入伍狀態，token 也不會變。</span>`;
+  return `<button class="update-agent" type="button" data-update-agent="${esc(d.key)}" ${st.busy ? "disabled" : ""}>更新agent</button>
+    <span class="action-note">這支 agent 是 ${esc(d.agent.version || "未知版號")}，目前標準是 ${CURRENT_AGENT_VERSION}。更新不會動到入伍狀態，token 也不會變。</span>`;
 }
 
 function ringRow(d) {
@@ -453,7 +511,7 @@ function castRow(d) {
       : `<button class="enroll" type="button" data-enroll="${esc(d.key)}" ${st.busy ? "disabled" : ""}>註冊 agent</button>`)
     : "";
   return `<div class="cast-row">
-    ${cast}${enroll}${reinstallRow(d)}${ringRow(d)}${adbRow(d)}${said}
+    ${cast}${enroll}${updateAgentRow(d)}${ringRow(d)}${adbRow(d)}${said}
   </div>`;
 }
 
@@ -498,10 +556,10 @@ async function copyEnrollCmd(key) {
   setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
 }
 
-async function copyReinstallCmd(key) {
+async function copyUpdateAgentCmd(key) {
   const d = byKey.get(key);
   if (!d) return;
-  const cmd = reinstallCommand(d);
+  const cmd = updateAgentCommand(d);
   let st;
   try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
   catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
@@ -700,9 +758,9 @@ async function enroll(key) {
   setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
 }
 
-// 重新安裝：同一個 /enroll 端點，多帶一個 reinstall。CLI 那邊才是真正知道
+// 更新 agent：同一個 /enroll 端點，多帶一個 reinstall。CLI 那邊才是真正知道
 // 「只換 APK」要做哪幾步的人 —— 這裡只是把按鈕接到它身上。
-async function reinstall(key) {
+async function updateAgent(key) {
   const d = byKey.get(key);
   const cfg = helperCfg();
   if (!d) return;
@@ -712,13 +770,16 @@ async function reinstall(key) {
     setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
   };
   if (!cfg) {
-    return say({ bad: true, msg: "這台電腦的 helper 沒有連上，請先啟動 helper 或複製重裝指令" });
+    return say({ bad: true, msg: "這台電腦的 helper 沒有連上，請先啟動 helper 或複製更新指令" });
   }
-  if (!agentStale(d)) {
+  if (d.adb_state !== "device") {
+    return say({ bad: true, msg: "更新agent需要 adb 通得到這支手機（接 USB，或先讓網路／Tailscale ADB 回到 device）" });
+  }
+  if (!agentNeedsUpdate(d)) {
     // 卡片可能是 10 秒前那一份。已經是新版就不要再裝一次。
     return say({ bad: true, msg: "這支 agent 已經是新版了，請先按「立即更新」確認" });
   }
-  const mine = { busy: true, action: "reinstall" };
+  const mine = { busy: true, action: "update_agent" };
   says.set(key, mine);
   paint();
   let st;
@@ -731,7 +792,7 @@ async function reinstall(key) {
     });
     const j = await r.json().catch(() => ({}));
     if (j.ok) {
-      st = { msg: `${j.message || "agent 重新安裝完成"}${j.profile && j.profile !== d.name
+      st = { msg: `${j.message || "agent 更新完成"}${j.profile && j.profile !== d.name
         ? `（這台電腦上叫 ${j.profile}）` : ""}` };
       // 能力宣告是 hub 從 list --probe 拿的，所以要叫它重問一次，牆上那句
       // 「沒宣告 ring 能力」才會跟著消失。
@@ -755,13 +816,13 @@ document.addEventListener("click", (ev) => {
   const target = rawTarget && typeof rawTarget.closest === "function"
     ? rawTarget : rawTarget && rawTarget.parentElement;
   const b = target && typeof target.closest === "function"
-    ? target.closest("button.cast, button.enroll, button.ring, button.adb, button.reinstall") : null;
+    ? target.closest("button.cast, button.enroll, button.ring, button.adb, button.update-agent") : null;
   if (!b || b.disabled) return;
   if (b.dataset.copy) copyCmd(b.dataset.copy);
   else if (b.dataset.copyEnroll) copyEnrollCmd(b.dataset.copyEnroll);
   else if (b.dataset.copyRing) copyRingCmd(b.dataset.copyRing);
-  else if (b.dataset.copyReinstall) copyReinstallCmd(b.dataset.copyReinstall);
-  else if (b.dataset.reinstall) reinstall(b.dataset.reinstall);
+  else if (b.dataset.copyUpdateAgent) copyUpdateAgentCmd(b.dataset.copyUpdateAgent);
+  else if (b.dataset.updateAgent) updateAgent(b.dataset.updateAgent);
   else if (b.dataset.copyAdb) copyAdbCmd(b.dataset.copyAdb);
   else if (b.dataset.ring) ring(b.dataset.ring, 30);
   else if (b.dataset.ringStop) ring(b.dataset.ringStop, 0);
