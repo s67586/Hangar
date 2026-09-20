@@ -116,7 +116,16 @@ check "括號被去掉"   "同區網直連不經-tailscale"   "$anchors"
 check "大寫轉小寫"   "tailscale-acl強烈建議"      "$anchors"
 check "底線留著"     "密碼頁面投影全黑flag_secure" "$anchors"
 
-echo "=== N5. 真的拿 README 跑一次，內容不可以掉 ==="
+echo "=== N5. 真的拿 README + docs/ 跑一次，內容不可以掉 ==="
+# 來源不只一份了，所以要數的是「接起來的那一份」——直接用產生器自己的 load()，
+# 測試才不會另外假設一套接法，然後跟真正跑的那套走岔。
+python3 - "$GEN" "$ROOT/README.md" "$STATE/combined.md" <<'PY'
+import importlib.util, io, sys
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+io.open(sys.argv[3], "w", encoding="utf-8").write(g.load(sys.argv[2]))
+PY
+
 # 統計腳本寫成檔案再跑：bash 解析 $( ) 裡的內嵌 heredoc 時會被裡面的 | 與反引號
 # 絆倒，而那兩個字元在數 Markdown 表格與圍籬時躲不掉。
 cat > "$STATE/count.py" <<'PY'
@@ -141,16 +150,27 @@ PY
 python3 "$GEN" --out "$STATE/real.html" >/dev/null 2>&1
 real="$(cat "$STATE/real.html")"
 
-md_h2="$(python3 "$STATE/count.py" h2 "$ROOT/README.md")"
+md_h2="$(python3 "$STATE/count.py" h2 "$STATE/combined.md")"
 html_h2="$(printf '%s' "$real" | grep -c '<section id=')"
 assert "每個 ## 都變成區段" "$md_h2" "$html_h2"
 toc_n="$(printf '%s' "$real" | grep -o '<li><a href="#' | grep -c .)"
 assert "目錄項目數也一樣"   "$md_h2" "$toc_n"
 
-md_tbl="$(python3 "$STATE/count.py" table "$ROOT/README.md")"
+md_tbl="$(python3 "$STATE/count.py" table "$STATE/combined.md")"
 html_tbl="$(printf '%s' "$real" | grep -o '<table>' | grep -c .)"
 assert "每張表格都在"       "$md_tbl" "$html_tbl"
 nocheck "手冊裡不要有自己的連結" "claude.ai/artifact" "$real"
+
+# 拆檔之後最容易發生而且沒有人會發現的壞法：某一份 docs 安靜地沒被接進來
+docs_n="$(grep -o '](docs/[a-z-]*\.md' "$ROOT/README.md" | sort -u | grep -c .)"
+files_n="$(ls "$ROOT/docs"/*.md 2>/dev/null | grep -c .)"
+assert "docs/ 每一份都被 README 連到" "$files_n" "$docs_n"
+for f in "$ROOT/docs"/*.md; do
+  t="$(head -1 "$f" | sed 's/^# //')"
+  # 比對的是 h2 的內容，不是「這一頁上有沒有出現這幾個字」—— 目錄那一行也有，
+  # 那樣的檢查連「只剩一個連結、內文掉了」都抓不到
+  check "「${t}」是手冊的一個章節" "$t</h2>" "$real"
+done
 
 echo "=== N6. --check：落後了要講 ==="
 python3 "$GEN" --readme "$STATE/in.md" --out "$STATE/chk.html" >/dev/null 2>&1
@@ -170,7 +190,105 @@ if cmp -s "$STATE/a.html" "$STATE/b.html"; then
 else
   echo "  FAIL  兩次產出不同（印記不可決定的話 --check 永遠會失敗）"; FAIL=$((FAIL+1))
 fi
-check "印記蓋的是 README 的指紋" "README sha256" "$(cat "$STATE/a.html")"
+check "印記蓋的是來源的指紋" "來源 sha256" "$(cat "$STATE/a.html")"
+
+echo "=== N7. 拆成多份之後，接起來的規矩 ==="
+mkdir -p "$STATE/repo/docs"
+cat > "$STATE/repo/README.md" <<'MD'
+# 專案
+
+看 [深入的那份](docs/deep.md)，也看 [某一小節](docs/deep.md#小節)。
+順手連一下 [程式](tool) 與 [方向](ROADMAP.md)。
+
+<!-- manual:docs -->
+
+## 收尾
+
+這一節要留在最後面。
+MD
+cat > "$STATE/repo/docs/deep.md" <<'MD'
+# 深入的那份
+
+內文。
+
+## 小節
+
+```bash
+# 這是註解，不是標題
+echo hi
+```
+MD
+cat > "$STATE/repo/docs/orphan.md" <<'MD'
+# 沒有人連我
+
+孤兒。
+MD
+python3 "$GEN" --readme "$STATE/repo/README.md" --out "$STATE/repo/out.html" >/dev/null 2>&1
+sp="$(cat "$STATE/repo/out.html")"
+
+check   "docs 的標題降成章節"     '<h2 id="深入的那份">深入的那份</h2>' "$sp"
+check   "docs 的小節降成 h3"      '<h3 id="小節">小節</h3>' "$sp"
+check   "跨檔連結變成頁內錨點"    '<a href="#深入的那份">深入的那份</a>' "$sp"
+check   "帶錨點的跨檔連結"        '<a href="#小節">某一小節</a>' "$sp"
+check   "README 的相對連結補一層" '<a href="../tool">程式</a>' "$sp"
+check   "不認得的檔案也補一層"    '<a href="../ROADMAP.md">方向</a>' "$sp"
+nocheck "標記不會漏到 HTML 裡"    'manual:docs' "$sp"
+nocheck "圍籬裡的 # 不是標題"     '<h2 id="這是註解' "$sp"
+check   "圍籬裡的 # 原樣留著"     '# 這是註解，不是標題' "$sp"
+nocheck "沒被連到的就是孤兒"      '沒有人連我' "$sp"
+
+# 標記那一行負責的就是順序：接進來的內容要在它上面，README 的收尾在下面
+order="$(printf '%s' "$sp" | grep -o 'section id="深入的那份"\|section id="收尾"' | tr '\n' ' ')"
+assert "接在標記的位置，不是接在最後" 'section id="深入的那份" section id="收尾" ' "$order"
+
+echo "=== N8. 文件之間的錨點不可以是死的 ==="
+# 拆檔最容易留下的殘骸：連結還指著已經搬走的小節。這一條顧的是 repo 裡真正的
+# Markdown，不是手冊 —— 在 GitHub 上讀的人踩到的是這個。
+cat > "$STATE/links.py" <<'PY'
+import glob, io, os, re, sys
+
+root = sys.argv[1]
+files = [os.path.join(root, "README.md")] + sorted(glob.glob(os.path.join(root, "docs", "*.md")))
+
+
+def slug(text):
+    t = re.sub(r"`([^`]*)`", r"\1", text)
+    t = re.sub(r"\*\*([^*]*)\*\*", r"\1", t)
+    t = t.strip().lower()
+    t = re.sub(r"[^\w\s-]", "", t, flags=re.UNICODE)
+    return re.sub(r"\s+", "-", t)
+
+
+def headings(path):
+    out, fence = set(), False
+    for l in io.open(path, encoding="utf-8"):
+        if l.startswith("```"):
+            fence = not fence
+            continue
+        m = re.match(r"^#{1,6}\s+(.*)$", l) if not fence else None
+        if m:
+            out.add(slug(m.group(1).strip()))
+    return out
+
+
+bad = []
+for f in files:
+    here = os.path.dirname(f)
+    text = io.open(f, encoding="utf-8").read()
+    for m in re.finditer(r"\]\(([^)\s]*)(#[^)\s]+)?\)", text):
+        target, frag = m.group(1), m.group(2)
+        if not frag or "://" in target:
+            continue
+        path = f if not target else os.path.normpath(os.path.join(here, target))
+        if not os.path.exists(path):
+            bad.append("%s → %s（檔案不存在）" % (os.path.basename(f), target))
+        elif frag[1:] not in headings(path):
+            bad.append("%s → %s%s（沒有這個標題）" % (os.path.basename(f), target, frag))
+
+print("\n".join(bad) if bad else "OK")
+PY
+dead="$(python3 "$STATE/links.py" "$ROOT")"
+assert "README 與 docs/ 裡沒有死錨點" "OK" "$dead"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
