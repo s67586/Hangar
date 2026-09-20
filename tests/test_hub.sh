@@ -477,7 +477,7 @@ for i in $(seq 1 50); do
   sleep 0.2
 done
 if [ "$n2" -gt "$n1" ]; then echo "  PASS  真的又問了一次（間隔還有 600 秒）"; PASS=$((PASS+1));
-else echo "  FAIL  沒有提早問（$n1 → $n2）"; FAIL=$((FAIL+1)); fi
+else echo "  FAIL  沒有提早問（$n1 → ${n2}）"; FAIL=$((FAIL+1)); fi
 
 # 掃描那一邊的門檻高很多：它會對 254 個位址各送一個封包，按住不放不該變成洗 ping
 r="$(post "$HUB_URL/api/refresh?what=scan")"

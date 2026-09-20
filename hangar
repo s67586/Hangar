@@ -2642,11 +2642,11 @@ agent_action_prepare() {
   command -v jq >/dev/null 2>&1 || { err "找不到 jq"; hint "brew install jq"; exit 1; }
   agent_have_curl || { err "找不到 curl（跟手機裡的 agent 溝通需要它）"; exit 1; }
   [ -n "${AGENT_TOKEN:-}" ] || {
-    err "「$PROFILE」還沒有入伍 agent，不能做這個動作"
+    err "「${PROFILE}」還沒有入伍 agent，不能做這個動作"
     hint "先跑：hangar enroll -p $PROFILE"
     exit 1
   }
-  [ -n "${PHONE_IP:-}" ] || die "profile「$PROFILE」沒有 PHONE_IP"
+  [ -n "${PHONE_IP:-}" ] || die "profile「${PROFILE}」沒有 PHONE_IP"
   TS="$(find_tailscale 2>/dev/null || true)"
   transport_prepare
   transport_require_deps
@@ -2667,7 +2667,7 @@ cmd_ring() {
   printf '%s' "$seconds" | grep -qE '^[0-9]+$' || die "--seconds 必須是非負整數"
   agent_action_prepare "$want"
   body="$(agent_ring "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" "$seconds")" || {
-    err "叫不到「$PROFILE」的 agent，或 agent 拒絕響鈴"
+    err "叫不到「${PROFILE}」的 agent，或 agent 拒絕響鈴"
     hint "先確認手機與這台電腦在同一個可互通的網路上，再跑：hangar status -p $PROFILE"
     exit 1
   }
@@ -2704,7 +2704,7 @@ cmd_adb() {
     body="$(agent_adb "$PHONE_IP" "$AGENT_PORT" "$AGENT_TOKEN" 0 "$revert")"
   fi
   [ -n "$body" ] || {
-    err "叫不到「$PROFILE」的 agent，或 agent 沒有切偵錯的權限"
+    err "叫不到「${PROFILE}」的 agent，或 agent 沒有切偵錯的權限"
     hint "確認入伍時授予了 WRITE_SECURE_SETTINGS，再跑：hangar status -p $PROFILE"
     exit 1
   }
@@ -2840,7 +2840,7 @@ cmd_enroll() {
 
   # 沒有 token 的「重新安裝」沒有意義：裝上去也問不到話。那條路本來就叫 enroll。
   if [ "$reinstall" -eq 1 ] && [ -z "${AGENT_TOKEN:-}" ]; then
-    err "這台電腦上沒有「$PROFILE」的 agent token，沒辦法只換 APK"
+    err "這台電腦上沒有「${PROFILE}」的 agent token，沒辦法只換 APK"
     hint "這支手機還沒在這台電腦入伍過，直接跑：hangar enroll -p $PROFILE"
     exit 1
   fi
