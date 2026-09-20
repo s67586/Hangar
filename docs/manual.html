@@ -126,7 +126,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 78b587cd6973</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 6ef564142901</span><span class="fact">hangar v1.2.0</span></div>
 </header>
 
 <div class="cols">
@@ -141,7 +141,7 @@ hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
-hangar enroll -p work       # 在這支手機上裝 agent（那唯一一次 USB）
+hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
 ./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的投影按鈕要按得動</pre></div>
 <section id="它解決了什麼">
@@ -210,7 +210,7 @@ hangar forget work      <span class="c"># 刪掉該手機的設定</span>
 hangar all              <span class="c"># 同時投影所有手機</span>
 hangar all --screen-on  <span class="c"># 同上，但不關手機螢幕</span>
 hangar scan             <span class="c"># 掃描區網，列出看得到的裝置</span>
-hangar enroll           <span class="c"># 在這支手機上裝 agent（那唯一一次 USB）</span></pre></div>
+hangar enroll           <span class="c"># 用 USB 或網路 ADB 安裝並入伍 agent</span></pre></div>
 <div class="term"><div class="bar">bash</div><pre>hangar --version        <span class="c"># 或 -V</span>
 hangar help             <span class="c"># 或 -h / --help</span></pre></div>
 <p>指令別名：<code>status</code> = <code>st</code>、<code>list</code> = <code>ls</code>、<code>forget</code> = <code>rm</code>。</p>
@@ -314,7 +314,7 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
 <ul><li><strong><code>--probe</code> 只對 <code>--json</code> 有作用。</strong> 人類版 <code>list</code> 的欄位是固定的， 加了會警告並忽略。</li></ul>
 <p><code>scan --json</code> 是另一份文件（描述的是網段，不是 profile），所以 schema 號碼自己算：</p>
 <div class="term"><div class="bar">json</div><pre>{
-  &quot;schema&quot;: 5,
+  &quot;schema&quot;: 7,
   &quot;subnet&quot;: &quot;192.168.1.0/24&quot;,
   &quot;hosts&quot;: [
     {
@@ -328,14 +328,14 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
       &quot;device_serial&quot;: &quot;R58M12345AB&quot;,
       &quot;profile_ip_stale&quot;: false,
       &quot;profile_ip_fixed&quot;: false,
-      &quot;agent&quot;: { &quot;version&quot;: &quot;0.1.0&quot;, &quot;model&quot;: &quot;Pixel 7 Pro&quot;,
-                 &quot;discovered_by&quot;: &quot;mdns&quot; },
+      &quot;agent&quot;: { &quot;version&quot;: &quot;0.1.0&quot;, &quot;enrolled&quot;: true,
+                  &quot;model&quot;: &quot;Pixel 7 Pro&quot;, &quot;discovered_by&quot;: &quot;mdns&quot; },
       &quot;is_gateway&quot;: false
     }
   ],
   &quot;errors&quot;: []
 }</pre></div>
-<p><code>agent</code> 在那台有 agent 在聽 5599 時才不是 <code>null</code>，<code>is_gateway</code> 是「這台是這個 網段的閘道器」。<code>agent.discovered_by</code> 說的是怎麼找到它的：</p>
+<p><code>agent</code> 在那台有 agent 在聽 5599 時才不是 <code>null</code>。<code>agent.enrolled</code> 是 agent 回報的 入伍狀態；舊版 agent 或拿不到欄位時為 <code>null</code>。<code>is_gateway</code> 是「這台是這個 網段的閘道器」。<code>agent.discovered_by</code> 說的是怎麼找到它的：</p>
 <div class="tw"><table><tr><td class="wrap"><code>mdns</code></td><td class="wrap">agent 自己用 mDNS 報名的。這條路連 <code>model</code> 與序號都拿得到</td></tr><tr><td class="wrap"><code>probe</code></td><td class="wrap">逐台探 5599 探出來的。只拿得到版本，<code>model</code> 是 <code>null</code></td></tr></table></div>
 <p><code>adb_port</code> 是 <code>open</code> / <code>closed</code> / <code>unknown</code>（<code>--no-probe</code> 或這台 機器沒有 <code>nc</code>）。 <code>profile</code> 對不上任何已設定的手機時是 <code>null</code>，<code>matched_by</code> 與 <code>device_serial</code> 也跟著是 <code>null</code>。<code>subnet</code> 是實際掃過的範圍。</p>
 <p><code>matched_by</code> 是「這台是靠什麼認出來的」：<code>mac</code>（可信）或 <code>ip</code>（第一次，還沒記過 MAC）。<code>device_serial</code> 來自對上的那個 profile，是跨 IP、跨連線方式都不變的主鍵。 <code>profile_ip_stale</code> 為 <code>true</code> 表示 MAC 認得出是同一支手機，但那個 profile 的 <code>PHONE_IP</code> 已經是舊的了 —— 投影會連到錯的地方。加上 <code>--fix-ip</code> 的話這種會被 就地改好，那一台的 <code>profile_ip_fixed</code> 會是 <code>true</code>、<code>profile_ip_stale</code> 回到 <code>false</code>。<strong>要注意 <code>--fix-ip</code> 會寫設定檔</strong>，所以固定輪詢 <code>scan --json</code> 的程式 （例如之後的 hub）別無條件帶著它跑。 scan 自己的 error code：</p>
@@ -430,17 +430,18 @@ export ANDROID_SERIAL=100.x.y.z:5555         <span class="c"># 或區網的 192.
 <h2 id="手機端-agent">手機端 agent</h2>
 <p><code>hangar scan</code> 看得到區網上有哪些裝置，但<strong>沒開偵錯的手機 adb 完全碰不到</strong> —— 拿得到 IP、MAC、廠商，拿不到機型，更拿不到電量。唯一的破口是在手機裡放一支 常駐的 app：它自己回報，不需要 adb。</p>
 <p>程式在 <a href="agent/"><code>agent/</code></a>，協定寫在 <a href="ROADMAP.md">ROADMAP</a> 的「M3 協定」。</p>
-<h3 id="入伍那唯一一次-usb">入伍：那唯一一次 USB</h3>
+<h3 id="入伍一次性-adbusb-或網路">入伍：一次性 ADB（USB 或網路）</h3>
 <div class="term"><div class="bar">bash</div><pre>cd agent &amp;&amp; ./gradlew assembleDebug     <span class="c"># 先 build 出 APK</span>
-cd .. &amp;&amp; hangar enroll -p work          <span class="c"># 手機插 USB（或 adb 現在通得到）</span></pre></div>
-<p><code>hangar enroll</code> 做四件事：裝 APK、授予 <code>WRITE_SECURE_SETTINGS</code>、把裝置序號與 一組隨機 token 交給 agent、再直接問一次 agent 確認活著。成功之後 token 寫進 profile，之後就不需要 USB 了。</p>
-<div class="term"><div class="bar">shell</div><pre>==&gt; 1/4 安裝 agent
+cd .. &amp;&amp; hangar enroll -p work          <span class="c"># USB，或已經通得到的網路／Tailscale ADB</span></pre></div>
+<p><code>hangar enroll</code> 做五件事：裝 APK、授予 <code>WRITE_SECURE_SETTINGS</code>、把這台電腦上的 profile 名字連同裝置序號與一組隨機 token 交給 agent、把 app 叫到前景、再直接問一次 agent 確認活著。成功之後 token 寫進 profile，手機上的 agent 頁面會把 profile 名字 大字顯示；如果走的是網路 ADB，整個流程不需要插 USB。</p>
+<div class="term"><div class="bar">shell</div><pre>==&gt; 1/5 安裝 agent
  ok  安裝完成
-==&gt; 2/4 授予 WRITE_SECURE_SETTINGS
+==&gt; 2/5 授予 WRITE_SECURE_SETTINGS
  ok  已授予
-==&gt; 3/4 交出裝置序號與 token
+==&gt; 3/5 交出 profile 名字、裝置序號與 token
  ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
-==&gt; 4/4 驗證：直接問 agent
+==&gt; 4/5 把 agent 叫起來
+==&gt; 5/5 驗證：直接問 agent
  ok  agent 0.1.0 回應正常
      機型  Pixel 7 Pro
      電量  78%  放電中  27.5°C</pre></div>
@@ -554,6 +555,11 @@ WantedBy=default.target</pre></div>
   http://192.168.1.5:8787/#helper=ab12…&amp;port=8788
 （鑰匙在 # 後面，不會送到 hub 那邊去）</pre></div>
 <p>在那台電腦上開一次那個連結，牆上的按鈕就活了。鑰匙存在那台瀏覽器裡，之後 直接開裝置牆就好。</p>
+<h3 id="從裝置牆自動入伍">從裝置牆自動入伍</h3>
+<p>如果某張卡的 ADB 狀態是 <code>device</code>，但還沒有能回應的 agent，卡片會在投影按鈕右邊顯示 「註冊 agent」。如果 profile 還留著舊 token、但手機上的 APK 已被解除安裝，這顆按鈕 也會出現，讓它用同一條 ADB 路徑補裝。按下去後，<strong>按按鈕的這台電腦</strong>上的 helper 會透過 profile 的 USB 或網路／Tailscale ADB 執行：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar enroll -p &lt;這台電腦上的 profile&gt;</pre></div>
+<p>它使用的仍然是 CLI 原本的 enrollment 流程：安裝 APK、授予 <code>WRITE_SECURE_SETTINGS</code>、寫入 profile 名字、序號與 token，再驗證 agent。hub 不會直接執行這個 指令，也不會代替 helper 操作手機；因此這台電腦仍然必須先有可用的 ADB 連線與 profile。若 agent 其實還在手機上、只是暫時沒有回應，Android 端會拒絕重複入伍並提示 先清除 app 狀態，不會默默覆蓋原本的 token。</p>
+<p>如果 helper 沒有啟動，按鈕會改成「複製註冊指令」，讓你貼到終端機執行。入伍需要 安裝好的 agent APK；找不到 APK 時，helper 會把 CLI 的 build 提示帶回裝置牆。</p>
 <h3 id="每台電腦要先做的事">每台電腦要先做的事</h3>
 <div class="tw"><table><tr><th></th><th>為什麼</th></tr><tr><td class="wrap">裝好 <code>hangar</code> + <code>adb</code> + <code>scrcpy</code>（<a href="#安裝">安裝</a>那一節）</td><td class="wrap">按鈕跑的就是 <code>hangar -p &lt;名稱&gt;</code>，它省的是打字，不是省掉這些</td></tr><tr><td class="wrap">跑過一次 <code>hangar setup</code></td><td class="wrap"><strong>這一步躲不掉</strong>：adb 授權綁的是每台電腦自己的金鑰，要有人在手機上按「一律允許」。任何按鈕都繞不過它</td></tr><tr><td class="wrap">跑著 <code>hangar_helper.py</code></td><td class="wrap">網頁啟動不了本機程式</td></tr></table></div>
 <p>沒 setup 過的手機按下去，按鈕會照實說：</p>
@@ -568,12 +574,12 @@ WantedBy=default.target</pre></div>
 <p>「網頁叫得動本機程式」本來就是要小心的事：</p>
 <div class="tw"><table><tr><td class="wrap">只綁 <code>127.0.0.1</code></td><td class="wrap">別台電腦連不到。<strong>沒有 <code>--bind</code> 可以改</strong></td></tr><tr><td class="wrap">Origin 白名單</td><td class="wrap">只有 <code>--hub</code> 給的那些網址上的頁面叫得動。Origin 是瀏覽器自己填的，頁面上的 JS 偽造不了</td></tr><tr><td class="wrap">token</td><td class="wrap">擋掉這台電腦上其他不是從那頁來的呼叫。放在 <code>~/.config/hangar/helper.token</code>（0600），換一把用 <code>--new-token</code></td></tr></table></div>
 <p>hub 那一側<strong>什麼都沒有多</strong>：沒有新端點，也沒有任何會動到手機的路。按下去走的 是「你的瀏覽器 → 你自己電腦上的 helper」，hub 全程不知情。</p>
-<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hub</code></td><td class="wrap">無（必填）</td><td class="wrap">裝置牆的網址，可以給多次</td></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--port</code></td><td class="wrap"><code>8788</code></td><td class="wrap">只在 <code>127.0.0.1</code> 上聽</td></tr><tr><td class="wrap"><code>--grace</code></td><td class="wrap">30 秒</td><td class="wrap">等投影起來的上限</td></tr><tr><td class="wrap"><code>--new-token</code></td><td class="wrap"></td><td class="wrap">換一把新鑰匙（舊連結失效）</td></tr></table></div>
+<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hub</code></td><td class="wrap">無（必填）</td><td class="wrap">裝置牆的網址，可以給多次</td></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--port</code></td><td class="wrap"><code>8788</code></td><td class="wrap">只在 <code>127.0.0.1</code> 上聽</td></tr><tr><td class="wrap"><code>--grace</code></td><td class="wrap">30 秒</td><td class="wrap">等投影起來的上限</td></tr><tr><td class="wrap"><code>--enroll-timeout</code></td><td class="wrap">180 秒</td><td class="wrap">等 agent 入伍完成的上限</td></tr><tr><td class="wrap"><code>--new-token</code></td><td class="wrap"></td><td class="wrap">換一把新鑰匙（舊連結失效）</td></tr></table></div>
 <h3 id="按不動的時候">按不動的時候</h3>
 <p>牆上那一行會講是哪一種：</p>
 <div class="tw"><table><tr><th>牆上寫的</th><th>多半是</th></tr><tr><td class="wrap">這台電腦得先跑一支 helper</td><td class="wrap">還沒開過那個帶鑰匙的連結</td></tr><tr><td class="wrap">叫不動這台電腦的 helper</td><td class="wrap">helper 沒在跑，<strong>或者 <code>--hub</code> 跟這一頁的網址對不起來</strong>（<code>localhost</code> 與 <code>192.168.x.x</code> 是不同的來源），也可能是瀏覽器不讓網頁連本機</td></tr><tr><td class="wrap">helper 在跑，但這一頁沒有它的鑰匙</td><td class="wrap">換過 token 了，再開一次那個連結</td></tr></table></div>
 <div class="note warn"><p>瀏覽器對「區網上的頁面連 127.0.0.1」還有自己的一關（Chrome 的 Private Network Access／Local Network Access），新版可能會跳一次權限詢問。helper 該給的標頭都給了，但那個詢問是瀏覽器的 UI，程式這邊關不掉也繞不過。 <strong>這一關還沒有在各家瀏覽器的新版上實測過</strong>，第一個試的人請回報。</p></div>
-<p>按不動也不會卡住：helper 不在的時候按鈕會變成<strong>複製指令</strong>，把 <code>hangar -p &lt;名稱&gt;</code> 放進剪貼簿，貼到終端機的結果完全一樣。</p>
+<p>按不動也不會卡住：helper 不在的時候投影按鈕會變成<strong>複製指令</strong>；如果手機符合 自動入伍條件，註冊按鈕也會變成複製 <code>hangar enroll -p &lt;名稱&gt;</code>。貼到終端機的 結果完全一樣。</p>
 <h3 id="讓-helper-開機就自己跑">讓 helper 開機就自己跑</h3>
 <p>macOS（launchd，存成 <code>~/Library/LaunchAgents/com.hangar.helper.plist</code>）：</p>
 <div class="term"><div class="bar">xml</div><pre>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
@@ -731,7 +737,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 78b587cd6973</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 6ef564142901</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>

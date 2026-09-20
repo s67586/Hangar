@@ -13,7 +13,7 @@
 |---|---|
 | `GET /hangar/v1/hello` | 好了（不需要 token，掃描靠它認人） |
 | `GET /hangar/v1/status` | 好了（電量、機型、Android 版本、偵錯開關現況、能力宣告） |
-| 入伍（收序號與 token） | 好了 |
+| 入伍（收 profile 名字、序號與 token） | 好了（手機頁面會把 profile 名字大字顯示） |
 | 重開機後自己起來 | 程式寫好了，**但還沒在實機上驗過重開機那一段**（把無線偵錯打開是 M3c，還沒做） |
 | `POST /hangar/v1/adb` 切偵錯 | 還沒（M4），現在回 501 |
 | mDNS 廣播 | 還沒（M3b） |
@@ -76,6 +76,9 @@ echo "sdk.dir=$HOME/Library/Android/sdk" > local.properties
 
 平常用 `hangar enroll -p <手機>` 就好。下面是它實際做的事，出問題時用得上：
 
+這條 ADB 可以是 USB，也可以是 profile 裡已經連通的區網／Tailscale TCP ADB；不必為了
+安裝 agent 特別把手機接回 USB。
+
 ```bash
 # 1. 裝
 adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -83,11 +86,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 # 2. 授權。這一步就是整套的破口：一次性授予，重開機後仍然有效
 adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 
-# 3. 入伍：把裝置序號與一組 token 交給它
+# 3. 入伍：把 profile 名字、裝置序號與一組 token 交給它
+PROFILE=work                 # 這台電腦上的 profile 名字
 SERIAL="$(adb shell getprop ro.serialno | tr -d '\r\n')"
 TOKEN="$(openssl rand -hex 32)"
 adb shell am broadcast -n com.hangar.agent/.EnrollReceiver \
-  -a com.hangar.agent.ENROLL --es serial "$SERIAL" --es token "$TOKEN"
+  -a com.hangar.agent.ENROLL --es serial "$SERIAL" --es token "$TOKEN" --es name "$PROFILE"
 #    → 印出 result=0, data="enrolled" 才算成功
 
 # 4. 驗證（手機要跟電腦在同一個區網）
@@ -113,9 +117,10 @@ adb shell pm clear com.hangar.agent
 - **零外部相依，連 AndroidX 都沒有。** 三個端點、全部回 JSON，用得到的東西
   framework 都有（`java.net.ServerSocket`、`org.json`）。跟 `hangar` 是一支無相依
   bash script、hub 只用 Python 標準函式庫是同一個理由。
-- **序號與 token 都是電腦端給的**，不是 app 自己去問系統的。Android 10 以上一般
+- **profile 名字、序號與 token 都是電腦端給的**，不是 app 自己去問系統的。Android 10 以上一般
   app 拿不到 `ro.serialno`；而入伍那一刻 adb 就在旁邊，那邊拿得到。兩邊用同一個
-  字串，hub 才能把三份資料合成同一張卡。
+  序號字串，hub 才能把三份資料合成同一張卡。profile 名字只給手機頁面反向識別，
+  不進 HTTP 協定，也不跟另一台電腦的同一支手機名稱比對。
 - **前景服務**，因為 M4 把偵錯關掉之後，這個 HTTP 端點是唯一回得去的路。被系統
   回收 = 那支手機失聯。各家 ROM 的省電策略能不能扛住是 ROADMAP 裡的待實測項目。
 - **比對 token 時逐字元比完才回傳**，不在第一個不同的字元就 return —— 那會把

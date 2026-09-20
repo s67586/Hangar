@@ -6,10 +6,11 @@ import android.content.Intent
 import android.util.Log
 
 /**
- * 入伍。電腦端在那唯一一次 USB 上發這個廣播：
+ * 入伍。電腦端在已授權的 ADB（USB 或網路）上發這個廣播：
  *
  *     adb shell am broadcast -n com.hangar.agent/.EnrollReceiver \
- *       -a com.hangar.agent.ENROLL --es serial "<ro.serialno>" --es token "<隨機 token>"
+ *       -a com.hangar.agent.ENROLL --es serial "<ro.serialno>" \
+ *       --es token "<隨機 token>" --es name "<profile>"
  *
  * 指定 component（-n）是因為 Android 8+ 擋隱式廣播。
  *
@@ -21,8 +22,9 @@ class EnrollReceiver : BroadcastReceiver() {
         if (intent.action != "com.hangar.agent.ENROLL") return
         val serial = intent.getStringExtra("serial").orEmpty()
         val token = intent.getStringExtra("token").orEmpty()
+        val name = intent.getStringExtra("name").orEmpty()
 
-        val ok = Enrollment.enroll(ctx, serial, token)
+        val ok = Enrollment.enroll(ctx, serial, token, name)
         // 用 setResultCode 回報結果：adb shell am broadcast 會把它印出來，
         // 電腦端那一側就看得到「到底有沒有成功」，不用靠猜。
         resultCode = if (ok) 0 else 1

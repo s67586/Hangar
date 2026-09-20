@@ -25,12 +25,15 @@
   h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
   .meta { color: var(--dim); font-size: 13px; }
   .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  button.refresh, button.cast {
+  button.refresh, button.cast, button.enroll {
     font: inherit; font-size: 12.5px; color: var(--fg); background: var(--card);
     border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
   }
-  button.refresh:hover:not(:disabled), button.cast:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
-  button.refresh:disabled, button.cast:disabled { opacity: .55; cursor: default; }
+  button.refresh:hover:not(:disabled), button.cast:hover:not(:disabled),
+  button.enroll:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
+  button.refresh:disabled, button.cast:disabled, button.enroll:disabled {
+    opacity: .55; cursor: default;
+  }
   .said { font-size: 12.5px; color: var(--dim); }
   .said.bad { color: var(--bad); } .said.good { color: var(--ok); }
 
@@ -157,6 +160,10 @@
       視窗開在那裡等於沒開。</p>
     <p class="foot">所以按鈕要按得動，這台電腦要先跑一支 helper：
       <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再照它印出來的連結進來一次。</p>
+    <p class="foot">如果某張卡的 <code>adb</code> 是 <code>device</code>、但還沒有 agent，
+      卡片會在投影按鈕旁顯示「註冊 agent」。它會請這台電腦的 helper 透過這支 profile
+      的 ADB（USB 或網路／Tailscale）執行 <code>hangar enroll -p &lt;profile&gt;</code>，
+      把 APK 遠端安裝到手機並完成入伍；找不到 helper 時則提供複製註冊指令。</p>
     <p class="foot">第一次投某一支手機，這台電腦還是要跑過一次 <code>hangar setup</code> ——
       adb 授權綁的是每台電腦自己的金鑰。</p>
   </section>
@@ -272,9 +279,30 @@ function helperLine() {
   }
 }
 
-// 每張卡按鈕底下那句話。key → { busy, msg, bad }
+// 每張卡按鈕底下那句話。key → { busy, action, msg, bad }
 const says = new Map();
 let byKey = new Map();
+
+function needsEnroll(d) {
+  // 只有 adb 明確是 device 才顯示自動入伍。這樣按鈕不會把「手機不在線」
+  // 誤導成可以直接註冊。agent 沒裝，或 hello 明確回 enrolled=false，才可以
+  // 走這條一次性入伍路徑。
+  //
+  // reachable=false + enrolled=null 是另一個很重要的恢復狀態：profile 還留著
+  // 之前入伍的 token，但手機上的 APK 可能已被解除安裝，所以 agent 無法回應。
+  // 只要 adb 還通，就讓按鈕重新走一次 enroll；如果 APK 其實還在，Android 端的
+  // already_enrolled 保護會拒絕重複入伍並把 pm clear 的處理方式帶回來，不會偷偷
+  // 覆蓋既有 token。
+  //
+  // reachable=true 但 enrolled=null 仍然不猜（那可能是只會回舊版 hello 的 agent）。
+  return d.adb_state === "device" &&
+    (!d.agent || d.agent.enrolled === false ||
+      (d.agent.reachable === false && d.agent.enrolled === null));
+}
+
+function enrollCommand(d) {
+  return `hangar enroll -p ${d.name}`;
+}
 
 function castRow(d) {
   // 沒有 profile 的卡沒有東西可以投：adb 根本碰不到它們
@@ -282,6 +310,16 @@ function castRow(d) {
   const st = says.get(d.key) || {};
   const said = st.msg
     ? `<span class="said ${st.bad ? "bad" : "good"}">${esc(st.msg)}</span>` : "";
+  const canEnroll = needsEnroll(d);
+  const busyText = st.action === "enroll" ? "註冊中…" : "叫了…";
+  if (st.action === "enroll" && st.busy) {
+    // 入伍是一次性的手機操作；進行中不要再顯示投影按鈕，避免使用者以為
+    // 還能同時對同一支手機做另一個動作。
+    return `<div class="cast-row">
+      <button class="enroll" type="button" data-enroll="${esc(d.key)}" disabled>註冊中…</button>
+      ${said}
+    </div>`;
+  }
 
   // 沒有 helper（沒裝、沒跑、或是這個瀏覽器不讓網頁連本機）的時候不要只給一顆
   // 按不動的按鈕。指令本來就在那裡，複製去貼是完全一樣的結果 —— 這一版的按鈕
@@ -289,12 +327,15 @@ function castRow(d) {
   if (helper.status !== "ok") {
     return `<div class="cast-row">
       <button class="cast" type="button" data-copy="${esc(d.key)}">複製指令</button>
+      ${canEnroll ? `<button class="enroll" type="button" data-copy-enroll="${esc(d.key)}">複製註冊指令</button>` : ""}
       ${said || `<span class="said mono">hangar -p ${esc(d.name)}</span>`}
     </div>`;
   }
   return `<div class="cast-row">
     <button class="cast" type="button" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>${
-      st.busy ? "叫了…" : "投影到這台電腦"}</button>
+      st.busy ? busyText : "投影到這台電腦"}</button>
+    ${canEnroll ? `<button class="enroll" type="button" data-enroll="${esc(d.key)}" ${st.busy ? "disabled" : ""}>${
+      st.action === "enroll" && st.busy ? "註冊中…" : "註冊 agent"}</button>` : ""}
     ${said}
   </div>`;
 }
@@ -320,6 +361,18 @@ async function copyCmd(key) {
   const d = byKey.get(key);
   if (!d) return;
   const cmd = `hangar -p ${d.name}`;
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
+  catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function copyEnrollCmd(key) {
+  const d = byKey.get(key);
+  if (!d) return;
+  const cmd = enrollCommand(d);
   let st;
   try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
   catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
@@ -363,11 +416,73 @@ async function cast(key) {
   setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
 }
 
+async function enroll(key) {
+  const d = byKey.get(key);
+  const cfg = helperCfg();
+  if (!d) return;
+  if (!cfg) {
+    const st = { bad: true, msg: "這台電腦的 helper 沒有連上，請先啟動 helper 或複製註冊指令" };
+    says.set(key, st);
+    paint();
+    setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+    return;
+  }
+  if (!needsEnroll(d)) {
+    const st = { bad: true, msg: "這台手機的狀態已更新，請先按「立即更新」再試" };
+    says.set(key, st);
+    paint();
+    setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+    return;
+  }
+  const mine = { busy: true, action: "enroll" };
+  says.set(key, mine);
+  paint();
+  let st;
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/enroll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 Authorization: "Bearer " + cfg.token },
+      body: JSON.stringify({ profile: d.name, serial: d.device_serial || "" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.ok) {
+      // scan 預設每 5 分鐘才跑一次，成功後可能暫時拿到舊快取；先把這張卡
+      // 標成已入伍，讓按鈕立刻消失，不要讓成功的操作看起來像沒有作用。
+      enrollmentOverrides.set(d.key, Date.now());
+      d.agent = d.agent || { reachable: false, version: null, enrolled: null };
+      d.agent.enrolled = true;
+      st = { msg: `${j.message || "agent 入伍完成"}${j.profile && j.profile !== d.name
+        ? `（這台電腦上叫 ${j.profile}）` : ""}` };
+      // 叫 hub 立刻重問 list + scan；helper 可能在另一台電腦，scan 的 hello
+      // 才是 hub 看見「已入伍」的共同來源。即使被節流，週期輪詢也會稍後更新。
+      fetch("/api/refresh?what=all", { method: "POST" }).catch(() => {});
+      setTimeout(tick, 500);
+    } else {
+      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
+                              .filter(Boolean).join(" —— ") };
+    }
+  } catch (e) {
+    st = { bad: true, msg: "叫不動這台電腦的 helper（它還在跑嗎？）" };
+  }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
 // 卡片每 10 秒會被重畫，所以事件掛在 document 上，不掛在按鈕上
 document.addEventListener("click", (ev) => {
-  const b = ev.target.closest("button.cast");
+  // 某些瀏覽器在點到按鈕文字節點時，target 不一定是 Element；不要讓
+  // `closest` 的例外把整個裝置牆的按鈕事件打死，也不要因此漏掉這次點擊。
+  const rawTarget = ev.target;
+  const target = rawTarget && typeof rawTarget.closest === "function"
+    ? rawTarget : rawTarget && rawTarget.parentElement;
+  const b = target && typeof target.closest === "function"
+    ? target.closest("button.cast, button.enroll") : null;
   if (!b || b.disabled) return;
   if (b.dataset.copy) copyCmd(b.dataset.copy);
+  else if (b.dataset.copyEnroll) copyEnrollCmd(b.dataset.copyEnroll);
+  else if (b.dataset.enroll) enroll(b.dataset.enroll);
   else if (b.dataset.key) cast(b.dataset.key);
 });
 
@@ -400,8 +515,13 @@ function card(d) {
   rows += row("序號", d.device_serial, "mono");
   rows += row("連線方式", d.transport);
   rows += row("5555", d.adb_port === "open" ? "開著" : d.adb_port === "closed" ? "關著" : null);
-  if (d.agent) rows += row("agent", d.agent.reachable
-    ? (d.agent.version || "有回應") : "沒有回應");
+  if (d.agent) {
+    const agentText = d.agent.reachable
+      ? (d.agent.version || "有回應") : "沒有回應";
+    const enrollmentText = d.agent.enrolled === true ? "（已入伍）"
+      : d.agent.enrolled === false ? "（尚未入伍）" : "（入伍狀態未知）";
+    rows += row("agent", agentText + enrollmentText);
+  }
 
   let batt = "";
   if (b && typeof b.level === "number") {
@@ -414,9 +534,10 @@ function card(d) {
   }
 
   const notes = [];
-  // 入伍過但 agent 叫不動 = 現在沒事也看不出來，但下次重開機就會失聯
+  // profile 有 token 但 agent 叫不動：可能只是服務沒起來，也可能 APK 已被解除
+  // 安裝。ADB 還通時 castRow() 會提供補裝／重新入伍按鈕；不要把它武斷說成已入伍。
   if (d.agent && d.agent.reachable === false)
-    notes.push("入伍過，但 agent 現在沒有回應 —— 這支手機重開機後會失聯");
+    notes.push("profile 有入伍資料，但 agent 現在沒有回應 —— 可能是 app 被解除安裝或服務未啟動");
   if (d.state === "agent_only")
     notes.push("adb 進不去，這些資料是手機裡的 agent 回報的");
   if (d.profile_ip_stale) notes.push("profile 指著舊 IP（hangar scan --fix-ip 可以修）");
@@ -445,6 +566,26 @@ function card(d) {
 // 最後一次從 hub 拿到的資料。畫面要能在「沒有新資料」的時候重畫 —— 按了投影
 // 之後那句話就是這樣長出來的，不必等下一輪輪詢。
 let latest = null;
+// enroll 成功後，hub 的 list/scan 可能還在回傳成功前的快取。這個短暫覆寫讓 UI
+// 先反映 helper 的成功回應，等 hub 回報明確 enrolled=true 就自動收掉。
+const enrollmentOverrides = new Map();
+const ENROLL_OVERRIDE_MS = 10 * 60 * 1000;
+
+function applyEnrollmentOverrides(data) {
+  const now = Date.now();
+  for (const [key, at] of enrollmentOverrides) {
+    if (now - at > ENROLL_OVERRIDE_MS) enrollmentOverrides.delete(key);
+  }
+  for (const d of data.devices || []) {
+    const at = enrollmentOverrides.get(d.key);
+    if (at === undefined) continue;
+    if (d.agent && d.agent.enrolled === true) {
+      enrollmentOverrides.delete(d.key);
+      continue;
+    }
+    d.agent = { ...(d.agent || {}), enrolled: true };
+  }
+}
 
 async function tick() {
   let data;
@@ -467,6 +608,7 @@ async function tick() {
     return;
   }
 
+  applyEnrollmentOverrides(data);
   latest = data;
   paint();
 }

@@ -37,6 +37,14 @@ class MainActivity : Activity() {
             setPadding(pad, pad * 2, pad, pad)
             gravity = Gravity.START
         }
+        val profileName = Enrollment.name(this)
+        if (Enrollment.isEnrolled(this) && !profileName.isNullOrBlank()) {
+            root.addView(TextView(this).apply {
+                textSize = 30f
+                text = profileName
+                setPadding(0, 0, 0, pad / 2)
+            })
+        }
         root.addView(TextView(this).apply {
             textSize = 22f
             text = "Hangar Agent ${BuildConfig.VERSION_NAME}"
@@ -59,10 +67,10 @@ class MainActivity : Activity() {
             append("連接埠：").append(HttpServer.PORT).append('\n')
             append("切偵錯的權限：").append(if (granted) "已授予" else "沒有").append("\n\n")
             if (!enrolled || !granted) {
-                append("在電腦上插 USB 執行：\n\n")
-                append("  hangar setup --enroll\n\n")
+                append("在已設定這支手機的電腦上執行（USB 或網路 ADB）：\n\n")
+                append("  hangar enroll -p <profile>\n\n")
                 append("它會裝好這支 app、授予 WRITE_SECURE_SETTINGS，\n")
-                append("並把裝置序號與 token 寫進來。\n")
+                append("並把 profile 名字、裝置序號與 token 寫進來。\n")
             } else {
                 append("這支手機已經在 Hangar 的管理下。\n")
                 append("電腦端看得到它的電量與裝置資訊，\n")

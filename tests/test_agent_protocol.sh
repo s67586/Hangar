@@ -128,7 +128,7 @@ else
   assert "沒入伍也要答 /hello"   "200"   "$(code "$r")"
   assert "而且老實說沒入伍"      "False" "$(q 'str(d["enrolled"])' "$(body "$r")")"
   r="$(req "$U2/hangar/v1/status" "testtoken")"
-  # 沒入伍跟 token 不對是兩件事：前者要去插 USB，後者是電腦端的設定壞了
+  # 沒入伍跟 token 不對是兩件事：前者要透過已授權 ADB 安裝，後者是電腦端的設定壞了
   assert "/status 要回 409 不是 401" "409" "$(code "$r")"
   assert "說得出是還沒入伍"          "not_enrolled" "$(q 'd["error"]["code"]' "$(body "$r")")"
 fi

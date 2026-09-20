@@ -208,7 +208,25 @@ else
   assert "沒擋到的話第二次也要是好的" "200" "$c"
 fi
 
-echo "=== L10. normalize_origin：使用者貼進來的網址要收斂得起來 ==="
+echo "=== L10. ADB 可用但尚未入伍：按鈕可自動執行 enroll ==="
+helper_stop
+helper_env
+helper_start || { echo "  FAIL  helper 起不來"; FAIL=$((FAIL+1)); }
+r="$(req POST "$URL/enroll" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB"}')"
+assert "註冊成功回 200"       "200" "$(code "$r")"
+assert "註冊回 ok=true"       "True" "$(q 'd["ok"]' "$(body "$r")")"
+check  "回報 agent 已入伍"     "入伍完成" "$(body "$r")"
+check  "執行的是 enroll"       "enroll -p work" "$(cat "$MOCK_STATE/argv_log")"
+
+touch "$MOCK_STATE/enroll_fail"
+r="$(req POST "$URL/enroll" "$ORIGIN" "$TOKEN" \
+     '{"profile":"work","serial":"R58M12345AB"}')"
+assert "註冊失敗回 502"       "502" "$(code "$r")"
+assert "註冊失敗回 ok=false"   "False" "$(q 'd["ok"]' "$(body "$r")")"
+check  "帶回 hangar 錯誤"      "入伍失敗" "$(body "$r")"
+
+echo "=== L11. normalize_origin：使用者貼進來的網址要收斂得起來 ==="
 out="$(python3 - "$ROOT" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1] + "/helper")

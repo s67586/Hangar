@@ -25,7 +25,7 @@ hangar                      # 之後隨時投影
 hangar -p test              # 投影另一支
 hangar all                  # 全部一起開
 hangar scan                 # 這個區網上有哪些裝置（不限已設定的）
-hangar enroll -p work       # 在這支手機上裝 agent（那唯一一次 USB）
+hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
 ./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的投影按鈕要按得動
 ```
@@ -194,7 +194,7 @@ hangar forget work      # 刪掉該手機的設定
 hangar all              # 同時投影所有手機
 hangar all --screen-on  # 同上，但不關手機螢幕
 hangar scan             # 掃描區網，列出看得到的裝置
-hangar enroll           # 在這支手機上裝 agent（那唯一一次 USB）
+hangar enroll           # 用 USB 或網路 ADB 安裝並入伍 agent
 ```
 
 ```bash
@@ -465,7 +465,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 5,
+  "schema": 7,
   "subnet": "192.168.1.0/24",
   "hosts": [
     {
@@ -479,8 +479,8 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "device_serial": "R58M12345AB",
       "profile_ip_stale": false,
       "profile_ip_fixed": false,
-      "agent": { "version": "0.1.0", "model": "Pixel 7 Pro",
-                 "discovered_by": "mdns" },
+      "agent": { "version": "0.1.0", "enrolled": true,
+                  "model": "Pixel 7 Pro", "discovered_by": "mdns" },
       "is_gateway": false
     }
   ],
@@ -488,7 +488,8 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 }
 ```
 
-`agent` 在那台有 agent 在聽 5599 時才不是 `null`，`is_gateway` 是「這台是這個
+`agent` 在那台有 agent 在聽 5599 時才不是 `null`。`agent.enrolled` 是 agent 回報的
+入伍狀態；舊版 agent 或拿不到欄位時為 `null`。`is_gateway` 是「這台是這個
 網段的閘道器」。`agent.discovered_by` 說的是怎麼找到它的：
 
 | | |
@@ -708,25 +709,27 @@ Android Studio 走的是它自己啟動的 adb server，要它看到這支手機
 
 程式在 [`agent/`](agent/)，協定寫在 [ROADMAP](ROADMAP.md) 的「M3 協定」。
 
-### 入伍：那唯一一次 USB
+### 入伍：一次性 ADB（USB 或網路）
 
 ```bash
 cd agent && ./gradlew assembleDebug     # 先 build 出 APK
-cd .. && hangar enroll -p work          # 手機插 USB（或 adb 現在通得到）
+cd .. && hangar enroll -p work          # USB，或已經通得到的網路／Tailscale ADB
 ```
 
-`hangar enroll` 做四件事：裝 APK、授予 `WRITE_SECURE_SETTINGS`、把裝置序號與
-一組隨機 token 交給 agent、再直接問一次 agent 確認活著。成功之後 token 寫進
-profile，之後就不需要 USB 了。
+`hangar enroll` 做五件事：裝 APK、授予 `WRITE_SECURE_SETTINGS`、把這台電腦上的
+profile 名字連同裝置序號與一組隨機 token 交給 agent、把 app 叫到前景、再直接問一次
+agent 確認活著。成功之後 token 寫進 profile，手機上的 agent 頁面會把 profile 名字
+大字顯示；如果走的是網路 ADB，整個流程不需要插 USB。
 
 ```
-==> 1/4 安裝 agent
+==> 1/5 安裝 agent
  ok  安裝完成
-==> 2/4 授予 WRITE_SECURE_SETTINGS
+==> 2/5 授予 WRITE_SECURE_SETTINGS
  ok  已授予
-==> 3/4 交出裝置序號與 token
+==> 3/5 交出 profile 名字、裝置序號與 token
  ok  序號 R58M12345AB，token 已寫進 ~/.config/hangar/profiles/work.conf
-==> 4/4 驗證：直接問 agent
+==> 4/5 把 agent 叫起來
+==> 5/5 驗證：直接問 agent
  ok  agent 0.1.0 回應正常
      機型  Pixel 7 Pro
      電量  78%  放電中  27.5°C
@@ -1010,6 +1013,26 @@ hangar helper: http://127.0.0.1:8788/（只有這台電腦連得到）
 在那台電腦上開一次那個連結，牆上的按鈕就活了。鑰匙存在那台瀏覽器裡，之後
 直接開裝置牆就好。
 
+### 從裝置牆自動入伍
+
+如果某張卡的 ADB 狀態是 `device`，但還沒有能回應的 agent，卡片會在投影按鈕右邊顯示
+「註冊 agent」。如果 profile 還留著舊 token、但手機上的 APK 已被解除安裝，這顆按鈕
+也會出現，讓它用同一條 ADB 路徑補裝。按下去後，**按按鈕的這台電腦**上的 helper
+會透過 profile 的 USB 或網路／Tailscale ADB 執行：
+
+```bash
+hangar enroll -p <這台電腦上的 profile>
+```
+
+它使用的仍然是 CLI 原本的 enrollment 流程：安裝 APK、授予
+`WRITE_SECURE_SETTINGS`、寫入 profile 名字、序號與 token，再驗證 agent。hub 不會直接執行這個
+指令，也不會代替 helper 操作手機；因此這台電腦仍然必須先有可用的 ADB 連線與
+profile。若 agent 其實還在手機上、只是暫時沒有回應，Android 端會拒絕重複入伍並提示
+先清除 app 狀態，不會默默覆蓋原本的 token。
+
+如果 helper 沒有啟動，按鈕會改成「複製註冊指令」，讓你貼到終端機執行。入伍需要
+安裝好的 agent APK；找不到 APK 時，helper 會把 CLI 的 build 提示帶回裝置牆。
+
 ### 每台電腦要先做的事
 
 | | 為什麼 |
@@ -1066,6 +1089,7 @@ hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到
 | `--hangar` | repo 裡那支 | hangar 執行檔的路徑 |
 | `--port` | `8788` | 只在 `127.0.0.1` 上聽 |
 | `--grace` | 30 秒 | 等投影起來的上限 |
+| `--enroll-timeout` | 180 秒 | 等 agent 入伍完成的上限 |
 | `--new-token` | | 換一把新鑰匙（舊連結失效） |
 
 ### 按不動的時候
@@ -1084,8 +1108,9 @@ hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到
 > 該給的標頭都給了，但那個詢問是瀏覽器的 UI，程式這邊關不掉也繞不過。
 > **這一關還沒有在各家瀏覽器的新版上實測過**，第一個試的人請回報。
 
-按不動也不會卡住：helper 不在的時候按鈕會變成**複製指令**，把
-`hangar -p <名稱>` 放進剪貼簿，貼到終端機的結果完全一樣。
+按不動也不會卡住：helper 不在的時候投影按鈕會變成**複製指令**；如果手機符合
+自動入伍條件，註冊按鈕也會變成複製 `hangar enroll -p <名稱>`。貼到終端機的
+結果完全一樣。
 
 ### 讓 helper 開機就自己跑
 

@@ -16,6 +16,7 @@ hub 在角落那台常駐機器上，它跑起來的 scrcpy 視窗開在那台�
 
     GET  /healthz     還活著嗎、這台電腦叫什麼、它看得到幾支手機
     POST /mirror      投影一支手機（body：{"profile": "...", "serial": "..."}）
+    POST /enroll      透過這台電腦的 USB 或網路 ADB，安裝並入伍一支手機（同樣的 body）
 
 「網頁叫得動本機程式」本來就是一件要小心的事，所以有三道鎖：
 
@@ -35,6 +36,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import socketserver
 import stat
@@ -63,7 +65,7 @@ class Server(ThreadingHTTPServer):
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 這一版的回應形狀。跟 hangar --json 與 hub 同一個規矩：欄位有變動就往上加。
-API_SCHEMA = 1
+API_SCHEMA = 2
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hangar")
@@ -217,6 +219,46 @@ def launch_mirror(hangar, profile, grace):
     return True, "還在跑，但等了 %g 秒沒看到 scrcpy 接手" % grace, []
 
 
+def launch_enroll(hangar, profile, timeout):
+    """在這台電腦上執行 `hangar enroll -p <profile>` → 結果與細節。
+
+    profile 裡的 PHONE_IP / ADB_PORT 可以是 USB 對應的 adb serial，也可以是
+    5555 上的區網／Tailscale TCP ADB；CLI 會用同一條 ADB 連線安裝 APK、授予
+    WRITE_SECURE_SETTINGS，並把 token 寫入本機 profile。所以這裡不自行重做
+    enrollment 流程；CLI 才是唯一知道 APK、ADB、廣播與 token 格式的地方。
+    """
+    try:
+        p = subprocess.Popen(
+            [hangar, "enroll", "-p", profile],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            start_new_session=True,
+        )
+    except OSError as e:
+        return False, "跑不起來 hangar：%s" % e, []
+
+    try:
+        stdout, stderr = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # enrollment 內部也有自己的 timeout；這一層再加一道上限，避免網頁請求
+        # 永遠掛著。整個 process group 一起收，避免留下 adb／sleep 子行程。
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+        stdout, stderr = p.communicate()
+        return False, "註冊逾時（超過 %g 秒）" % timeout, tidy(
+            (stdout or "") + "\n" + (stderr or ""), keep=8)
+
+    detail = tidy((stdout or "") + "\n" + (stderr or ""), keep=8)
+    if p.returncode == 0:
+        return True, "agent 入伍完成", detail
+    return False, "agent 入伍失敗（hangar 離開碼 %d）" % p.returncode, detail
+
+
 # ------------------------------------------------------------------ 狀態 ----
 
 class State:
@@ -287,6 +329,7 @@ class Handler(BaseHTTPRequestHandler):
     token = None
     origins = ()
     grace = 30.0
+    enroll_timeout = 180.0
 
     # ---- CORS ----
     def _origin_ok(self):
@@ -352,7 +395,7 @@ class Handler(BaseHTTPRequestHandler):
         if not allowed:
             return self._deny(origin)
         path = self.path.split("?", 1)[0]
-        if path != "/mirror":
+        if path not in ("/mirror", "/enroll"):
             return self._json(404, {"ok": False, "reason": "沒有這個端點"}, origin)
         if not self._authed():
             return self._unauth(origin)
@@ -389,7 +432,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(409, {"ok": False, "profile": name,
                                     "reason": "這支正在啟動中，等一下"}, origin)
         try:
-            ok, message, detail = launch_mirror(self.state.hangar, name, self.grace)
+            if path == "/enroll":
+                ok, message, detail = launch_enroll(
+                    self.state.hangar, name, self.enroll_timeout)
+            else:
+                ok, message, detail = launch_mirror(self.state.hangar, name, self.grace)
         finally:
             self.state.release(name)
         return self._json(200 if ok else 502,
@@ -459,6 +506,8 @@ def main(argv=None):
                     help="埠（預設 8788，0 = 隨便挑）")
     ap.add_argument("--grace", type=float, default=30.0,
                     help="等投影起來的上限（秒，預設 30）")
+    ap.add_argument("--enroll-timeout", type=float, default=180.0,
+                    help="等 agent 入伍完成的上限（秒，預設 180）")
     ap.add_argument("--timeout", type=float, default=30.0,
                     help="單次 hangar list 的逾時（秒）")
     ap.add_argument("--token-file", default=TOKEN_FILE, help="鑰匙放哪（預設 %s）" % TOKEN_FILE)
@@ -487,6 +536,7 @@ def main(argv=None):
     Handler.token = token
     Handler.origins = origins
     Handler.grace = args.grace
+    Handler.enroll_timeout = args.enroll_timeout
 
     try:
         # 只綁 127.0.0.1，而且沒有參數可以改。這一支會在這台電腦上開程式，

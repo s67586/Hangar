@@ -43,7 +43,7 @@ out="$("$PM" scan --json 2>/dev/null)"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
   && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
-assert "有 schema 版本"      "6"                "$(q '.schema' "$out")"
+assert "有 schema 版本"      "7"                "$(q '.schema' "$out")"
 assert "掃的網段寫在結果裡"  "192.168.1.0/24"   "$(q '.subnet' "$out")"
 assert "hosts 是陣列"        "array"            "$(q '.hosts | type' "$out")"
 assert "errors 是空陣列"     "0"                "$(q '.errors | length' "$out")"
@@ -369,7 +369,7 @@ assert "修好了就不再是 stale"       "false" \
 assert "而且說得出這支被修過"       "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_fixed' "$out")"
 assert "MAC 沒被動到"               "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
-assert "改檔案不影響 JSON 純淨度"   "6" "$(q '.schema' "$out")"
+assert "改檔案不影響 JSON 純淨度"   "7" "$(q '.schema' "$out")"
 # 只改該改的那一行，其他欄位不能被洗掉
 assert "TRANSPORT 還在"             "lan"  "$(pfield work TRANSPORT)"
 
@@ -447,7 +447,7 @@ echo "=== S16. 閘道器要標出來（它每次都會出現，而且絕對不�
 lan_env
 printf '192.168.1.1\n' > "$MOCK_STATE/gateway_ip"
 out="$("$PM" scan --json 2>/dev/null)"
-assert "schema 往上加了"   "6" "$(q '.schema' "$out")"
+assert "schema 往上加了"   "7" "$(q '.schema' "$out")"
 assert "閘道器標出來了"     "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.1") | .is_gateway' "$out")"
 assert "別台不可以被標成閘道器" "false" \
@@ -489,9 +489,11 @@ cat > "$MOCK_STATE/mdns_avahi" <<'AV'
 =;en0;IPv4;hangar-2345AB;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "serial=R58M12345AB" "model=Pixel+7+Pro"
 AV
 out="$("$PM" scan --json --no-ping 2>/dev/null)"
-assert "schema 往上加了"        "6" "$(q '.schema' "$out")"
+assert "schema 往上加了"        "7" "$(q '.schema' "$out")"
 assert "mDNS 那台認得出有 agent" "0.1.0-mock" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
+assert "mDNS 回報已入伍"       "true" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.enrolled' "$out")"
 assert "說得出是怎麼發現的"      "mdns" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.discovered_by' "$out")"
 # TXT 直接給序號 —— 這台電腦上沒有這支手機的 profile，照樣拿得到主鍵
@@ -550,12 +552,34 @@ done
 out="$(PATH="$NOMD" "$PM" scan --json --no-ping 2>/dev/null)"
 assert "沒有 mDNS 也找得到 agent" "0.1.0-mock" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
+assert "逐台探測也帶入伍狀態" "true" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.enrolled' "$out")"
 assert "這時說得出是探出來的"     "probe" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.discovered_by' "$out")"
 assert "探出來的沒有機型"         "null" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.model' "$out")"
 assert "也沒有序號（探埠問不到）" "null" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .device_serial' "$out")"
+
+# --- agent 有回應但尚未入伍：掃描要明確帶出 false，裝置牆才能顯示註冊按鈕 ---
+mdns_env
+touch "$MOCK_STATE/agent_not_enrolled"
+cat > "$MOCK_STATE/mdns_avahi" <<'AV'
+=;en0;IPv4;hangar-agent;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "model=Pixel+7+Pro"
+AV
+out="$("$PM" scan --json --no-ping 2>/dev/null)"
+assert "未入伍狀態明確是 false" "false" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.enrolled' "$out")"
+
+# 舊版 agent 沒有 enrolled 欄位時要保留 unknown，不要誤當成 false。
+mdns_env
+touch "$MOCK_STATE/agent_omit_enrolled"
+cat > "$MOCK_STATE/mdns_avahi" <<'AV'
+=;en0;IPv4;hangar-agent;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1"
+AV
+out="$("$PM" scan --json --no-ping 2>/dev/null)"
+assert "舊版 agent 的入伍狀態是 null" "null" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.enrolled' "$out")"
 
 # --- 還沒入伍的 agent：TXT 裡沒有序號，但仍然要看得到它 ---
 mdns_env

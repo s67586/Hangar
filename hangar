@@ -175,14 +175,14 @@ require_deps() {
 #     都會帶一份），沒有就老實說廠商不知道
 #   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
 
-SCAN_SCHEMA=6
+SCAN_SCHEMA=7
 SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
 case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
 SCAN_SUBNET=""        # 要掃的 /24 前三段，例如 192.168.1
 SCAN_SELF_IP=""       # 這台電腦自己的 IP，結果裡要排掉
 SCAN_IFACE=""         # 判斷網段時用的那張介面（問閘道位址要用到）
 SCAN_GATEWAY=""       # 這個網段的閘道位址（問得到才有）
-SCAN_HOSTS=""         # 一行一台："ip|mac|廠商|隨機MAC(0/1)|adb|agent 版本(空=沒有)"
+SCAN_HOSTS=""         # 一行一台："ip|mac|廠商|隨機MAC(0/1)|adb|agent 版本|是否入伍"
 SCAN_ERRORS=""        # 一行一筆的「code|給人看的訊息」，格式與 PROBE_ERRORS 相同
 SCAN_MATCHES=""       # 對回 profile 的結果："ip|profile|靠什麼對上的(mac/ip)"
 SCAN_LEARNED=""       # 這次新記住 MAC 的："profile|mac"
@@ -553,7 +553,7 @@ scan_mdns_for() {
   return 1
 }
 
-# scan_agent_at <ip> → agent 的版本字串；沒有 agent 就印空字串。
+# scan_agent_at <ip> → "版本|是否入伍"；沒有 agent 就印空字串。
 #
 # 先用 nc 探埠再用 curl 問，不是多此一舉：一個 /24 上大多數東西根本沒有 agent，
 # 讓 curl 對每一台等到逾時的話，掃描會從幾秒變成幾分鐘。nc 探不通就直接跳過。
@@ -566,8 +566,9 @@ scan_agent_at() { # <ip> [1 = 已經知道有 agent，不用先探埠]
   local body
   body="$(agent_hello "$1")" || return 0
   local v; v="$(agent_field "$body" '.version')"
+  local enrolled; enrolled="$(agent_field "$body" '.enrolled | if . == null then empty else tostring end')"
   # 答得出話但 jq 沒裝（或欄位缺了）時，至少要讓上層知道「這裡有一支 agent」
-  printf '%s' "${v:-?}"
+  printf '%s|%s' "${v:-?}" "$enrolled"
 }
 
 scan_adb_open() { # <ip> → open / closed / unknown
@@ -594,7 +595,7 @@ scan_run() {
   [ "$do_probe" -eq 1 ] && scan_mdns_collect
   [ "$do_sweep" -eq 1 ] && scan_sweep
 
-  local ip mac vendor rnd adb agent
+  local ip mac vendor rnd adb agent agent_enrolled agent_rec
   while read -r ip mac; do
     [ -n "$ip" ] || continue
     case "$ip" in "${SCAN_SUBNET}."*) : ;; *) continue ;; esac
@@ -607,19 +608,24 @@ scan_run() {
     vendor=""
     [ "$rnd" -eq 0 ] && vendor="$(scan_vendor "$mac")"
     adb="unknown"
-    agent=""
+    agent=""; agent_enrolled=""; agent_rec=""
     if [ "$do_probe" -eq 1 ]; then
       adb="$(scan_adb_open "$ip")"
       # mDNS 已經報過名的就不用再探一次埠，直接問版本
       if scan_mdns_for "$ip" >/dev/null; then
-        agent="$(scan_agent_at "$ip" 1)"
+        agent_rec="$(scan_agent_at "$ip" 1)"
         # 答不出話也還是要標成有 agent —— mDNS 說它在，只是 curl 沒裝或它剛好沒回
-        [ -n "$agent" ] || agent="?"
+        [ -n "$agent_rec" ] || agent_rec="?|"
       else
-        agent="$(scan_agent_at "$ip")"
+        agent_rec="$(scan_agent_at "$ip")"
+      fi
+      if [ -n "$agent_rec" ]; then
+        agent="${agent_rec%%|*}"
+        agent_enrolled="${agent_rec#*|}"
+        [ "$agent_rec" = "$agent" ] && agent_enrolled=""
       fi
     fi
-    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}|${agent}"$'\n'
+    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}|${agent}|${agent_enrolled}"$'\n'
   done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
 
   scan_match_profiles
@@ -826,8 +832,8 @@ lan_path()       { printf 'direct ?'; }  # 同區網一律視為直連
 lan_resolve_ip() { printf '%s' "$1"; }   # 沒有節點名的概念，IP 就是 IP
 lan_list_candidates() { # 用區網掃描的結果當候選清單
   scan_run "" 1 1 || return 0
-  local n=0 ip mac vendor rnd adb agent label os
-  while IFS='|' read -r ip mac vendor rnd adb agent; do
+  local n=0 ip mac vendor rnd adb agent agent_enrolled label os
+  while IFS='|' read -r ip mac vendor rnd adb agent agent_enrolled; do
     [ -n "$ip" ] || continue
     n=$(( n + 1 ))
     # 名稱欄：區網上沒有「節點名」這種東西。已經設定過的就用 profile 名稱
@@ -1098,7 +1104,7 @@ agent_ping() {
   body="$(agent_hello "$1" "${2:-}")" || return 1
   AGENT_REACHABLE=1
   AGENT_VERSION="$(agent_field "$body" '.version')"
-  AGENT_ENROLLED="$(agent_field "$body" '.enrolled | tostring')"
+  AGENT_ENROLLED="$(agent_field "$body" '.enrolled | if . == null then empty else tostring end')"
   return 0
 }
 
@@ -1321,7 +1327,7 @@ TRANSPORT="${TRANSPORT:-tailscale}"
 DEVICE_SERIAL="${DEVICE_SERIAL:-}"
 # 區網 MAC —— 由 hangar scan 第一次用 IP 對上時記起來，之後手機換 IP 也認得出來
 PHONE_MAC="${PHONE_MAC:-}"
-# 手機端 agent 的 token 與埠（hangar setup --enroll 寫入）
+# 手機端 agent 的 token 與埠（hangar enroll 寫入）
 # 注意：有了 token 之後這個檔案就有祕密了，不要隨手複製給別人
 AGENT_TOKEN="${AGENT_TOKEN:-}"
 AGENT_PORT="${AGENT_PORT:-}"
@@ -2520,7 +2526,8 @@ cmd_forget() {
 
 # --------------------------------------------------------------- enroll -----
 #
-# 入伍：那唯一一次 USB。步驟與理由見 ROADMAP 的「M3 協定」。
+# 入伍：一次性 ADB 安裝（USB 或已經可用的網路／Tailscale ADB）。步驟與理由見
+# ROADMAP 的「M3 協定」。
 #
 # 為什麼是獨立指令而不是 `setup --enroll`：已經設定好的手機也要能補裝 agent，
 # 而 setup 是「從零建立一支 profile」的流程，兩件事的前提不一樣。
@@ -2560,7 +2567,7 @@ cmd_enroll() {
   local st; st="$(adb_state "$SERIAL")"
   [ "$st" = "device" ] || {
     err "adb 連不上這支手機（目前：${st:-沒有連線}）"
-    hint "入伍需要 adb 通得到 —— 插 USB 或先讓它回到可以 adb 的狀態"
+    hint "入伍需要 adb 通得到 —— 可用 USB，或先讓網路／Tailscale ADB 回到 device 狀態"
     exit 1; }
 
   echo
@@ -2593,7 +2600,7 @@ cmd_enroll() {
     ok "已授予"
   fi
 
-  info "3/5 交出裝置序號與 token"
+  info "3/5 交出 profile 名字、裝置序號與 token"
   local serial_now
   serial_now="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
   [ -n "$serial_now" ] && DEVICE_SERIAL="$serial_now"
@@ -2603,7 +2610,8 @@ cmd_enroll() {
   [ -n "$token" ] || die "產不出 token"
   out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
           -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.ENROLL \
-          --es serial "$DEVICE_SERIAL" --es token "$token" 2>&1)"
+          --es serial "$DEVICE_SERIAL" --es token "$token" \
+          --es name "$PROFILE" 2>&1)"
   if printf '%s' "$out" | grep -q 'already_enrolled'; then
     err "這支手機已經入伍過了"
     hint "一台手機只入伍一次。要重來的話先清掉它的狀態："
@@ -2705,7 +2713,7 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
                                    舊 IP」的那幾支修好
   hangar scan --json              同上，輸出 JSON
   hangar enroll [-p 手機] [--apk <檔>]
-                                   在這支手機上裝 agent（那唯一一次 USB）
+                                   用 USB 或網路 ADB 在這支手機上裝 agent
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
@@ -2799,12 +2807,12 @@ cmd_scan() {
   [ "$do_fix" -eq 1 ] && scan_fix_stale_ips
 
   if [ "$JSON_MODE" -eq 1 ]; then
-    local errs objs="" ip mac vendor rnd adb agent m prof kind dser stale fixed
+    local errs objs="" ip mac vendor rnd adb agent agent_enrolled m prof kind dser stale fixed
     local mrec mser mmodel aby
     errs="$(printf '%s' "$SCAN_ERRORS" | jq -R -s -c \
       '[split("\n")[] | select(length > 0) | split("|")
         | { code: .[0], message: (.[1:] | join("|")) }]')"
-    while IFS='|' read -r ip mac vendor rnd adb agent; do
+    while IFS='|' read -r ip mac vendor rnd adb agent agent_enrolled; do
       [ -n "$ip" ] || continue
       m="$(scan_match_for_ip "$ip")" || m=""
       prof="${m%%|*}"; kind="${m##*|}"; dser=""; stale=0; fixed=0
@@ -2829,6 +2837,7 @@ cmd_scan() {
         --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" \
         --arg kind "$kind" --arg dser "$dser" --argjson stale "$stale" \
         --argjson fixed "$fixed" --arg agent "$agent" \
+        --arg agent_enrolled "$agent_enrolled" \
         --arg mmodel "$mmodel" --arg aby "$aby" \
         --argjson isgw "$( [ -n "$SCAN_GATEWAY" ] && [ "$ip" = "$SCAN_GATEWAY" ] && echo 1 || echo 0 )" '
         def s: if . == "" then null else . end;
@@ -2848,6 +2857,8 @@ cmd_scan() {
           agent:            (if $agent == "" then null
                              else { version: (if $agent == "?" then null
                                               else $agent end),
+                                    enrolled: (if $agent_enrolled == "" then null
+                                               else $agent_enrolled == "true" end),
                                     model:        ($mmodel | s),
                                     discovered_by: ($aby | s) } end),
           # 這個網段的閘道器。標出來是因為它每次都會出現，而且絕對不是測試機
@@ -2888,9 +2899,9 @@ cmd_scan() {
     "$(pad "agent" 7)" "$(pad "身分" 12)" "廠商"
   printf '  %s\n' "$(printf '─%.0s' $(seq 1 68))"
 
-  local ip mac vendor rnd adb agent prof v_txt v_col a_txt a_col p_txt g_txt g_col
+  local ip mac vendor rnd adb agent agent_enrolled prof v_txt v_col a_txt a_col p_txt g_txt g_col
   local agent_n=0
-  while IFS='|' read -r ip mac vendor rnd adb agent; do
+  while IFS='|' read -r ip mac vendor rnd adb agent agent_enrolled; do
     [ -n "$ip" ] || continue
 
     if [ "$rnd" -eq 1 ]; then

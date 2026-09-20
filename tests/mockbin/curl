@@ -27,6 +27,10 @@ f="$S/agent_${ip}_${port}.json"
 
 case "$path" in
   */hangar/v1/hello)
+    if [ -f "$S/agent_omit_enrolled" ]; then
+      printf '{"schema":1,"agent":"hangar-agent","version":"0.1.0-mock"}\n'
+      exit 0
+    fi
     enrolled=true
     [ -f "$S/agent_not_enrolled" ] && enrolled=false
     printf '{"schema":1,"agent":"hangar-agent","version":"0.1.0-mock","enrolled":%s}\n' "$enrolled"

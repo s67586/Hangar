@@ -45,7 +45,7 @@ ARP
 JSON
 }
 
-echo "=== C1. hangar enroll：那唯一一次 USB ==="
+echo "=== C1. hangar enroll：透過 USB 或網路 ADB 安裝 ==="
 env_one
 out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"
 check "沒有 APK 要講清楚" "找不到 agent 的 APK" "$out"
@@ -55,6 +55,7 @@ env_one
 : > "$MOCK_STATE/fake.apk"
 out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"
 check "裝了 APK"            "install .*fake.apk" "$(cat "$MOCK_STATE/adb_log")"
+check "用 profile 的網路 ADB serial 遠端安裝" "192.168.1.77:5555 install" "$(cat "$MOCK_STATE/adb_log")"
 check "授予了 WRITE_SECURE_SETTINGS" "WRITE_SECURE_SETTINGS" "$(cat "$MOCK_STATE/adb_log")"
 check "發了入伍廣播"        "com.hangar.agent/.EnrollReceiver" "$(cat "$MOCK_STATE/adb_log")"
 check "說入伍完成"          "入伍完成" "$out"
@@ -64,6 +65,7 @@ assert "profile 記下埠"     "5599" "$(pfield work AGENT_PORT)"
 assert "序號也記下來了"     "PIX0000001" "$(pfield work DEVICE_SERIAL)"
 # 廣播帶出去的序號要跟 profile 一致 —— 那是 hub 合併三份資料的主鍵
 assert "廣播帶的序號跟 profile 同一個" "PIX0000001" "$(cat "$MOCK_STATE/agent_serial")"
+assert "廣播帶的名字跟 profile 同一個" "work" "$(cat "$MOCK_STATE/agent_name")"
 # 每次入伍都要是新的一組，不能寫死
 t1="$(pfield work AGENT_TOKEN)"
 env_one; : > "$MOCK_STATE/fake.apk"
@@ -131,7 +133,7 @@ assert "沒入伍的是 null"     "null" "$(q '.devices[0].agent' "$out")"
 echo "=== C6. scan 探得到 agent ==="
 env_one
 out="$("$PM" scan --json 2>/dev/null)"
-assert "schema 往上加了"     "6" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "7" "$(q '.schema' "$out")"
 assert "有 agent 的標出版本" "0.1.0-mock" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
 : > "$MOCK_STATE/curl_log"        # 上一次掃描寫過了，要先清掉才問得出這一題

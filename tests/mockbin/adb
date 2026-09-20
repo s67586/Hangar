@@ -54,7 +54,7 @@ case "$1" in
       install)
         # 最後一個參數是 APK 路徑
         for a in "$@"; do apk="$a"; done
-        echo "install $apk" >> "$S/adb_log"
+        echo "$ser install $apk" >> "$S/adb_log"
         if [ -f "$S/install_fail" ]; then echo "adb: failed to install $apk"; exit 1; fi
         echo "Performing Streamed Install"; echo "Success"
         ;;
@@ -68,21 +68,23 @@ case "$1" in
           am)
             echo "am $*" >> "$S/adb_log"
             # 入伍廣播：把 token 寫下來，假 agent 之後就認這一組
-            tok=""; ser_in=""
+            tok=""; ser_in=""; name_in=""
             prev=""
             for a in "$@"; do
               case "$prev" in
                 token) tok="$a" ;;
                 serial) ser_in="$a" ;;
+                name) name_in="$a" ;;
               esac
               prev=""
-              case "$a" in token) prev=token ;; serial) prev=serial ;; esac
+              case "$a" in token) prev=token ;; serial) prev=serial ;; name) prev=name ;; esac
             done
             if [ -f "$S/enroll_already" ]; then
               echo 'Broadcast completed: result=1, data="already_enrolled"'; exit 0
             fi
             [ -n "$tok" ] && printf '%s' "$tok" > "$S/agent_token"
             [ -n "$ser_in" ] && printf '%s' "$ser_in" > "$S/agent_serial"
+            [ -n "$name_in" ] && printf '%s' "$name_in" > "$S/agent_name"
             echo 'Broadcast completed: result=0, data="enrolled"'
             exit 0 ;;
         esac

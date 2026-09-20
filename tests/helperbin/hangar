@@ -12,6 +12,16 @@ case "${1:-}" in
     [ -f "$MOCK_STATE/list_fail" ] && { echo " xx 假裝壞掉了" >&2; exit 1; }
     cat "$MOCK_STATE/list_json"
     ;;
+  enroll)
+    name=""
+    [ "${2:-}" = "-p" ] && name="${3:-}"
+    if [ -f "$MOCK_STATE/enroll_fail" ]; then
+      printf '\033[31m xx \033[0m agent 入伍失敗\n' >&2
+      exit 1
+    fi
+    printf '==> 1/5 安裝 agent\n'
+    printf ' ok  入伍完成（%s）\n' "$name"
+    ;;
   -p)
     name="${2:-}"
     if [ -f "$MOCK_STATE/fail_$name" ]; then

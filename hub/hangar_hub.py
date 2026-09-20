@@ -216,7 +216,7 @@ def merge(list_data, scan_data):
                 # 掃到一支 agent 卻沒有對應的 profile：那台裝過 agent 但這台
                 # hub 沒有它的 token。看得到、問不出細節。
                 "agent": ({"reachable": True, "version": (h.get("agent") or {}).get("version"),
-                           "enrolled": None} if h.get("agent") else None),
+                           "enrolled": (h.get("agent") or {}).get("enrolled")} if h.get("agent") else None),
                 # 這個網段的閘道器。每次掃描都會出現，標出來才不用每次重新猜
                 "is_gateway": bool(h.get("is_gateway")),
                 "sources": ["scan"], "errors": [],
@@ -232,13 +232,21 @@ def merge(list_data, scan_data):
         entry["lan_ip"] = h.get("ip")
         entry["profile_ip_stale"] = bool(h.get("profile_ip_stale"))
         entry["is_gateway"] = bool(h.get("is_gateway"))
-        if h.get("agent") and not (entry.get("agent") or {}).get("reachable"):
+        scan_agent = h.get("agent") or {}
+        current_agent = entry.get("agent") or {}
+        if h.get("agent") and not current_agent.get("reachable"):
             # list 那邊沒問到（沒 token 或沒帶 --probe），但掃描看到它在聽
             entry["agent"] = {"reachable": True,
-                              "version": (h.get("agent") or {}).get("version"),
-                              "enrolled": (entry.get("agent") or {}).get("enrolled")}
+                              "version": scan_agent.get("version"),
+                              "enrolled": scan_agent.get("enrolled")}
             if entry["state"] in ("no_adb", "offline"):
                 entry["state"] = "agent_only"
+        elif (h.get("agent") and current_agent.get("reachable")
+              and current_agent.get("enrolled") is None
+              and "enrolled" in scan_agent):
+            # 舊版 list/probe 可能只知道 agent 可達，掃描的 hello 若帶出 enrolled，
+            # 用它補齊狀態；已有明確值時仍以 profile token 的 probe 為準。
+            current_agent["enrolled"] = scan_agent.get("enrolled")
         if "scan" not in entry["sources"]:
             entry["sources"].append("scan")
 
@@ -443,6 +451,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "%s; charset=utf-8" % kind)
         self.send_header("Content-Length", str(len(body)))
+        # 裝置牆的 HTML 內含 inline JavaScript；若瀏覽器沿用舊頁面，新增的
+        # 註冊按鈕可能看得到但事件處理器仍是舊版，表面上就像按了沒反應。
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

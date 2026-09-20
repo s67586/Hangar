@@ -39,7 +39,7 @@ hub_env() {
 ] }
 JSON
   cat > "$MOCK_STATE/scan_json" <<'JSON'
-{ "schema": 6, "subnet": "192.168.1.0/24", "hosts": [
+{ "schema": 7, "subnet": "192.168.1.0/24", "hosts": [
   { "ip": "192.168.1.1", "mac": "3c:37:86:aa:bb:cc", "vendor": "Netgear",
     "mac_randomized": false, "adb_port": "closed", "profile": null,
     "matched_by": null, "device_serial": null,
@@ -48,7 +48,8 @@ JSON
   { "ip": "192.168.1.77", "mac": "a4:03:e7:01:02:03", "vendor": "宏達電子",
     "mac_randomized": false, "adb_port": "open", "profile": "work",
     "matched_by": "mac", "device_serial": "R58M12345AB",
-    "profile_ip_stale": false, "profile_ip_fixed": false },
+    "profile_ip_stale": false, "profile_ip_fixed": false,
+    "agent": { "version": "0.1.0", "enrolled": false } },
   { "ip": "192.168.1.90", "mac": "de:ad:be:ef:00:01", "vendor": null,
     "mac_randomized": true, "adb_port": "closed", "profile": null,
     "matched_by": null, "device_serial": null,
@@ -80,6 +81,10 @@ hub_stop() { [ -n "${HUB_PID:-}" ] && kill "$HUB_PID" 2>/dev/null; wait "$HUB_PI
 get() { python3 -c '
 import sys, urllib.request
 sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=5).read().decode())' "$1" 2>/dev/null; }
+get_headers() { python3 -c '
+import sys, urllib.request
+r = urllib.request.urlopen(sys.argv[1], timeout=5)
+sys.stdout.write("\\n".join("%s: %s" % x for x in r.headers.items()))' "$1" 2>/dev/null; }
 
 get_devices() {
   local i out=""
@@ -126,6 +131,11 @@ fi
 echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
 assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
+check  "首頁不快取舊版按鈕事件" "Cache-Control: no-store" "$(get_headers "$HUB_URL/")"
+check  "首頁含註冊 handler" "async function enroll" "$(get "$HUB_URL/")"
+check  "註冊中只保留一顆按鈕" 'st.action === "enroll" && st.busy' "$(get "$HUB_URL/")"
+check  "agent 無回應且 adb ready 可補裝" \
+  'd.agent.reachable === false && d.agent.enrolled === null' "$(get "$HUB_URL/")"
 out="$(get_devices)"
 assert "api 有 schema"    "6" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
@@ -150,6 +160,8 @@ assert "scan 那邊的 MAC 也在" "a4:03:e7:01:02:03" \
   "$(q '[y["mac"] for y in d["devices"] if y["name"]=="work"][0]' "$out")"
 assert "5555 的狀態併進來了" "open" \
   "$(q '[y["adb_port"] for y in d["devices"] if y["name"]=="work"][0]' "$out")"
+assert "scan 的未入伍狀態併進來了" "False" \
+  "$(q '[y["agent"]["enrolled"] for y in d["devices"] if y["name"]=="work"][0]' "$out")"
 
 echo "=== H3. 沒設定過的手機也要上牆 ==="
 # 裝置牆存在的理由就是這個：沒開偵錯的手機 adb 碰不到，但它確實在區網上

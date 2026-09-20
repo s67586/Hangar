@@ -29,7 +29,7 @@
 adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 ```
 
-每支測試機「入伍」時插一次 USB 裝上 agent，之後它就能常駐回報電量、
+每支測試機「入伍」時透過一次已授權的 ADB（USB 或網路）裝上 agent，之後它就能常駐回報電量、
 在區網廣播自己、並**雙向**切換偵錯開關。四個需求一次解決：
 
 | | 沒有 agent | 有 agent |
@@ -62,7 +62,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | **已完成**（電腦端兩條路都有測試；手機端的 `NsdManager` 廣播還沒在實機上看過 —— 見待確認清單 B3）|
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
 | M3d | 響鈴：牆上按一下，那支手機響給你聽 —— 用來**識別**，不是用來找失聯的機器。只依賴 M3a，不卡 M3b／M3c | 做法已定（見「[響鈴](#響鈴在一排手機裡認出是哪一支)」），還沒寫 |
-| M3e | 反向識別：入伍時把 profile 名字也寫進手機，agent 那頁大字顯示。**協定不動**，最小的一條 | 做法已定（見「[反向識別](#反向識別m3e入伍時多寫一個名字)」），還沒寫 |
+| M3e | 反向識別：入伍時把 profile 名字也寫進手機，agent 那頁大字顯示。**協定不動**，最小的一條 | **已完成**（見「[反向識別](#反向識別m3e入伍時多寫一個名字)」） |
 | M4 | 網頁切換偵錯（RD 開 / QA 關） | 需要 M3 + 加固實測結果 |
 | M5 | iOS 唯讀 | |
 
@@ -96,13 +96,13 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.2.0` | `hangar:18` |
-| `list` / `status --json` | schema **3** | `JSON_SCHEMA`，`hangar:2074` |
-| `scan --json` | schema **5** | `SCAN_SCHEMA`，`hangar:162` |
+| `list` / `status --json` | schema **3** | `JSON_SCHEMA`，`hangar:2208` |
+| `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:178` |
 | hub `/api/devices` | schema **6** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
 | agent 協定 | schema **1**，版本 `0.1.0` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/adb`（一律 501） | 5599/tcp |
-| helper 端點 | `POST /mirror`（只綁 127.0.0.1） | `API_SCHEMA` **1**，`helper/hangar_helper.py:66` |
+| helper 端點 | `POST /mirror`、`POST /enroll`（只綁 127.0.0.1） | `API_SCHEMA` **2**，`helper/hangar_helper.py:68` |
 
 `POST /api/refresh` 是 hub 目前唯一的非 GET 端點。它**不會動手機**，只是把輪詢
 提早叫醒，跑的還是同樣那兩個唯讀的 `hangar` 指令 —— 「唯讀」在這份文件裡一律
@@ -232,7 +232,7 @@ agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價
 - 沒有 `mac`、沒有 `authorized_hosts` —— 前者拿不到，後者是 `/data/misc/adb/adb_keys`，
   一般 app 讀不到（見上面「幾個要記住的現實限制」）。
 
-### 入伍（enroll）：那唯一一次 USB
+### 入伍（enroll）：一次性 ADB（USB 或網路）
 
 ```bash
 hangar enroll [-p 手機] [--apk agent.apk]
@@ -246,10 +246,11 @@ hangar enroll [-p 手機] [--apk agent.apk]
 2. `adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS`
 3. `DEVICE_SERIAL=$(adb shell getprop ro.serialno)` —— 這一步 `hangar setup` 現在就在做
 4. 電腦端產生一組隨機 token（32 bytes hex）
-5. 把序號與 token 交給 agent：
+5. 把 profile 名字、序號與 token 交給 agent：
    ```bash
    adb shell am broadcast -n com.hangar.agent/.EnrollReceiver \
-     -a com.hangar.agent.ENROLL --es serial "$DEVICE_SERIAL" --es token "$TOKEN"
+     -a com.hangar.agent.ENROLL --es serial "$DEVICE_SERIAL" \
+     --es token "$TOKEN" --es name "$PROFILE"
    ```
    指定 component（`-n`）是因為 Android 8+ 擋隱式廣播。
 6. 把 `AGENT_TOKEN` / `AGENT_PORT` 寫進 profile
@@ -442,7 +443,7 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 
 | | 內容 | 狀態 |
 |---|---|---|
-| 反向識別 | agent 那頁狀態畫面把 profile 名字大字顯示出來（`MainActivity` 現在只有序號） | **M3e**，見「[反向識別](#反向識別m3e入伍時多寫一個名字)」 |
+| 反向識別 | agent 那頁狀態畫面把 profile 名字大字顯示出來，序號放在下方 | **M3e**，已完成，見「[反向識別](#反向識別m3e入伍時多寫一個名字)」 |
 | 位置標籤 | profile 多一個 `LOCATION`（「三樓 A 櫃 第二層」），牆上顯示 | 還沒排。**對失聯的手機一樣有效** —— 「找不到手機」的情境裡，這條的涵蓋率恐怕比響鈴還高 |
 
 三個一起才算把「找不到手機」解完。
@@ -463,10 +464,10 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 
 ## 反向識別（M3e）：入伍時多寫一個名字
 
-> **做法已定，還沒寫。** 整個 M3 裡最小的一條 —— 沒有新端點、協定號碼不用動、
+> **已完成。** 整個 M3 裡最小的一條 —— 沒有新端點、協定號碼不用動、
 > 手機端多一個字串欄位而已。
 
-手上拿著一支手機，想知道「這是牆上哪一張卡」，現在只能看 `MainActivity` 上的
+手上拿著一支手機，想知道「這是牆上哪一張卡」，入伍前只能看 `MainActivity` 上的
 序號再回電腦比對。入伍那一刻電腦端本來就知道 profile 叫什麼，順手寫進去就好。
 
 | 元件 | 動到的地方 |
@@ -883,6 +884,7 @@ hangar/
     ├── test_helper.sh    # helper：三道鎖、投影起得來／起不來的回報、序號對名字
     ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
     ├── test_agent_client.sh     # 電腦這一側：enroll、改問 agent、掃描探 5599
+    ├── test_versions.sh         # ROADMAP 現況速查與程式宣告的版本／schema 一致性
     ├── test_manual.sh    # 手冊：Markdown 有沒有轉乾淨、內容有沒有掉、印記可不可決定
     ├── mockbin/          # 假的 adb / tailscale / scrcpy / nc / curl / arp / ip / ping
     │                     #   / route / avahi-browse / dns-sd
@@ -978,7 +980,8 @@ CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是�
 | `test_hub.sh` | hub 起得來並印出網址、`/` 與 `/healthz` 與 `/api/devices`、兩份資料合成同一張卡（序號當主鍵）、沒設定過的手機也上牆、`no_adb` 與 `offline` 要分開、低電量標記、要注意的排前面、單支手機的錯誤留在卡片上、**輪詢絕不帶 `--fix-ip` 也不跑任何會寫入的指令**、hangar 壞掉時 hub 不跟著死、靜態檔不准往上跳、`POST /api/refresh` 的節流（剛問過回 429 並說還要等幾秒）、`GET /api/refresh` 是 404、不認得的 `what` 回 400 |
 | `test_agent_protocol.sh` | `/hello` 不需要 token 也不吐序號、`/status` 要 token、status 的每個欄位型別（電量是 0-100 整數、充電狀態用小寫那一套、`wifi_enabled` 可以是 null 但不能用 false 混充、拿不到的東西回 null 不塞假值、協定裡根本沒有 MAC 這一欄）、501 與 404 要分得出來、沒入伍是 409 不是 401。**帶 `HANGAR_AGENT_URL` 就直接打真的手機** |
 | `test_manual.sh` | `tools/make_manual.py`：Markdown 轉乾淨了沒（讀者不該看到 `**這樣**` 或一整列 `| --- |`）、區段與表格有沒有整段掉、README 裡的錨點連結在手冊裡對不對得上、同一份 README 跑兩次印記要一模一樣（`--check` 才有意義） |
-| `test_agent_client.sh` | `hangar enroll` 的四個步驟與三種失敗（沒 APK、已入伍過、安裝失敗）、每次入伍都是新 token、廣播帶的序號跟 profile 一致、adb 通時用 adb 的資料、**adb 不通時改問 agent 拿電量與機型**、入伍過但 agent 死掉看得出來、掃描只對探得到 5599 的發 HTTP、缺 `curl` 時安靜降級但入伍要明講 |
+| `test_agent_client.sh` | `hangar enroll` 的四個步驟與三種失敗（沒 APK、已入伍過、安裝失敗）、每次入伍都是新 token、廣播帶的序號與 profile 名字都一致、adb 通時用 adb 的資料、**adb 不通時改問 agent 拿電量與機型**、入伍過但 agent 死掉看得出來、掃描只對探得到 5599 的發 HTTP、缺 `curl` 時安靜降級但入伍要明講 |
+| `test_versions.sh` | ROADMAP「現況速查」裡的 hangar／hub／helper／agent 版本與 schema 對上程式宣告、行號參照沒有漂移、Android 與 fake agent 的協定 schema 一致 |
 
 測試裡所有的 `pgrep` / `pkill` 都限定在 mock 使用的 `100.101.102.x`，
 不會誤傷你真正在跑的 scrcpy。
