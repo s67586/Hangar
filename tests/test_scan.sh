@@ -471,6 +471,22 @@ out="$("$PM" scan --json 2>/dev/null)"
 assert "別的網段的閘道不算" "0" \
   "$(q '[.hosts[] | select(.is_gateway)] | length' "$out")"
 
+echo "=== S18. 認不出的那幾台要把話講完（M2c 的文案）==="
+# 「掃不到我的手機」這個提問就算多了 USB 來源也還是會出現：手機不在同一個
+# Wi-Fi、或 USB 插在別人電腦上時，它本來就該是匿名的。使用者手上握著
+# 「我明明都開好了」這個反證，不把話講完他會往錯的方向查很久。
+lan_env
+out="$("$PM" scan 2>/dev/null)"
+check "說得出有幾台認不出"     "認不出是什麼" "$out"
+check "點名可能是還沒 setup 的 Android" "還沒 hangar setup 的 Android" "$out"
+check "講明偵錯開了也一樣"     "偵錯開得再正確" "$out"
+
+# 5555 開著的不算匿名 —— 那台認得出是 Android，而且進得去
+lan_env
+printf '192.168.1.5\n192.168.1.77\n192.168.1.90\n' > "$MOCK_STATE/nc_open_ips"
+out="$("$PM" scan 2>/dev/null)"
+nocheck "全都進得去時不要亂提醒" "認不出是什麼" "$out"
+
 echo "=== S17. mDNS：agent 自己報名，找不到就退回逐台探 5599 ==="
 # mDNS 是加速器不是必要條件。這一節要鎖住兩件事：報得到名時省下探埠而且直接拿到
 # 序號；完全沒有 mDNS 時行為跟以前一模一樣（只是慢）。

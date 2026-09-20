@@ -153,7 +153,7 @@
 
   <section class="zone muted" id="zone-others" hidden>
     <h2 class="zone-h" id="h-others"></h2>
-    <p class="zone-note">這些不在管理範圍內 —— 掃描看得到它們在這個網段上，但沒有對應的設定。</p>
+    <p class="zone-note" id="others-note"></p>
     <div class="grid" id="grid-others"></div>
   </section>
 
@@ -488,7 +488,20 @@ function adbRow(d) {
 }
 
 function castRow(d) {
-  // 沒有 profile 的卡沒有東西可以投或寫入：adb 根本碰不到它們。
+  // 沒有 profile 但 USB 接著的：這是唯一「碰得到、卻還沒有名字」的卡。
+  //
+  // 這裡刻意不給「註冊 agent」—— helper 的 /enroll 吃的是 profile 名稱，而這
+  // 支手機還沒有 profile。它真正缺的第一步是 hangar setup，而 setup 是互動的
+  // （要選裝置、可能要配對碼），不是 helper 代跑得了的。所以給指令讓人複製，
+  // 不假裝有一顆按得完的按鈕。
+  if (!d.name && d.usb && d.usb.adb_state === "device") {
+    const st = says.get(d.key) || {};
+    return `<div class="cast-row">
+      <button class="cast" type="button" data-copy-setup="${esc(d.key)}">複製 setup 指令</button>
+      ${actionSaid(st)}
+    </div>`;
+  }
+  // 其餘沒有 profile 的卡沒有東西可以投或寫入：adb 根本碰不到它們。
   if (!d.name) return "";
   const st = says.get(d.key) || {};
   const said = actionSaid(st);
@@ -530,6 +543,20 @@ function copyText(t) {
     ta.remove();
     ok ? res() : rej(new Error("這個瀏覽器不讓網頁複製"));
   });
+}
+
+async function copySetupCmd(key) {
+  const d = byKey.get(key);
+  if (!d) return;
+  // --name 用機型湊一個好認的預設值；使用者當然可以自己改
+  const guess = (d.model || "phone").toLowerCase().replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "phone";
+  const cmd = `hangar setup --name ${guess}`;
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了：${cmd}（要在插著這支手機的那台電腦上跑）` }; }
+  catch (e) { st = { msg: cmd, err: true }; }
+  says.set(key, st);
+  render();
 }
 
 async function copyCmd(key) {
@@ -819,6 +846,7 @@ document.addEventListener("click", (ev) => {
     ? target.closest("button.cast, button.enroll, button.ring, button.adb, button.update-agent") : null;
   if (!b || b.disabled) return;
   if (b.dataset.copy) copyCmd(b.dataset.copy);
+  else if (b.dataset.copySetup) copySetupCmd(b.dataset.copySetup);
   else if (b.dataset.copyEnroll) copyEnrollCmd(b.dataset.copyEnroll);
   else if (b.dataset.copyRing) copyRingCmd(b.dataset.copyRing);
   else if (b.dataset.copyUpdateAgent) copyUpdateAgentCmd(b.dataset.copyUpdateAgent);
@@ -842,7 +870,8 @@ function card(d) {
   } else if (d.is_gateway) {
     name = `<span class="unnamed">閘道器</span> <span class="meta mono">${esc(d.ip || "")}</span>`;
   } else {
-    name = `<span class="unnamed">${esc(d.vendor || d.ip || d.mac || "?")}</span>`;
+    // USB 那一份的卡既沒有 IP 也沒有 MAC —— 它能講的是機型與序號
+    name = `<span class="unnamed">${esc(d.model || d.vendor || d.ip || d.mac || d.device_serial || "?")}</span>`;
   }
 
   let rows = "";
@@ -860,6 +889,11 @@ function card(d) {
   rows += row("序號", d.device_serial, "mono");
   rows += row("連線方式", d.transport);
   rows += row("5555", d.adb_port === "open" ? "開著" : d.adb_port === "closed" ? "關著" : null);
+  if (d.usb) {
+    const USB_ZH = { device: "接著（已授權）", unauthorized: "接著（未授權）",
+                     offline: "接著（offline）" };
+    rows += row("USB", USB_ZH[d.usb.adb_state] || `接著（${d.usb.adb_state}）`);
+  }
   if (d.agent) {
     const agentText = d.agent.reachable
       ? (d.agent.version || "有回應") : "沒有回應";
@@ -889,6 +923,15 @@ function card(d) {
   if (d.state === "agent_only")
     notes.push("adb 進不去，這些資料是手機裡的 agent 回報的");
   if (d.profile_ip_stale) notes.push("profile 指著舊 IP（hangar scan --fix-ip 可以修）");
+  // 使用者一定會踩的認知落差：「開了偵錯而且授權了」跟「牆上看得見」是兩件
+  // 不相干的事。授權的是 USB 那把金鑰，掃描探的是 TCP 5555，而 5555 要
+  // hangar setup 才會開。不講的話他手上握著「我明明都開好了」會查很久。
+  if (d.usb && d.usb.adb_state === "unauthorized")
+    notes.push(`這支手機插在 ${(latest && latest.host) || "跑 hub 的那台電腦"} 上但沒有授權 —— 要有人到手機上按「一律允許透過這台電腦」`);
+  else if (d.usb && !d.name)
+    notes.push(`只有 USB 看得到它（插在 ${(latest && latest.host) || "跑 hub 的那台電腦"} 上）。還沒 hangar setup，所以 5555 沒開 —— 區網掃描那一份認不出它，開了偵錯也一樣`);
+  else if (d.sources && d.sources.includes("usb") && d.sources.length === 1 && d.name)
+    notes.push("這一輪只有 USB 那份看得到它 —— 網路上沒回應");
   // 這個欄位是 hangar 在 hub 那台電腦上 pgrep 出來的，不是「有人在投影」——
   // 同事在自己電腦上按的投影，這裡看不到。話講成「手機的畫面開在某台電腦上」
   // 是因為只寫機器名的話，讀的人得自己推敲那個名字跟這支手機是什麼關係。
@@ -1000,8 +1043,18 @@ function paint() {
   document.getElementById("grid").innerHTML = mine.map(card).join("");
   document.getElementById("zone-mine").hidden = mine.length === 0;
 
+  // 這一區的標題與說明要照實際來源改口：USB 那一份的卡不在網段上，
+  // 說成「掃描看得到它們在這個網段上」是錯的（而且正好錯在最會誤導的地方）。
+  const usbOnly = others.filter(d => (d.sources || []).includes("usb"));
+  const scanned = others.filter(d => (d.sources || []).includes("scan"));
   document.getElementById("h-others").innerHTML =
-    `區網上還有 <b>${others.length}</b> 台`;
+    usbOnly.length && !scanned.length
+      ? `USB 上還有 <b>${others.length}</b> 台`
+      : `還沒納管的 <b>${others.length}</b> 台`;
+  document.getElementById("others-note").textContent =
+    [scanned.length ? "掃描看得到它們在這個網段上" : "",
+     usbOnly.length ? `有 ${usbOnly.length} 台是插在 ${(latest && latest.host) || "hub 那台電腦"} 的 USB 上（還沒 setup，所以掃描認不出來）` : ""]
+      .filter(Boolean).join("；") + "，但都還沒有對應的設定。";
   document.getElementById("grid-others").innerHTML = others.map(card).join("");
   document.getElementById("zone-others").hidden = others.length === 0;
 

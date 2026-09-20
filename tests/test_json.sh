@@ -283,6 +283,45 @@ check  "那一行被補進檔案了"  'TRANSPORT="tailscale"' \
 assert "不會重複補" "1" \
   "$(grep -c '^TRANSPORT=' "$XDG_CONFIG_HOME/hangar/profiles/oldone.conf")"
 
+echo "=== J11d. hangar usb：裝置牆的第三個來源（M2c）==="
+# 前兩份都看不到「插著 USB、偵錯開了、但還沒 setup」的手機：list 只走 profile，
+# scan 探的是 5555，而 5555 要 adb tcpip 才會開。
+rm -rf "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar"; mkdir -p "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar/profiles"
+printf 'ABC123\tdevice\nBROKEN9\tunauthorized\n100.1.2.3:5555\tdevice\n' \
+  > "$MOCK_STATE/adb_devices"
+out="$("$PM" usb --json 2>/dev/null)"
+printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
+  && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  usb --json 不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
+assert "有自己的 schema"   "1"      "$(q '.schema' "$out")"
+# 網路 adb（host:port）不是 USB —— 混進來的話牆上會多一張假的卡
+assert "只算 USB 那兩支"   "2"      "$(q '.devices | length' "$out")"
+assert "序號問手機拿"      "PIX0000001" "$(q '.devices[0].device_serial' "$out")"
+assert "機型也拿得到"      "Pixel 7 Pro" "$(q '.devices[0].model' "$out")"
+assert "adb_state"         "device" "$(q '.devices[0].adb_state' "$out")"
+
+# unauthorized 是這一份最值錢的一格。問不到 ro.serialno，但 adb 的 USB serial
+# 本來就是硬體序號 —— 不能因為問不到就讓這一列消失。
+assert "未授權那支也在"    "unauthorized" "$(q '.devices[1].adb_state' "$out")"
+assert "退回用 adb serial" "BROKEN9"      "$(q '.devices[1].device_serial' "$out")"
+assert "問不到機型就是 null" "null"       "$(q '.devices[1].model' "$out")"
+
+# 已經設定過的手機要講得出 profile 名字（給人看的；merge 靠的是序號本身）
+printf 'PHONE_IP="192.168.1.5"\nTRANSPORT="lan"\nDEVICE_SERIAL="PIX0000001"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+out="$("$PM" usb --json 2>/dev/null)"
+assert "序號對得上就標出 profile" "work" "$(q '.devices[0].profile' "$out")"
+assert "對不上的仍是 null"        "null" "$(q '.devices[1].profile' "$out")"
+
+# 人類版：那句認知落差的提醒一定要在
+out="$("$PM" usb 2>&1)"
+check "列得出未授權" "未授權" "$out"
+check "講出插著不等於看得見" "插著 USB 不等於牆上看得見" "$out"
+
+printf '' > "$MOCK_STATE/adb_devices"
+out="$("$PM" usb --json 2>/dev/null)"
+assert "沒插東西是空陣列" "0" "$(q '.devices | length' "$out")"
+
 echo "=== J12. 沒裝 tailscale 時，lan profile 仍然要能用 ==="
 # 這一段用 HANGAR_TAILSCALE 指到不存在的路徑來模擬「這台機器沒裝 tailscale」。
 # 不能只靠把 mockbin 從 PATH 拿掉——find_tailscale 有 /Applications 等絕對路徑 fallback。

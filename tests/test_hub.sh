@@ -171,7 +171,7 @@ check  "更新按鈕文字"            "更新agent" "$page"
 # 這一條是整條路的重點：hub 自己永遠不會動手機
 nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "7" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "8" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -337,6 +337,51 @@ assert "MAC 對得上就不另開一張" "1"             "$(m "len(${by_mac})")"
 assert "併進原本那張卡"         "work"          "$(m "${by_mac}[0]['name']")"
 assert "區網位址補上去"         "192.168.0.155" "$(m "${by_mac}[0]['lan_ip']")"
 assert "兩個來源都記著"         "['list', 'scan']" "$(m "${by_mac}[0]['sources']")"
+
+# ---- 第三份來源：USB（M2c）------------------------------------------------
+# 前兩份都看不到「插著 USB、偵錯開了、但還沒 setup」的手機：list 只走 profile，
+# scan 探的是 5555，而 5555 要 adb tcpip 才會開。
+
+usb_only='merge(None, None,
+  {"devices":[{"adb_serial":"ABC123","adb_state":"device",
+               "device_serial":"S9","model":"SM-A346E","profile":None}]})'
+assert "只有 USB 這一份也長得出卡" "1"           "$(m "len(${usb_only})")"
+assert "狀態是 unmanaged"          "unmanaged"   "$(m "${usb_only}[0]['state']")"
+assert "主鍵用序號"                "serial:S9"   "$(m "${usb_only}[0]['key']")"
+assert "機型 USB 問得到"           "SM-A346E"    "$(m "${usb_only}[0]['model']")"
+assert "沒有 IP 也不會爆"          "None"        "$(m "${usb_only}[0]['ip']")"
+assert "來源標 usb"                "['usb']"     "$(m "${usb_only}[0]['sources']")"
+
+# unauthorized 是這一份最值錢的一格：「有人插了手機但沒人去按那個允許」
+# 在這之前查不出來。排序表裡它本來就排第一位。
+usb_unauth='merge(None, None,
+  {"devices":[{"adb_serial":"BROKEN9","adb_state":"unauthorized",
+               "device_serial":"BROKEN9","model":None,"profile":None}]})'
+assert "未授權自己是一種狀態" "unauthorized" "$(m "${usb_unauth}[0]['state']")"
+assert "USB 狀態帶得出來"     "unauthorized" "$(m "${usb_unauth}[0]['usb']['adb_state']")"
+
+# 已經設定過的手機：序號對得上就併回原本那張卡，不另開一張
+usb_merged='merge(
+  {"devices":[{"profile":"work","ip":"100.1.1.1","device_serial":"S1","adb_state":"device"}]},
+  {"hosts":[{"ip":"192.168.1.77","mac":"a4:03:e7:01:02:03","profile":"work",
+             "device_serial":"S1","adb_port":"open"}]},
+  {"devices":[{"adb_serial":"ABC123","adb_state":"device","device_serial":"S1",
+               "model":"Pixel 7 Pro","profile":"work"}]})'
+assert "三份資料仍是一台"     "1"      "$(m "len(${usb_merged})")"
+assert "併進原本那張卡"       "work"   "$(m "${usb_merged}[0]['name']")"
+assert "三個來源都記著"       "['list', 'scan', 'usb']" "$(m "${usb_merged}[0]['sources']")"
+assert "USB 那格也在"         "ABC123" "$(m "${usb_merged}[0]['usb']['adb_serial']")"
+
+# 排序：未授權的那張要排在已設定好的前面（那是需要有人走過去的狀態）
+usb_sort='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device"}]}, None,
+  {"devices":[{"adb_serial":"BROKEN9","adb_state":"unauthorized",
+               "device_serial":"BROKEN9","model":None,"profile":None}]})'
+assert "未授權排前面" "BROKEN9" "$(m "${usb_sort}[0]['device_serial']")"
+
+# 舊的呼叫端（只給兩份）仍然走得通
+assert "usb_data 可以不給" "1" \
+  "$(m 'len(merge({"devices":[{"profile":"work","device_serial":"S1","adb_state":"device"}]}, None))')"
 
 # (3) 大小寫不一樣也要對得上：adb 給小寫，某些系統的 ARP 表給大寫
 mixed='merge(
