@@ -121,6 +121,18 @@ BATT
             echo "Wifi is connected to \"TestNet\""
             echo "WifiInfo: SSID: \"TestNet\", BSSID: e8:26:89:1a:a3:d1, MAC: $mac, IP: /192.168.1.5, Security type: 0"
             ;;
+          ip)
+            # `adb shell ip -4 addr show`。故意同時有行動網路與 Wi-Fi：
+            # device_lan_ip 一定要挑 Wi-Fi 那個，挑到 rmnet 的話這台電腦連不到。
+            echo "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536"
+            echo "    inet 127.0.0.1/8 scope host lo"
+            echo "2: rmnet_data0: <UP,LOWER_UP> mtu 1500"
+            echo "    inet 10.244.13.7/30 scope global rmnet_data0"
+            if [ ! -f "$S/wifi_off" ]; then
+              echo "3: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500"
+              echo "    inet 192.168.1.5/24 brd 192.168.1.255 scope global wlan0"
+            fi
+            ;;
           getprop)
             case "$3" in
               ro.product.model) echo "$m" ;;

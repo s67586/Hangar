@@ -55,21 +55,21 @@ check "給出 setup 指令"       "hangar setup" "$out"
 
 echo "=== R4. setup 在 tcpip 之後會先確保 adb server 活著 ==="
 prep; printf 'USBSERIAL1\tdevice\n' > "$MOCK_STATE/adb_devices"
-"$PM" setup pixel >/dev/null 2>&1
+"$PM" setup --transport tailscale pixel >/dev/null 2>&1
 log="$(cat "$MOCK_STATE/connect_log")"
 check "tcpip 有跑"                "tcpip 5555" "$log"
 check "tcpip 之後有 start-server" "$(printf 'tcpip 5555\nstart-server')" "$log"
 
 echo "=== R5. setup 期間 server 掛掉也能自己救回來 ==="
 prep; printf 'USBSERIAL1\tdevice\n' > "$MOCK_STATE/adb_devices"; echo 1 > "$MOCK_STATE/daemon_down"
-out="$("$PM" setup pixel 2>&1)"; rc=$?
+out="$("$PM" setup --transport tailscale pixel 2>&1)"; rc=$?
 check "setup 仍然完成"        "setup 完成" "$out"
 assert "離開碼 0"             "0" "$rc"
 
 echo "=== R5b. 重開機復原：setup --name <既有 profile> 不該再問一次節點 ==="
 prep; printf 'USBSERIAL1\tdevice\n' > "$MOCK_STATE/adb_devices"
 # profile 已存在（HostName=pixel），非互動執行：會問就會卡住/取消
-out="$("$PM" setup --name pixel < /dev/null 2>&1)"; rc=$?
+out="$("$PM" setup --transport tailscale --name pixel < /dev/null 2>&1)"; rc=$?
 check "沿用既有節點"        "沿用 profile" "$out"
 check "setup 完成"          "setup 完成"   "$out"
 nocheck "沒有跳出節點選單"   "選擇這支手機" "$out"
@@ -79,7 +79,7 @@ assert "離開碼 0"           "0" "$rc"
 echo "=== R5c. profile 不存在時仍然要列出節點讓人選 ==="
 prep; rm -f "$XDG_CONFIG_HOME/hangar/profiles/pixel.conf"
 printf 'USBSERIAL1\tdevice\n' > "$MOCK_STATE/adb_devices"
-out="$(printf '1\n' | "$PM" setup --name brandnew 2>&1)"
+out="$(printf '1\n' | "$PM" setup --transport tailscale --name brandnew 2>&1)"
 check "有列出節點清單"      "tailnet 內的節點" "$out"
 check "setup 完成"          "setup 完成" "$out"
 
@@ -87,7 +87,7 @@ echo "=== R5d. 節點清單含中文名稱時欄位對齊 ==="
 prep; rm -f "$XDG_CONFIG_HOME/hangar/profiles/pixel.conf"
 printf 'USBSERIAL1\tdevice\n' > "$MOCK_STATE/adb_devices"
 echo 1 > "$MOCK_STATE/cjk_peer"
-out="$(printf '1\n' | "$PM" setup --name cjktest 2>&1)"
+out="$(printf '1\n' | "$PM" setup --transport tailscale --name cjktest 2>&1)"
 cols="$(printf '%s\n' "$out" | python3 -c '
 import sys, unicodedata, re
 w = lambda s: sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)

@@ -17,7 +17,7 @@
 #
 set -uo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 ADB_PORT=5555
 # 手機端 agent 聽的埠（見 ROADMAP 的「M3 協定」）
 AGENT_PORT_DEFAULT=5599
@@ -879,7 +879,13 @@ lan_reachability() { # <節點名> <IP>
 #   <b>_resolve_ip <host>         節點名 → IP（找不到 return 1）
 #   <b>_list_candidates           setup 候選清單："<n>|<名稱>|<IP>|<OS>|<線上狀態>"
 
-transport_name() { printf '%s' "${TRANSPORT:-tailscale}"; }
+# 沒有 profile 可依據時的預設連線方式。這個專案以區網為主場，Tailscale 是
+# 「要跨網路時再加上」的選項，所以預設是 lan。
+#
+# 這跟「舊 profile 沒有 TRANSPORT 那一行」是兩件事：那種檔案全是 lan backend
+# 出現以前由 setup 產生的，一律是 tailscale，由 migrate_transport_field 就地
+# 補上那一行 —— 不靠這個預設值去猜，否則等於靜默改掉它們的語意。
+transport_name() { printf '%s' "${TRANSPORT:-lan}"; }
 
 # transport_msg <key> [參數…]
 #
@@ -1281,13 +1287,19 @@ migrate_legacy_dir() {
 }
 
 # 舊版單機設定檔（~/.config/hangar/config）自動搬成 profile
+# 注意呼叫順序：先搬目錄、再把 legacy config 轉成 profile，最後才輪到
+# migrate_transport_field —— 它要看得到剛轉出來的那一份。
 migrate_legacy() {
   migrate_legacy_dir
-  [ -f "$LEGACY_FILE" ] || return 0
+  if [ ! -f "$LEGACY_FILE" ]; then migrate_transport_field; return 0; fi
   local PHONE_HOST="" PHONE_IP=""
   # shellcheck disable=SC1090
   . "$LEGACY_FILE" 2>/dev/null
-  [ -n "${PHONE_IP:-}" ] || { mv "$LEGACY_FILE" "$LEGACY_FILE.bak" 2>/dev/null; return 0; }
+  if [ -z "${PHONE_IP:-}" ]; then
+    mv "$LEGACY_FILE" "$LEGACY_FILE.bak" 2>/dev/null
+    migrate_transport_field
+    return 0
+  fi
   local name; name="$(sanitize_name "${PHONE_HOST:-phone}")"
   [ -n "$name" ] || name="phone"
   mkdir -p "$PROFILE_DIR"
@@ -1302,6 +1314,31 @@ EOF
   [ -f "$DEFAULT_FILE" ] || set_default_profile "$name"
   mv "$LEGACY_FILE" "$LEGACY_FILE.migrated" 2>/dev/null
   warn "舊設定已轉為 profile「${name}」（$PROFILE_DIR/$name.conf）"
+  migrate_transport_field
+}
+
+# 舊 profile 沒有 TRANSPORT 那一行。
+#
+# 這些檔案都是 lan backend 出現以前由 setup 產生的，那時 setup 只做得出
+# tailscale profile。現在預設值是 lan，靠預設值去讀等於把它們靜默改成區網
+# 直連 —— 位址是 Tailscale IP，改判之後連線方式的診斷訊息會整片指錯方向。
+# 所以就地把那一行補進檔案，讓檔案自己講清楚。
+#
+# 寫不進去（唯讀、權限不對）就跳過：load_profile_soft 那邊還有一道同樣結論的
+# 保險絲，少寫一行不會讓任何人連不上手機。
+migrate_transport_field() {
+  local n f
+  while IFS= read -r n <&3; do
+    [ -n "$n" ] || continue
+    f="$(profile_path "$n")"
+    grep -qE '^[[:space:]]*TRANSPORT=' "$f" 2>/dev/null && continue
+    [ -w "$f" ] || continue
+    {
+      printf '%s\n' '# 連線方式（lan / tailscale）—— 升級時自動補上：這份 profile 建立時'
+      printf '%s\n' '# 還沒有 lan backend，setup 只做得出 tailscale。'
+      printf '%s\n' 'TRANSPORT="tailscale"'
+    } >> "$f"
+  done 3< <(list_profiles)
 }
 
 print_profile_table() {
@@ -1380,8 +1417,12 @@ load_profile_soft() {
   AGENT_TOKEN=""; AGENT_PORT=""
   # shellcheck disable=SC1090
   . "$(profile_path "$1")" 2>/dev/null || return 1
-  # TRANSPORT / DEVICE_SERIAL / PHONE_MAC 是後來才加的欄位。舊 profile 沒有這幾行，
-  # 補預設值即可，不需要 migration（跟 migrate_legacy 是不同層級的事）。
+  # DEVICE_SERIAL / PHONE_MAC 是後來才加的欄位，補空值即可。
+  #
+  # TRANSPORT 不一樣：預設值已經翻成 lan 了（見 transport_name），但沒有這一行
+  # 的檔案全是 lan backend 出現以前建的 tailscale profile。這裡**刻意**不跟著
+  # 預設值走 —— 檔案沒講就當 tailscale，維持它原本的語意。正常情況下
+  # migrate_transport_field 已經把那一行補進檔案了，這裡是它寫不進去時的保險絲。
   TRANSPORT="${TRANSPORT:-tailscale}"
   DEVICE_SERIAL="${DEVICE_SERIAL:-}"
   PHONE_MAC="${PHONE_MAC:-}"
@@ -1404,8 +1445,8 @@ save_profile() { # [--quiet] — 把目前的 $PROFILE / $PHONE_* / $TRANSPORT /
 # hangar profile「${PROFILE}」— 由 \`hangar setup\` 產生於 $(date '+%Y-%m-%d %H:%M:%S')
 PHONE_HOST="$PHONE_HOST"
 PHONE_IP="$PHONE_IP"
-# 連線方式（tailscale / lan）
-TRANSPORT="${TRANSPORT:-tailscale}"
+# 連線方式（lan / tailscale）
+TRANSPORT="${TRANSPORT:-lan}"
 # 硬體序號 —— 跨 IP、跨連線方式都不會變，是這支手機的穩定識別碼
 DEVICE_SERIAL="${DEVICE_SERIAL:-}"
 # 區網 MAC —— 由 hangar scan 第一次用 IP 對上時記起來，之後手機換 IP 也認得出來
@@ -1803,30 +1844,155 @@ pick_usb_serial() {
   done
 }
 
+is_ipv4() { # 長得像 IPv4 就 return 0
+  printf '%s' "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+}
+
+# 問手機：它在**這台電腦的網段上**是哪個位址。
+#
+# 刻意不用 `adb shell ip route get`：手機開著行動網路時那條路是 rmnet，回答的
+# 會是 4G 的位址，而那個位址在這台電腦上根本連不到 —— 寫進 profile 之後每次
+# 投影都會失敗，而錯誤訊息會指向手機。要的是「跟這台電腦同一個 /24」的那一個，
+# 所以把手機所有 IPv4 都拿回來自己挑。挑不到就是真的不同網段，那要講出來。
+device_lan_ip() { # <adb serial> → 同網段的 IPv4；挑不出來 return 1
+  local out cidr self_pfx ip
+  out="$(run_timeout 8 adb -s "$1" shell ip -4 addr show 2>/dev/null | tr -d '\r')"
+  [ -n "$out" ] || return 1
+  cidr="$(scan_detect_cidr)" || return 1
+  self_pfx="${cidr%% *}"; self_pfx="${self_pfx%.*}"
+  while IFS= read -r ip; do
+    [ -n "$ip" ] || continue
+    case "$ip" in 127.*) continue ;; esac
+    [ "${ip%.*}" = "$self_pfx" ] && { printf '%s' "$ip"; return 0; }
+  done <<< "$(printf '%s' "$out" | sed -n 's|.*inet \([0-9.]*\)/.*|\1|p')"
+  return 1
+}
+
+# setup 第 3 步的 lan 版：決定要把哪個位址寫進 profile。
+#
+# 三條路，由可靠往不可靠排：使用者直接指定 > 問手機自己 > 區網掃描。
+# 中間那條是常態（setup 手上本來就有一條 adb 連線），最後那條是 --existing
+# 走的 —— 那時沒有 adb 可問。
+setup_pick_lan_address() { # <使用者給的 IP 或空> <adb serial 或空>
+  local want="$1" serial="$2" ip rows idx hn hip hos hst pick total
+  PHONE_HOST=""     # 區網沒有「節點名」這種東西
+
+  if [ -n "$want" ]; then
+    is_ipv4 "$want" || die "區網的 setup 要的是手機的 IP（像 192.168.1.50），不是節點名稱：${want}"
+    PHONE_IP="$want"
+    ok "手機位址：${PHONE_IP}（你指定的）"
+    return 0
+  fi
+
+  if [ -n "$serial" ] && ip="$(device_lan_ip "$serial")"; then
+    PHONE_IP="$ip"
+    ok "手機位址：${PHONE_IP}（問手機自己拿的）"
+    return 0
+  fi
+  [ -n "$serial" ] && warn "問不到手機在這個網段上的位址（手機可能不在同一個 Wi-Fi），改用掃描"
+
+  info "掃描區網找這支手機…"
+  rows="$(transport_list_candidates)"
+  [ -n "$rows" ] || die "區網上找不到任何裝置。確認手機連著同一個 Wi-Fi，或直接指定：hangar setup <手機的 IP>"
+  while IFS='|' read -r idx hn hip hos hst; do
+    [ -n "$idx" ] || continue
+    printf '   %2s) %s %s %s %s\n' \
+      "$idx" "$(pad "$hn" 22)" "$(pad "$hip" 16)" "$(pad "$hos" 9)" "$hst"
+  done < <(printf '%s\n' "$rows")
+  total="$(printf '%s\n' "$rows" | grep -c .)"
+  while :; do
+    printf '%s' "  選擇這支手機（1-${total}）＞ " >&2
+    read -r pick || die "已取消"
+    pick="$(printf '%s' "$pick" | tr -d '[:space:]')"
+    if printf '%s' "$pick" | grep -qE '^[0-9]+$' && [ "$pick" -ge 1 ] && [ "$pick" -le "$total" ]; then
+      break
+    fi
+    err "請輸入 1 到 $total 之間的數字"
+  done
+  PHONE_IP="$(printf '%s\n' "$rows" | awk -F'|' -v k="$pick" '$1==k {print $3}')"
+  [ -n "$PHONE_IP" ] || die "無法取得該裝置的位址"
+  ok "手機位址：$PHONE_IP"
+}
+
+# setup 第 3 步的 tailscale 版：從 tailnet 的節點清單裡挑一個。
+setup_pick_tailscale_address() { # <節點名或空>
+  local want_name="$1" peer="" rows idx hn hip hos hst pick total picked_name online
+
+  if [ -n "$want_name" ]; then
+    peer="$(ts_peer "$want_name")"
+    [ -n "$peer" ] || warn "tailnet 裡找不到名為 '$want_name' 的節點"
+  fi
+
+  if [ -z "$peer" ]; then
+    info "tailnet 內的節點："
+    # 走 transport 介面而不是直接呼叫 ts_list_peers —— cmd_* 不碰 ts_*。
+    rows="$(transport_list_candidates)"
+    [ -n "$rows" ] || die "tailnet 裡沒有其他節點，請確認手機端也登入了同一個 tailnet"
+    while IFS='|' read -r idx hn hip hos hst; do
+      [ -n "$idx" ] || continue
+      printf '   %2s) %s %s %s %s\n' \
+        "$idx" "$(pad "$hn" 22)" "$(pad "$hip" 16)" "$(pad "$hos" 9)" "$hst"
+    done < <(printf '%s\n' "$rows")
+    total="$(printf '%s\n' "$rows" | grep -c .)"
+    while :; do
+      printf '%s' "  選擇這支手機對應的節點（1-${total}）＞ " >&2
+      read -r pick || die "已取消"
+      pick="$(printf '%s' "$pick" | tr -d '[:space:]')"
+      if printf '%s' "$pick" | grep -qE '^[0-9]+$' && [ "$pick" -ge 1 ] && [ "$pick" -le "$total" ]; then
+        break
+      fi
+      err "請輸入 1 到 $total 之間的數字"
+    done
+    picked_name="$(printf '%s\n' "$rows" | awk -F'|' -v k="$pick" '$1==k {print $2}')"
+    peer="$(ts_peer "$picked_name")"
+    [ -n "$peer" ] || die "無法取得該節點資訊"
+  fi
+
+  PHONE_HOST="$(printf '%s' "$peer" | jq -r '.HostName // ""')"
+  PHONE_IP="$(printf '%s' "$peer" | jq -r '(.TailscaleIPs // [])[0] // ""')"
+  online="$(printf '%s' "$peer" | jq -r 'if .Online then "yes" else "no" end')"
+
+  [ -n "$PHONE_IP" ] || die "該節點沒有 Tailscale IP"
+  ok "手機節點：$PHONE_HOST ($PHONE_IP)"
+  [ "$online" = "yes" ] || warn "此節點目前在 tailnet 顯示為離線，請確認手機端 Tailscale 已開啟"
+}
+
 cmd_setup() {
-  local want_name="" alias_name="" existing=""
+  local want_name="" alias_name="" existing="" base_serial=""
+  # 區網是主場，所以預設就是 lan；要跨網路才 --transport tailscale。
+  TRANSPORT="lan"
   while [ $# -gt 0 ]; do
     case "$1" in
       --name|-n)  alias_name="${2:-}"; [ -n "$alias_name" ] || die "--name 後面要接名稱"; shift 2 ;;
       --existing) existing=1; shift ;;
+      --transport)   TRANSPORT="${2:-}"; shift 2 ;;
+      --transport=*) TRANSPORT="${1#--transport=}"; shift ;;
+      --lan)         TRANSPORT="lan"; shift ;;
+      --tailscale)   TRANSPORT="tailscale"; shift ;;
       -*)         die "setup 不認得參數：$1" ;;
       *)          want_name="$1"; shift ;;
     esac
   done
+  case "$TRANSPORT" in
+    lan|tailscale) : ;;
+    *) die "--transport 只認得 lan 或 tailscale（給的是：${TRANSPORT:-空的}）" ;;
+  esac
 
   require_deps
-  # setup 目前只支援 tailscale（下面寫死 TRANSPORT="tailscale"），
-  # 所以這裡維持原本「沒有 tailscale 就不用談」的行為。
+  # 這裡才檢查：lan 要 nc、tailscale 要 tailscale CLI。以前無論如何都要
+  # tailscale，所以沒裝的人連區網的手機都設定不了。
   transport_require_deps
   migrate_legacy
 
-  # 重開機後的復原路徑：profile 已經存在就沿用它記錄的節點，不必再選一次
+  # 重開機後的復原路徑：profile 已經存在就沿用它記錄的位址，不必再選一次。
+  # tailscale 記的是節點名，區網記的是 IP —— 兩邊要的東西不一樣。
   if [ -z "$want_name" ] && [ -n "$alias_name" ]; then
-    local known
-    known="$(profile_field "$(sanitize_name "$alias_name")" PHONE_HOST 2>/dev/null)"
+    local known="" known_field="PHONE_HOST"
+    [ "$TRANSPORT" = "lan" ] && known_field="PHONE_IP"
+    known="$(profile_field "$(sanitize_name "$alias_name")" "$known_field" 2>/dev/null)"
     if [ -n "$known" ]; then
       want_name="$known"
-      info "沿用 profile「$(sanitize_name "$alias_name")」記錄的節點：$known"
+      info "沿用 profile「$(sanitize_name "$alias_name")」記錄的位址：$known"
     fi
   fi
 
@@ -1842,7 +2008,6 @@ cmd_setup() {
     info "--existing：略過 USB／配對／adb tcpip，只在這台電腦建立設定"
   else
     # --- 1) 先確保有一條既有的 adb 連線（USB 或無線偵錯）-------------------
-    local base_serial
     base_serial="$(pick_usb_serial)"
 
     if [ -n "$base_serial" ]; then
@@ -1859,7 +2024,7 @@ cmd_setup() {
       warn "沒有偵測到 USB 裝置，改走「無線偵錯」配對流程"
       echo
       printf '%s\n' "  手機上請開啟：設定 → 系統 → 開發人員選項 → 無線偵錯 → 使用配對碼配對裝置"
-      printf '%s\n' "  ${C_DIM}（mDNS 不會穿過 Tailscale，所以這一步必須在同一個 Wi-Fi 下做）${C_0}"
+      printf '%s\n' "  ${C_DIM}（無線偵錯靠 mDNS 廣播，只有同一個 Wi-Fi 下看得到 —— Tailscale 不會穿過去）${C_0}"
       echo
 
       local pair_hp pair_code
@@ -1916,61 +2081,26 @@ cmd_setup() {
     sleep 2
     # 實測 adb tcpip 之後本機 adb server 可能跟著重啟，先確保它活著再繼續
     ensure_adb_server
-    ok "adbd 已重啟並在 0.0.0.0:${ADB_PORT} 監聽（含 Tailscale 介面）"
+    ok "adbd 已重啟並在 0.0.0.0:${ADB_PORT} 監聽（所有介面，含區網與 Tailscale）"
     case "$base_serial" in *:*) adb disconnect "$base_serial" >/dev/null 2>&1 ;; esac
   fi
 
   echo
-  # --- 3) 找出手機的 Tailscale IP ----------------------------------------
-  ts_require_up
-
-  local peer=""
-  if [ -n "$want_name" ]; then
-    peer="$(ts_peer "$want_name")"
-    [ -n "$peer" ] || warn "tailnet 裡找不到名為 '$want_name' 的節點"
+  # --- 3) 決定要寫進 profile 的位址 --------------------------------------
+  #
+  # 兩種連線方式在這裡分岔，其餘的 setup 流程兩邊共用。
+  transport_require_up
+  if [ "$TRANSPORT" = "lan" ]; then
+    setup_pick_lan_address "$want_name" "$base_serial"
+  else
+    setup_pick_tailscale_address "$want_name"
   fi
-
-  if [ -z "$peer" ]; then
-    info "tailnet 內的節點："
-    local rows
-    # 走 transport 介面而不是直接呼叫 ts_list_peers —— cmd_* 不碰 ts_*。
-    # 這裡 TRANSPORT 還沒設定，transport_name 會回 tailscale（預設值）。
-    rows="$(transport_list_candidates)"
-    [ -n "$rows" ] || die "tailnet 裡沒有其他節點，請確認手機端也登入了同一個 tailnet"
-    local idx hn hip hos hst
-    while IFS='|' read -r idx hn hip hos hst; do
-      [ -n "$idx" ] || continue
-      printf '   %2s) %s %s %s %s\n' \
-        "$idx" "$(pad "$hn" 22)" "$(pad "$hip" 16)" "$(pad "$hos" 9)" "$hst"
-    done < <(printf '%s\n' "$rows")
-    local n total
-    total="$(printf '%s\n' "$rows" | grep -c .)"
-    while :; do
-      printf '%s' "  選擇這支手機對應的節點（1-${total}）＞ " >&2
-      read -r n || die "已取消"
-      n="$(printf '%s' "$n" | tr -d '[:space:]')"
-      if printf '%s' "$n" | grep -qE '^[0-9]+$' && [ "$n" -ge 1 ] && [ "$n" -le "$total" ]; then
-        break
-      fi
-      err "請輸入 1 到 $total 之間的數字"
-    done
-    local picked_name
-    picked_name="$(printf '%s\n' "$rows" | awk -F'|' -v k="$n" '$1==k {print $2}')"
-    peer="$(ts_peer "$picked_name")"
-    [ -n "$peer" ] || die "無法取得該節點資訊"
-  fi
-
-  PHONE_HOST="$(printf '%s' "$peer" | jq -r '.HostName // ""')"
-  PHONE_IP="$(printf '%s' "$peer" | jq -r '(.TailscaleIPs // [])[0] // ""')"
-  local online
-  online="$(printf '%s' "$peer" | jq -r 'if .Online then "yes" else "no" end')"
-
-  [ -n "$PHONE_IP" ] || die "該節點沒有 Tailscale IP"
-  ok "手機節點：$PHONE_HOST ($PHONE_IP)"
-  [ "$online" = "yes" ] || warn "此節點目前在 tailnet 顯示為離線，請確認手機端 Tailscale 已開啟"
 
   # --- 4) 決定 profile 名稱（多台手機用這個區分）-------------------------
-  PROFILE="$(sanitize_name "${alias_name:-${PHONE_HOST:-phone}}")"
+  # 區網沒有節點名可以借，用位址最後一段湊一個分辨得出來的預設名（--name 可覆蓋）
+  local auto_name="${PHONE_HOST:-}"
+  [ -n "$auto_name" ] || auto_name="phone-${PHONE_IP##*.}"
+  PROFILE="$(sanitize_name "${alias_name:-$auto_name}")"
   [ -n "$PROFILE" ] || PROFILE="phone"
 
   # 同一個名稱但指向不同 IP → 提醒是覆蓋
@@ -1996,9 +2126,7 @@ cmd_setup() {
   done 3< <(list_profiles)
 
   SERIAL="${PHONE_IP}:${ADB_PORT}"
-  # setup 目前只走 Tailscale 這條路（節點選單、取 IP 都是 tailnet 的概念）。
-  # 之後多一種 setup 流程時，這裡跟著改成該 backend 的名字。
-  TRANSPORT="tailscale"
+  # TRANSPORT 在函式開頭就由 --transport 決定了，這裡不再覆寫。
   save_profile
   info "這支手機的名稱是「${C_B}$PROFILE${C_0}」（之後用 hangar -p $PROFILE 指定）"
 
@@ -2010,7 +2138,7 @@ cmd_setup() {
   fi
 
   echo
-  # --- 5) 用 Tailscale IP 實際驗證一次 ------------------------------------
+  # --- 5) 用剛寫進 profile 的位址實際驗證一次 -----------------------------
   info "驗證：adb connect $SERIAL"
   if ! adb_connect "$SERIAL"; then
     printf '%s\n' "$ADB_CONNECT_OUT"
@@ -2018,11 +2146,18 @@ cmd_setup() {
       err "本機 adb server 起不來（跟 Tailscale 無關）"
       hint "adb kill-server && adb start-server，然後重跑 hangar setup"
     elif [ -n "$existing" ]; then
-      err "透過 Tailscale 連線失敗"
+      err "連不到 ${SERIAL}（$(transport_label)）"
       hint "--existing 假設手機的 ${ADB_PORT} 已經開著。請確認："
       hint "  1. 有另一台電腦跑過 hangar setup，而且手機之後沒有重開機"
-      hint "  2. tailnet ACL 允許「這台電腦」連 ${ADB_PORT} 埠（新電腦要另外加進 src）"
+      if [ "$TRANSPORT" = "lan" ]; then
+        hint "  2. 手機跟這台電腦連著同一個 Wi-Fi，而且 AP 沒有開 client isolation"
+      else
+        hint "  2. tailnet ACL 允許「這台電腦」連 ${ADB_PORT} 埠（新電腦要另外加進 src）"
+      fi
       hint "若手機重開過，要由接得到 USB／同區網的那台電腦重跑 hangar setup"
+    elif [ "$TRANSPORT" = "lan" ]; then
+      err "連不到 ${SERIAL}（區網直連）"
+      hint "檢查：手機是否連著同一個 Wi-Fi、IP 是不是換了（hangar scan 看得出來）"
     else
       err "透過 Tailscale 連線失敗"
       hint "檢查：手機端 Tailscale 是否開著、tailnet ACL 是否允許這台電腦連 ${ADB_PORT} 埠"
@@ -2051,7 +2186,12 @@ cmd_setup() {
   fi
 
   echo
-  ok "setup 完成。之後執行 ${C_B}hangar -p $PROFILE${C_0} 就能投影（手機在 4G/5G 也可以）。"
+  if [ "$TRANSPORT" = "lan" ]; then
+    ok "setup 完成。之後執行 ${C_B}hangar -p $PROFILE${C_0} 就能投影（要在同一個區網）。"
+    hint "手機要拿去別的網路也投得到的話，改走 Tailscale：hangar setup --transport tailscale --name $PROFILE"
+  else
+    ok "setup 完成。之後執行 ${C_B}hangar -p $PROFILE${C_0} 就能投影（手機在 4G/5G 也可以）。"
+  fi
   if [ -n "$existing" ]; then
     warn "注意：手機重開機後 ${ADB_PORT} 會消失（非 root 無法持久化）。"
     hint "這台電腦沒有 USB／同區網的話救不回來，要由接得到手機的那台電腦重跑完整的 hangar setup。"
@@ -3000,16 +3140,18 @@ cmd_reset() {
 
 cmd_help() {
   cat <<EOF
-${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
+${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護與調度
 
 用法：
   hangar [-p 手機] [--hq|--lq] [--screen-on] [-- <scrcpy 參數…>]
                                    投影（預設指令）
   hangar all [--hq|--lq] [--screen-on]
                                    同時投影所有已設定的手機（各開一個視窗）
-  hangar setup [節點名] [--name 別名]
+  hangar setup [手機的 IP] [--name 別名]
                                    初始化一支手機（需同區網或插 USB）
-  hangar setup --existing [節點名] [--name 別名]
+  hangar setup --transport tailscale [節點名] [--name 別名]
+                                   同上，但改走 Tailscale（手機要拿去別的網路時）
+  hangar setup --existing [IP 或節點名] [--name 別名]
                                    手機已由別台電腦設定好，只在這台建立設定
   hangar list                     列出已設定的手機與即時狀態（含電量）
   hangar list --json [--probe]    同上，輸出 JSON（--probe 連路徑/機型/電量一起取，比較慢）
@@ -3037,12 +3179,18 @@ ${C_B}hangar${C_0} v$VERSION — 透過 Tailscale 遠端投影 Android 畫面
   hangar --version                印出版本（-V 也可以）
 
   指令別名：status=st　list=ls　forget=rm
-  adb 也可寫成 debug；--off 是 QA 測試用，agent 會自己排定復原，不必再有人走到手機旁。
+  adb 也可寫成 debug；--off 之後就一直關著，要開回來得有人按 --on（沒有自動復原）。
   -p 的名稱支援唯一前綴（-p wo 等同 -p work）。
+
+連線方式：
+  預設是同一個區網直連（TRANSPORT=lan），只要 adb / scrcpy / nc。
+  手機要拿去別的網段、4G/5G 或 NAT 後面才需要 Tailscale：
+
+    hangar setup --transport tailscale --name work
 
 多台手機：
   每支手機一份 profile，放在 $PROFILE_DIR/<名稱>.conf。
-  名稱預設取自 Tailscale 節點名，可用 --name 自訂：
+  名稱預設取自位址（走 Tailscale 時取節點名），可用 --name 自訂：
 
     hangar setup --name work          # 公司機
     hangar setup --name test          # 測試機

@@ -8,6 +8,9 @@
 
 ## 目標的樣子
 
+- **以區網為主。** 電腦與測試機在同一個網段是預設情境；Tailscale 是「要跨網路
+  時建議加上」的選項，不是前提。這不只是措辭：掃描走 ARP、agent 靠 mDNS 報名，
+  這兩件事本來就只在區網成立，整個裝置牆的前提就是同一個網段
 - 管理**所有**測試手機，不管它有沒有開啟偵錯模式
 - 只要在同一個區網底下，就要在網頁上看得到
 - 網頁上可以**切換偵錯功能**：RD 需要開著才能 build app 進去，
@@ -43,6 +46,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 
 | 項目 | 決定 |
 |---|---|
+| 連線方式的定位 | **區網是主場**（`TRANSPORT` 預設 `lan`，`hangar setup` 預設建區網 profile），Tailscale 是跨網路時的選項（`setup --transport tailscale`） |
 | 手機端 agent | 要裝（一次性 adb 授權，不走 Device Owner） |
 | hub 後端 | Python 3 標準函式庫，零外部相依（跟 hangar 是無相依 bash script 同一個理由） |
 | hub 部署形態 | 一台常駐機器，接在測試機的同一個區網 |
@@ -96,8 +100,8 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 
 | | 現在是 | 在哪裡 |
 |---|---|---|
-| `hangar` 版本 | `1.2.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2297` |
+| `hangar` 版本 | `1.3.0` | `hangar:20` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2437` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | hub `/api/devices` | schema **7** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
 | agent 協定 | schema **3**，版本 `0.1.2` | `agent/app/build.gradle.kts` |
@@ -139,6 +143,28 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 1. **Tailscale 的假設收在一層後面了。** 所有「怎麼連到這支手機」的知識都在
    `transport_*` 介面後面，`cmd_*` 層不直接呼叫 `ts_*`。多一種連線方式是加一個
    backend（目前除了 `tailscale` 還有一個很薄的 `lan`），不是整份 script 重寫。
+
+   **預設值也已經翻到區網那一邊了**（v1.3.0）：`transport_name`（`hangar:888`）
+   沒設就是 `lan`，`cmd_setup` 預設 `TRANSPORT="lan"`，只有 `--transport
+   tailscale` 才會去要求 tailscale CLI —— 在那之前，沒裝 tailscale 的人連區網
+   的手機都設定不了。
+
+   翻預設值真正的風險不在 `transport_name`，在**舊 profile**：它們沒有
+   `TRANSPORT` 那一行，跟著新預設走就等於被靜默改判成區網直連，而它們的
+   `PHONE_IP` 是 Tailscale IP，連線診斷會整片指錯方向。所以沒有讓它們吃預設值
+   —— `migrate_transport_field`（`hangar:1329`）在每次執行時就地把
+   `TRANSPORT="tailscale"` 補進那些檔案，讓檔案自己講清楚；檔案唯讀寫不進去時，
+   `load_profile_soft` 還留著一道同樣結論的保險絲。**「沒寫就是 lan」只適用於
+   完全沒有 profile 的情境，不適用於沒寫那一行的舊檔。**
+
+   `setup` 第 3 步（決定要寫哪個位址）是兩種連線方式唯一分岔的地方：tailscale
+   去 tailnet 挑節點，lan 則問手機自己 —— `device_lan_ip`（`hangar:1857`）把手機
+   所有 IPv4 拿回來，挑落在這台電腦同一個 /24 的那一個。**刻意不用
+   `adb shell ip route get`**：手機開著行動網路時那條路回答的是 4G 位址，寫進
+   profile 之後每次投影都失敗，而錯誤會指向手機。`--existing` 沒有 adb 可問，
+   退回 `transport_list_candidates`（也就是 `hangar scan` 的結果）讓人挑 ——
+   「從掃描結果直接建 profile」那條路因此順帶有了，但只在 setup 裡面，
+   還沒有獨立的指令。
 2. **裝置狀態已經可以被程式讀。** `--json` 是之後 hub 讀 hangar 的介面，
    schema 有變動就把 `schema` 號碼往上加。
 3. **「看得到但管不動」的裝置已經列得出來了。** `scan_*` 這一層跟 profile 無關，
@@ -1087,13 +1113,15 @@ hangar 那邊，不是在 hub 裡另外接一條路。
 |---|---|---|
 | hub 綁 1024 以下埠的權限錯誤 | 以 root 執行時（CI 的容器常是 root） | root 綁得上 80 埠，hub 會正常起來然後一直跑，那個 `$(...)` 永遠等不到它結束 —— 結果是整套測試卡死到逾時，連後面的 suite 都跑不到 |
 | 中文訊息在 `zh_TW.UTF-8` 底下不炸 | 機器上沒裝那個 locale（多數 Linux 只有 `C.utf8`） | bash 只會印一行 setlocale 警告然後退回 C；那行警告還會混進 `2>&1` 的輸出把 JSON 弄壞，看起來像產品壞了 |
+| 裝置牆版號比較的實際行為 | 機器上沒有 `node` | 同一節剩下的檢查是對著網頁原始碼 grep，那只證明得了「`agentNeedsUpdate` 這個函式在」，證明不了它算得對（`0.1.10` 比 `0.1.2` 大就是字串比較會錯的那種）。拿 bash 再實作一次版號比較是在測第二份實作，不是測那一頁 |
+| helper 只綁 `127.0.0.1` | 這台機器找不到自己的區網位址（容器裡常常只有 loopback） | 這一項要證明的是「**換一個位址**就連不進來」。沒有第二個位址可以撥，就只剩對 `127.0.0.1` 連一次 —— 而那正是它有在聽的位址，連得上是預期的，通過了什麼也沒證明 |
 
 CI（`.github/workflows/tests.yml`）跑三條腿，因為上面那張表就是這樣被發現的：
 
 | 腿 | 跑什麼 | 抓得到什麼 |
 |---|---|---|
-| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（575 項），不是 SKIP |
-| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（569 項）|
+| `linux` | `ubuntu-latest`，非 root，額外裝 `zh_TW.UTF-8` | 平常在 macOS 開發時沒人看的那一邊；裝了 locale 之後中文那一節是真的在驗（746 項），不是 SKIP |
+| `linux-root` | 同一個 OS 但跑在 `container: ubuntu:24.04` 裡，所以是 root，且**故意不裝** `zh_TW.UTF-8` | root 底下不會卡死、locale 不存在時會好好跳過（738 項）|
 | `macos` | `macos-latest` | 修 Linux 的時候不要把開發機那邊弄壞 |
 
 三條腿都設 `timeout-minutes`。預設是 6 小時，而這個專案已經有過「卡住而不是失敗」

@@ -24,6 +24,7 @@ assert()  { if [ "$2" = "$3" ]; then printf '  PASS  %s\n' "$1"; PASS=$((PASS+1)
 
 # q <jq-filter> <json> — 取值方便一點
 q() { printf '%s' "$2" | jq -r "$1" 2>/dev/null; }
+nocheck() { if printf '%s' "$3" | grep -q -- "$2"; then printf '  FAIL  %s（不該出現 %s）\n' "$1" "$2"; FAIL=$((FAIL+1)); else printf '  PASS  %s\n' "$1"; PASS=$((PASS+1)); fi; }
 
 echo "=== J1. stdout 只有 JSON，人類訊息不能污染 ==="
 two_phones
@@ -222,12 +223,65 @@ rm -rf "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar"; mkdir -p "$MOCK_STATE" "$XDG_CON
 echo Running>"$MOCK_STATE/ts_backend"; echo true>"$MOCK_STATE/ts_online"
 echo direct>"$MOCK_STATE/ts_ping_mode"; echo ok>"$MOCK_STATE/adb_connect_result"
 printf 'ABC123\tdevice\n' > "$MOCK_STATE/adb_devices"
-out="$("$PM" setup pixel 2>&1)"
+out="$("$PM" setup --transport tailscale pixel 2>&1)"
 conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/pixel.conf" 2>/dev/null)"
 check "profile 寫了 TRANSPORT"     'TRANSPORT="tailscale"'      "$conf"
 check "profile 寫了 DEVICE_SERIAL" 'DEVICE_SERIAL="PIX0000001"' "$conf"
 out="$("$PM" status --json -p pixel 2>/dev/null)"
 assert "JSON 帶出 device_serial" "PIX0000001" "$(q '.devices[0].device_serial' "$out")"
+
+echo "=== J11b. setup 預設走區網：位址問手機自己，不碰 tailscale ==="
+# 這個專案以區網為主場，所以不加 --transport 時走的是 lan。
+# 用 HANGAR_TAILSCALE 指到不存在的路徑，確認這條路真的沒碰 tailscale CLI。
+rm -rf "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar"; mkdir -p "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar/profiles"
+echo ok > "$MOCK_STATE/adb_connect_result"
+echo ok > "$MOCK_STATE/nc_result"
+printf 'ABC123\tdevice\n' > "$MOCK_STATE/adb_devices"
+saved_ts="${HANGAR_TAILSCALE:-}"
+export HANGAR_TAILSCALE=/nonexistent/tailscale
+out="$("$PM" setup --name deskphone < /dev/null 2>&1)"; rc=$?
+conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/deskphone.conf" 2>/dev/null)"
+assert "離開碼 0"                  "0" "$rc"
+check  "profile 是 lan"            'TRANSPORT="lan"'          "$conf"
+# mock 的 en0 是 192.168.1.42/24，手機同時有 rmnet（10.244.13.7）與 wlan0
+# （192.168.1.5）—— 挑到 4G 那個的話這台電腦連不到，所以這條是重點。
+check  "挑到同網段的 wlan0 位址"   'PHONE_IP="192.168.1.5"'   "$conf"
+nocheck "沒有挑到行動網路的位址"   '10.244.13.7'              "$conf"
+check  "PHONE_HOST 是空的"         'PHONE_HOST=""'            "$conf"
+nocheck "訊息裡不提 tailnet"       'tailnet'                  "$out"
+
+# 直接給 IP 就不用問手機（--existing 之外的第二條路）
+out="$("$PM" setup 192.168.1.77 --name given < /dev/null 2>&1)"
+conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/given.conf" 2>/dev/null)"
+check "指定的 IP 直接寫進去" 'PHONE_IP="192.168.1.77"' "$conf"
+
+# 區網的 setup 收的是 IP，不是節點名 —— 拿節點名進來要講清楚，不要默默去掃描
+out="$("$PM" setup zenfone --name bad < /dev/null 2>&1)"; rc=$?
+assert "節點名進區網 setup 會擋下來" "1" "$rc"
+check  "而且說得出要的是什麼"        "要的是手機的 IP"  "$out"
+
+# 不加 --name 時用位址最後一段當名字（區網沒有節點名可以借）
+"$PM" setup 192.168.1.88 < /dev/null >/dev/null 2>&1
+[ -f "$XDG_CONFIG_HOME/hangar/profiles/phone-88.conf" ] \
+  && { echo "  PASS  預設名稱取自位址最後一段"; PASS=$((PASS+1)); } \
+  || { echo "  FAIL  預設名稱取自位址最後一段（找不到 phone-88.conf）"; FAIL=$((FAIL+1)); }
+if [ -n "$saved_ts" ]; then export HANGAR_TAILSCALE="$saved_ts"; else unset HANGAR_TAILSCALE; fi
+
+echo "=== J11c. 舊 profile 沒有 TRANSPORT → 就地補成 tailscale，不吃新預設值 ==="
+# 預設值翻成 lan 之後，舊檔跟著預設值走就等於被靜默改判成區網直連，
+# 而它們的 PHONE_IP 是 Tailscale IP。所以要就地補行，不是靠預設值。
+rm -rf "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar"; mkdir -p "$MOCK_STATE" "$XDG_CONFIG_HOME/hangar/profiles"
+echo Running>"$MOCK_STATE/ts_backend"; echo true>"$MOCK_STATE/ts_online"
+printf 'PHONE_HOST="pixel"\nPHONE_IP="100.101.102.103"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/oldone.conf"
+out="$("$PM" list --json 2>/dev/null)"
+assert "讀進來當 tailscale" "tailscale" "$(q '.devices[0].transport' "$out")"
+check  "那一行被補進檔案了"  'TRANSPORT="tailscale"' \
+       "$(cat "$XDG_CONFIG_HOME/hangar/profiles/oldone.conf")"
+# 補過之後再跑一次不可以重複追加
+"$PM" list --json >/dev/null 2>&1
+assert "不會重複補" "1" \
+  "$(grep -c '^TRANSPORT=' "$XDG_CONFIG_HOME/hangar/profiles/oldone.conf")"
 
 echo "=== J12. 沒裝 tailscale 時，lan profile 仍然要能用 ==="
 # 這一段用 HANGAR_TAILSCALE 指到不存在的路徑來模擬「這台機器沒裝 tailscale」。

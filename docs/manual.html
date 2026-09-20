@@ -126,14 +126,15 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">README sha256 9467a1bffe3d</span><span class="fact">hangar v1.2.0</span></div>
+  <div class="facts"><span class="fact">README sha256 ca22dc1497a3</span><span class="fact">hangar v1.3.0</span></div>
 </header>
 
 <div class="cols">
-<nav class="toc" aria-label="目錄"><ol><li><a href="#它解決了什麼">它解決了什麼</a></li><li><a href="#安裝">安裝</a></li><li><a href="#環境前提">環境前提</a></li><li><a href="#使用">使用</a></li><li><a href="#多台手機">多台手機</a></li><li><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></li><li><a href="#手機端-agent">手機端 agent</a></li><li><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></li><li><a href="#從裝置牆上按投影">從裝置牆上按投影</a></li><li><a href="#同區網直連不經-tailscale">同區網直連（不經 Tailscale）</a></li><li><a href="#手機重開機後">手機重開機後</a></li><li><a href="#tailscale-acl強烈建議">Tailscale ACL（強烈建議）</a></li><li><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑（FLAG_SECURE）</a></li><li><a href="#疑難排解">疑難排解</a></li><li><a href="#參與開發">參與開發</a></li><li><a href="#授權">授權</a></li></ol></nav>
+<nav class="toc" aria-label="目錄"><ol><li><a href="#它解決了什麼">它解決了什麼</a></li><li><a href="#安裝">安裝</a></li><li><a href="#環境前提">環境前提</a></li><li><a href="#使用">使用</a></li><li><a href="#多台手機">多台手機</a></li><li><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></li><li><a href="#手機端-agent">手機端 agent</a></li><li><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></li><li><a href="#從裝置牆上按投影">從裝置牆上按投影</a></li><li><a href="#手機重開機後">手機重開機後</a></li><li><a href="#tailscale-acl強烈建議">Tailscale ACL（強烈建議）</a></li><li><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑（FLAG_SECURE）</a></li><li><a href="#疑難排解">疑難排解</a></li><li><a href="#參與開發">參與開發</a></li><li><a href="#授權">授權</a></li></ol></nav>
 <main>
 <p>一整隊 Android 測試機的停放、維護與調度。</p>
-<p>透過 <strong>Tailscale</strong> 遠端連到手機、用 <strong>scrcpy</strong> 投影畫面（手機在 4G/5G、在別的網段、 在公司 NAT 後面都能投），並且管得到那些<strong>沒開偵錯、adb 碰不到</strong>的手機。</p>
+<p>主場是<strong>同一個區網</strong>：掃得出網段上有哪些裝置、用 <strong>scrcpy</strong> 投影畫面，並且管得到 那些<strong>沒開偵錯、adb 碰不到</strong>的手機。</p>
+<p>手機不在同一個區網時（4G/5G、在別的網段、在公司 NAT 後面），加上 <strong>Tailscale</strong> 就照樣投得到 —— 那是<strong>建議的加值選項，不是前提</strong>。裝置牆的掃描（ARP）與 agent 的 mDNS 廣播則本來就只在區網成立。</p>
 <div class="tw"><table><tr><td class="wrap"><a href="hangar"><code>hangar</code></a></td><td class="wrap">CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源</td></tr><tr><td class="wrap"><a href="hub"><code>hub/</code></a></td><td class="wrap">常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）</td></tr><tr><td class="wrap"><a href="helper"><code>helper/</code></a></td><td class="wrap">跑在<strong>你自己那台電腦</strong>上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動</td></tr><tr><td class="wrap"><a href="agent"><code>agent/</code></a></td><td class="wrap">手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型</td></tr></table></div>
 <div class="note"><p>專案方向、程式分層、測試涵蓋範圍與待確認清單見 <a href="ROADMAP.md">ROADMAP.md</a>。</p></div>
 <div class="term"><div class="bar">shell</div><pre>hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
@@ -146,19 +147,24 @@ hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop
 hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自己開回來）
 ./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
 ./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的動作按鈕要按得動</pre></div>
+<p><code>setup</code> 預設建立的是<strong>區網直連</strong>的 profile。手機要拿去別的網段、4G/5G 或 NAT 後面才需要 Tailscale：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar setup --transport tailscale --name work</pre></div>
+<p>兩者的差別見「<a href="#兩種連線方式">兩種連線方式</a>」。</p>
 <section id="它解決了什麼">
 <h2 id="它解決了什麼">它解決了什麼</h2>
-<p><code>adb</code> 本來只能走 USB 或同一個區網。要跨網路投影，得處理一堆狀態問題：</p>
-<div class="tw"><table><tr><th>問題</th><th>Hangar 的處理</th></tr><tr><td class="wrap"><code>adb tcpip 5555</code> 必須先有一條既有連線</td><td class="wrap"><code>setup</code> 會先找 USB，沒有就帶你走無線偵錯配對</td></tr><tr><td class="wrap">無線偵錯的 port 是隨機的、mDNS 不穿 Tailscale</td><td class="wrap"><code>setup</code> 明講必須在同區網做一次，之後就不用了</td></tr><tr><td class="wrap">手機重開機後 5555 消失</td><td class="wrap">連不上時直接告訴你「手機重開過，請重跑 setup」，不是丟原始 adb 錯誤</td></tr><tr><td class="wrap">走 DERP relay 時很卡</td><td class="wrap">自動偵測 direct / relay，relay 時降到低頻寬參數並警告</td></tr><tr><td class="wrap">adb 卡在 <code>offline</code></td><td class="wrap">自動 disconnect + reconnect 重試</td></tr><tr><td class="wrap">adb 顯示 <code>unauthorized</code></td><td class="wrap">提示去手機上按「一律允許」</td></tr><tr><td class="wrap">重複執行累積殘留視窗</td><td class="wrap">啟動前先清掉同一支手機的舊 scrcpy process</td></tr></table></div>
+<p><code>adb</code> 本來只能走 USB 或同一個區網。就算只在自己的區網裡用，狀態也一堆要處理； 跨網路再多兩條。下面這張表預設講的是區網，標<strong>（跨網路）</strong>的那兩列只有走 Tailscale 時才碰得到：</p>
+<div class="tw"><table><tr><th>問題</th><th>Hangar 的處理</th></tr><tr><td class="wrap"><code>adb tcpip 5555</code> 必須先有一條既有連線</td><td class="wrap"><code>setup</code> 會先找 USB，沒有就帶你走無線偵錯配對</td></tr><tr><td class="wrap"><strong>（跨網路）</strong>無線偵錯的 port 是隨機的、mDNS 不穿 Tailscale</td><td class="wrap"><code>setup</code> 明講必須在同區網做一次，之後就不用了</td></tr><tr><td class="wrap">手機重開機後 5555 消失</td><td class="wrap">連不上時直接告訴你「手機重開過，請重跑 setup」，不是丟原始 adb 錯誤</td></tr><tr><td class="wrap"><strong>（跨網路）</strong>走 DERP relay 時很卡</td><td class="wrap">自動偵測 direct / relay，relay 時降到低頻寬參數並警告</td></tr><tr><td class="wrap">adb 卡在 <code>offline</code></td><td class="wrap">自動 disconnect + reconnect 重試</td></tr><tr><td class="wrap">adb 顯示 <code>unauthorized</code></td><td class="wrap">提示去手機上按「一律允許」</td></tr><tr><td class="wrap">重複執行累積殘留視窗</td><td class="wrap">啟動前先清掉同一支手機的舊 scrcpy process</td></tr></table></div>
 </section>
 <section id="安裝">
 <h2 id="安裝">安裝</h2>
 <h3 id="1-相依套件">1. 相依套件</h3>
 <div class="term"><div class="bar">bash</div><pre>brew install --cask android-platform-tools
-brew install scrcpy jq
-brew install tailscale</pre></div>
-<p><code>tailscale</code> 也可以用 Mac App Store 版的 Tailscale.app，Hangar 會自動找到 <code>/Applications/Tailscale.app/Contents/MacOS/Tailscale</code>。 裝在其他地方的話，用 <code>HANGAR_TAILSCALE=/path/to/tailscale</code> 指定。</p>
-<p><code>tailscale</code> 只有 <code>TRANSPORT=tailscale</code> 的手機需要。純用 <code>TRANSPORT=lan</code> （同區網直連）的話不必裝，改成需要 <code>nc</code>——macOS 內建，通常不用管。 用法見「<a href="#同區網直連不經-tailscale">同區網直連</a>」。</p>
+brew install scrcpy jq</pre></div>
+<p>同區網的手機這三個就夠了。<code>TRANSPORT=lan</code> 的 profile 改用 <code>nc</code> 測 5555 埠通不通 —— macOS 內建，通常不用管。</p>
+<p><strong>要跨網路才需要 Tailscale</strong>（選配）：</p>
+<div class="term"><div class="bar">bash</div><pre>brew install tailscale</pre></div>
+<p>也可以用 Mac App Store 版的 Tailscale.app，Hangar 會自動找到 <code>/Applications/Tailscale.app/Contents/MacOS/Tailscale</code>。 裝在其他地方的話，用 <code>HANGAR_TAILSCALE=/path/to/tailscale</code> 指定。</p>
+<p><code>hangar setup</code> 只有在你加了 <code>--transport tailscale</code> 時才會要求 <code>tailscale</code> CLI， 區網的手機不必裝 —— 見「<a href="#兩種連線方式">兩種連線方式</a>」。</p>
 <p><code>hangar scan</code>（區網掃描）用的是 <code>ping</code> 與 <code>arp</code>，兩個都是系統內建。想讓它顯示 裝置廠商就要有一份 OUI 資料庫，裝 <code>nmap</code> 或 <code>arp-scan</code> 任一個就有：</p>
 <div class="term"><div class="bar">bash</div><pre>brew install nmap        <span class="c"># 選配，只影響 scan 的「廠商」那一欄</span></pre></div>
 <h3 id="2-安裝-hangar">2. 安裝 Hangar</h3>
@@ -170,25 +176,43 @@ brew install tailscale</pre></div>
 </section>
 <section id="環境前提">
 <h2 id="環境前提">環境前提</h2>
-<ul><li>開發機：macOS（Apple Silicon / Intel 都可以）</li><li>手機：Android 11 以上，已開啟「開發人員選項」</li><li>兩邊都登入<strong>同一個 tailnet</strong></li><li>手機端 Tailscale App 保持連線</li></ul>
+<ul><li>開發機：macOS（Apple Silicon / Intel 都可以）</li><li>手機：Android 11 以上，已開啟「開發人員選項」</li><li>電腦與手機在<strong>同一個區網</strong>，而且 AP 沒有開 client isolation</li></ul>
+<p>手機要跨網路用（<code>TRANSPORT=tailscale</code>）再加兩條：</p>
+<ul><li>兩邊都登入<strong>同一個 tailnet</strong></li><li>手機端 Tailscale App 保持連線</li></ul>
 </section>
 <section id="使用">
 <h2 id="使用">使用</h2>
+<h3 id="兩種連線方式">兩種連線方式</h3>
+<p><strong>預設是同一個區網直連</strong>（<code>TRANSPORT=lan</code>）：手機跟電腦連著同一個 Wi-Fi， <code>hangar setup</code> 不用加任何參數。這種 profile 不需要 <code>tailscale</code> CLI，改用 <code>nc</code> 測 5555 埠通不通（macOS 內建）。</p>
+<p>手機要拿去別的網段、4G/5G 或公司 NAT 後面，才改走 <strong>Tailscale</strong>： <code>hangar setup --transport tailscale</code>。</p>
+<div class="tw"><table><tr><th></th><th><code>lan</code>（預設）</th><th><code>tailscale</code></th></tr><tr><td class="wrap">什麼時候用</td><td class="wrap">手機跟電腦在同一個 Wi-Fi</td><td class="wrap">手機會離開這個網路</td></tr><tr><td class="wrap">需要的工具</td><td class="wrap"><code>nc</code>（macOS 內建）</td><td class="wrap"><code>tailscale</code></td></tr><tr><td class="wrap"><code>setup</code> 怎麼拿到位址</td><td class="wrap">問手機自己，挑同網段的那個 IPv4</td><td class="wrap">從 <code>tailscale status</code> 挑節點</td></tr><tr><td class="wrap">連線路徑</td><td class="wrap">一律當 direct，所以預設走高畫質</td><td class="wrap"><code>tailscale ping</code> 判斷 direct / relay</td></tr><tr><td class="wrap">節點名</td><td class="wrap">沒有，<code>PHONE_HOST</code> 留空</td><td class="wrap">有，<code>PHONE_HOST</code> 用得到</td></tr><tr><td class="wrap">位址會不會變</td><td class="wrap">DHCP 換位址就要改 <code>PHONE_IP</code>，建議在路由器上綁固定 IP。<code>hangar scan</code> 靠 MAC 認得出換過位址的手機，<code>hangar scan --fix-ip</code> 直接改好</td><td class="wrap">Tailscale IP 基本上不變</td></tr><tr><td class="wrap">手機重開機後</td><td class="wrap">一樣要重下一次 <code>adb tcpip 5555</code></td><td class="wrap">一樣要重跑 <code>setup</code>（5555 消失）</td></tr><tr><td class="wrap"><code>hangar scan</code> 看得到嗎</td><td class="wrap">看得到</td><td class="wrap">手機不在這個網段時看不到 —— 掃描走 ARP，只在區網成立</td></tr></table></div>
+<div class="note"><p><strong>區網直連沒有 ACL 這層保護。</strong> <code>adb tcpip 5555</code> 在區網上是全開的， 同一個 Wi-Fi 下的任何人都連得到你手機的 adb，而 adb 等於完整的裝置控制權。 只在自己信得過的網路用；公司、咖啡廳、公共 Wi-Fi 請一律走 Tailscale 並設 <a href="#tailscale-acl強烈建議">ACL</a>。</p></div>
+<p>兩種可以混用：每支手機一份 profile，各自記著自己的 <code>TRANSPORT</code>。選哪一種都不 影響日常用法 —— <code>hangar -p</code>、<code>status</code>、<code>list</code>、<code>reset</code>、<code>all</code> 完全一樣，只有訊息 裡的措辭會換成「區網」或 tailnet。</p>
 <h3 id="初始化每支手機做一次需同區網或插-usb">初始化（每支手機做一次，需同區網或插 USB）</h3>
 <h4 id="手機上要先開好的東西">手機上要先開好的東西</h4>
 <p><code>setup</code> 只能對「已經下得了 adb 指令」的手機動作，所以下面這幾步要先在<strong>手機上</strong> 做完（每支手機一次）：</p>
-<ol class="list"><li><strong>開發人員選項</strong>：設定 → 關於手機 → 連點「版本號碼」7 次</li><li><strong>USB 偵錯</strong>：設定 → 系統 → 開發人員選項 → USB 偵錯（打開）</li><li><strong>無線偵錯</strong>：同一頁往下打開 —— 只有走配對碼流程（手邊沒有 USB 線）時才需要</li><li><strong>Tailscale App</strong>：登入同一個 tailnet 並保持連線，<code>setup</code> 才找得到這個節點</li></ol>
+<ol class="list"><li><strong>開發人員選項</strong>：設定 → 關於手機 → 連點「版本號碼」7 次</li><li><strong>USB 偵錯</strong>：設定 → 系統 → 開發人員選項 → USB 偵錯（打開）</li><li><strong>無線偵錯</strong>：同一頁往下打開 —— 只有走配對碼流程（手邊沒有 USB 線）時才需要</li><li><strong>Tailscale App</strong>：登入同一個 tailnet 並保持連線 —— 只有走 Tailscale （<code>--transport tailscale</code>）時才需要</li></ol>
 <p>插 USB 的話，第一次接上這台電腦時手機會跳「允許 USB 偵錯」，勾<strong>「一律允許透過 這台電腦」</strong>再按允許。沒按這個，<code>setup</code> 會停在 <code>unauthorized</code>。</p>
-<h4 id="跑-setup">跑 setup</h4>
-<div class="term"><div class="bar">bash</div><pre>hangar setup</pre></div>
+<h4 id="跑-setup區網-預設">跑 setup（區網 —— 預設）</h4>
+<div class="term"><div class="bar">bash</div><pre>hangar setup --name deskphone</pre></div>
 <p>流程：</p>
-<ol class="list"><li>檢查 adb / scrcpy / jq / tailscale 是否都在</li><li>找 USB 裝置（插了多支會讓你選）</li><li>沒有 USB 就走「無線偵錯 → 使用配對碼配對裝置」，依提示輸入 <code>IP:PORT</code> 與 6 位數配對碼</li><li><code>adb tcpip 5555</code>，讓 adbd 改在 <code>0.0.0.0:5555</code> 監聽（包含 Tailscale 的 tun 介面）</li><li>從 <code>tailscale status</code> 找出這支手機的節點，取 Tailscale IP</li><li>寫入 profile，並用 Tailscale IP 實際連一次驗證</li></ol>
+<ol class="list"><li>檢查 adb / scrcpy / jq / <code>nc</code>（<strong>不查 <code>tailscale</code></strong>）</li><li>找 USB 裝置（插了多支會讓你選）</li><li>沒有 USB 就走「無線偵錯 → 使用配對碼配對裝置」，依提示輸入 <code>IP:PORT</code> 與 6 位數配對碼</li><li><code>adb tcpip 5555</code>，讓 adbd 改在 <code>0.0.0.0:5555</code> 監聽</li><li><strong>問手機要它的區網 IP</strong> —— 手機上所有 IPv4 裡，挑落在<strong>這台電腦同一個 /24</strong> 的那一個</li><li>寫入 profile（<code>TRANSPORT=&quot;lan&quot;</code>），並實際連一次驗證</li></ol>
+<p>第 5 步刻意不用 <code>ip route get</code>：手機開著行動網路時那條路會回答 4G 的位址，而那個 位址在這台電腦上連不到 —— 寫進 profile 之後每次投影都會失敗，錯誤訊息還會指向手機。</p>
+<p>位址也可以直接給，省掉問手機那一步：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar setup 192.168.1.50 --name deskphone</pre></div>
+<p>不加 <code>--name</code> 的話，profile 名稱預設取位址的最後一段（<code>192.168.1.50</code> → <code>phone-50</code>）—— 區網沒有節點名可以借。</p>
+<h4 id="改走-tailscale手機會離開這個網路時">改走 Tailscale（手機會離開這個網路時）</h4>
+<div class="term"><div class="bar">bash</div><pre>hangar setup --transport tailscale</pre></div>
+<p>只有第 1 步與第 5 步不一樣 —— 它不問手機，改去 tailnet 挑節點：</p>
+<ol class="list"><li>檢查 adb / scrcpy / jq / <strong><code>tailscale</code></strong></li><li>找 USB 裝置（插了多支會讓你選）</li><li>沒有 USB 就走「無線偵錯 → 使用配對碼配對裝置」</li><li><code>adb tcpip 5555</code>，adbd 在 <code>0.0.0.0:5555</code> 監聽（包含 Tailscale 的 tun 介面）</li><li>從 <code>tailscale status</code> 找出這支手機的節點，取 Tailscale IP</li><li>寫入 profile（<code>TRANSPORT=&quot;tailscale&quot;</code>），並用 Tailscale IP 實際連一次驗證</li></ol>
 <p>指定節點名稱可以跳過選單：</p>
-<div class="term"><div class="bar">bash</div><pre>hangar setup pixel-7</pre></div>
-<p>自訂 profile 名稱（多台手機時很有用）：</p>
-<div class="term"><div class="bar">bash</div><pre>hangar setup --name work</pre></div>
-<p>如果這支手機已經由<strong>別台電腦</strong>設定過（5555 已經開著），這台電腦不需要 USB：</p>
-<div class="term"><div class="bar">bash</div><pre>hangar setup --existing pixel-4</pre></div>
+<div class="term"><div class="bar">bash</div><pre>hangar setup --transport tailscale pixel-7 --name work</pre></div>
+<p>不加 <code>--name</code> 的話，profile 名稱取自節點名。走這條<strong>記得設 <a href="#tailscale-acl強烈建議">Tailscale ACL</a></strong>：<code>adb tcpip 5555</code> 會讓 adbd 在所有介面 上監聽，而 tailnet 預設是全通的。</p>
+<h4 id="這支手機已經由別台電腦設定過">這支手機已經由別台電腦設定過</h4>
+<p>5555 已經開著的話，這台電腦不需要 USB，也不用再跑 <code>adb tcpip</code>：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar setup --existing 192.168.1.50                     <span class="c"># 區網</span>
+hangar setup --transport tailscale --existing pixel-4    <span class="c"># Tailscale</span></pre></div>
+<p>區網這條沒有 adb 可以問位址，所以不給 IP 的話 <code>setup</code> 會跑一次 <code>hangar scan</code>， 把區網上看得到的裝置列出來讓你挑。</p>
 <p>細節見下面「<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>」。</p>
 <h3 id="日常投影">日常投影</h3>
 <div class="term"><div class="bar">bash</div><pre>hangar                  <span class="c"># 預設手機</span>
@@ -199,7 +223,7 @@ hangar --screen-on      <span class="c"># 不要關掉手機自己的螢幕</spa
 hangar -- --window-x=100    <span class="c"># 額外參數直接傳給 scrcpy</span></pre></div>
 <p><strong>投影時手機自己的螢幕預設是關掉的</strong>（<code>--turn-screen-off</code>）。省電、也不會讓旁邊 的人看到你在手機上做什麼，畫面只出現在電腦上。手機並沒有鎖住，仍然可以從電腦端 正常操作（<code>--stay-awake</code> 也一直帶著，不會中途睡著）。</p>
 <div class="note"><p>scrcpy 關掉之後，手機螢幕會維持關著——按一下手機電源鍵就回來，這是 scrcpy 的行為。 不想關螢幕就加 <code>--screen-on</code>，<code>hangar all --screen-on</code> 也吃這個旗標。</p></div>
-<p>hangar 會先 <code>tailscale ping -c 3</code> 判斷路徑，再決定參數：</p>
+<p>走 Tailscale 的 profile 會先 <code>tailscale ping -c 3</code> 判斷路徑，再決定參數； 區網 profile 一律當 direct，直接走下面第一列：</p>
 <div class="tw"><table><tr><th>路徑</th><th>scrcpy 參數</th></tr><tr><td class="wrap">direct</td><td class="wrap"><code>--max-size=1280 --video-bit-rate=8M --max-fps=60 --stay-awake --turn-screen-off --no-audio</code></td></tr><tr><td class="wrap">DERP relay</td><td class="wrap"><code>--max-size=1024 --video-bit-rate=3M --max-fps=30 --stay-awake --turn-screen-off --no-audio --video-codec=h265</code></td></tr></table></div>
 <p><code>--hq</code> / <code>--lq</code> 可以覆寫自動判斷；<code>--screen-on</code> 拿掉 <code>--turn-screen-off</code>。</p>
 <h3 id="其他指令">其他指令</h3>
@@ -367,8 +391,12 @@ DEVICE_SERIAL=&quot;1A2B3C4D&quot;       <span class="c"># 硬體序號，跨 IP
 PHONE_MAC=&quot;a4:03:e7:01:02:03&quot;  <span class="c"># 區網 MAC，由 hangar scan 記下來（見上面的區網掃描）</span>
 AGENT_TOKEN=&quot;…64 個十六進位字元…&quot;  <span class="c"># 手機端 agent 的 token，由 hangar enroll 寫入</span>
 AGENT_PORT=&quot;5599&quot;              <span class="c"># agent 聽的埠</span></pre></div>
+<p>區網的 profile 最少只要兩行（<code>PHONE_HOST</code> 是 Tailscale 節點名，區網用不到）：</p>
+<div class="term"><div class="bar">sh</div><pre>PHONE_IP=&quot;192.168.1.50&quot;
+TRANSPORT=&quot;lan&quot;</pre></div>
 <div class="note"><p><strong>有 <code>AGENT_TOKEN</code> 的 profile 是有祕密的檔案。</strong> 那組 token 等於「可以問這支 手機的狀態、之後還能切它的偵錯開關」。檔案權限是 600，不要隨手貼給別人，也 不要丟進版控。沒入伍過的手機沒有這一行，那種 profile 仍然只是幾行純文字。</p></div>
-<p>前兩行以外都是可選的。舊版只有兩行的 profile 照樣能用，讀不到時 <code>TRANSPORT</code> 當作 <code>tailscale</code>、<code>DEVICE_SERIAL</code> 與 <code>PHONE_MAC</code> 當作空的， 不需要做任何轉換。<code>PHONE_MAC</code> 是 <code>hangar scan</code> 第一次用 IP 對上這支手機時 自己補上去的，你不用手寫；重跑 <code>setup</code> 而 IP 沒變的話也會留著。</p>
+<p><code>PHONE_IP</code> 以外都是可選的，<code>DEVICE_SERIAL</code> 與 <code>PHONE_MAC</code> 讀不到就當空的。</p>
+<p><code>TRANSPORT</code> 是唯一有遷移動作的欄位。<strong>沒有這一行的 profile 一律當 <code>tailscale</code></strong> —— 那些檔案都是 <code>lan</code> backend 出現以前建的，那時 <code>setup</code> 只做得出 Tailscale profile；現在預設值是 <code>lan</code>，讓它們跟著預設值走等於靜默改掉語意。 所以 hangar 會在下次執行時就地把 <code>TRANSPORT=&quot;tailscale&quot;</code> 補進那些檔案，讓檔案 自己講清楚（檔案唯讀就跳過，讀進記憶體時仍然當 tailscale）。<code>PHONE_MAC</code> 是 <code>hangar scan</code> 第一次用 IP 對上這支手機時 自己補上去的，你不用手寫；重跑 <code>setup</code> 而 IP 沒變的話也會留著。</p>
 <h3 id="典型流程">典型流程</h3>
 <div class="term"><div class="bar">bash</div><pre><span class="c"># 兩支手機各插一次 USB（或各自在同區網配對一次）</span>
 hangar setup --name work
@@ -641,27 +669,6 @@ hangar adb -p work --on                      <span class="c"># 重新開啟偵�
 &lt;/dict&gt;&lt;/plist&gt;</pre></div>
 <p><code>PATH</code> 那一段不能省：launchd 給的環境很乾淨，<code>adb</code> 與 <code>scrcpy</code> 在 Homebrew 底下，找不到的話按鈕會說投影沒起來。</p>
 </section>
-<section id="同區網直連不經-tailscale">
-<h2 id="同區網直連不經-tailscale">同區網直連（不經 Tailscale）</h2>
-<p>手機跟電腦本來就在同一個區網、不需要跨網路時，可以不走 Tailscale —— profile 裡把 <code>TRANSPORT</code> 寫成 <code>lan</code> 就好。這種 profile 不需要 <code>tailscale</code> CLI， 改用 <code>nc</code> 測 5555 埠通不通（macOS 內建）。</p>
-<p><strong><code>hangar setup</code> 目前只會產生 <code>tailscale</code> 的 profile</strong>，所以 lan 的要自己寫一份 （<code>hangar scan</code> 已經列得出區網上有哪些裝置，但還沒有「從掃描結果直接建 profile」 這條路）：</p>
-<div class="term"><div class="bar">bash</div><pre><span class="c"># 1. 手機插 USB（或已經在同一區網、adb 連得到），把 adbd 切到 TCP 模式</span>
-adb tcpip 5555
-
-<span class="c"># 2. 查手機的區網 IP：設定 → 關於手機 → 狀態資訊 → IP 位址</span>
-
-<span class="c"># 3. 寫 profile</span>
-mkdir -p ~/.config/hangar/profiles
-cat &gt; ~/.config/hangar/profiles/deskphone.conf &lt;&lt;&#x27;EOF&#x27;
-PHONE_HOST=&quot;&quot;
-PHONE_IP=&quot;192.168.1.50&quot;
-TRANSPORT=&quot;lan&quot;
-EOF
-chmod 600 ~/.config/hangar/profiles/deskphone.conf</pre></div>
-<p>之後 <code>hangar -p deskphone</code>、<code>status</code>、<code>list</code>、<code>reset</code>、<code>all</code> 全部照常用， 訊息裡的措辭會自動換成「區網」而不是 tailnet。</p>
-<div class="tw"><table><tr><th></th><th><code>tailscale</code></th><th><code>lan</code></th></tr><tr><td class="wrap">需要的工具</td><td class="wrap"><code>tailscale</code></td><td class="wrap"><code>nc</code>（macOS 內建）</td></tr><tr><td class="wrap">連線路徑</td><td class="wrap"><code>tailscale ping</code> 判斷 direct / relay</td><td class="wrap">一律當 direct，所以預設走高畫質</td></tr><tr><td class="wrap">節點名</td><td class="wrap">有，<code>PHONE_HOST</code> 用得到</td><td class="wrap">沒有，<code>PHONE_HOST</code> 留空即可</td></tr><tr><td class="wrap">位址會不會變</td><td class="wrap">Tailscale IP 基本上不變</td><td class="wrap">DHCP 換位址就要改 <code>PHONE_IP</code>，建議在路由器上綁固定 IP。<code>hangar scan</code> 靠 MAC 認得出換過位址的手機，<code>hangar scan --fix-ip</code> 直接改好</td></tr><tr><td class="wrap">手機重開機後</td><td class="wrap">一樣要重跑 <code>setup</code>（5555 消失）</td><td class="wrap">一樣要重下一次 <code>adb tcpip 5555</code></td></tr></table></div>
-<div class="note"><p><strong>區網直連沒有 ACL 這層保護。</strong> <code>adb tcpip 5555</code> 在區網上是全開的， 同一個 Wi-Fi 下的任何人都連得到你手機的 adb，而 adb 等於完整的裝置控制權。 只在自己信得過的網路用；公司、咖啡廳、公共 Wi-Fi 請一律走 Tailscale 並設 <a href="#tailscale-acl強烈建議">ACL</a>。</p></div>
-</section>
 <section id="手機重開機後">
 <h2 id="手機重開機後">手機重開機後</h2>
 <p><strong>這是 adb over TCP 的硬限制，不是 bug。</strong></p>
@@ -778,7 +785,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <footer class="end">
   <p>這一頁是 <strong>README.md</strong> 自動產生的（<code>tools/make_manual.py</code>）。
      內容要改請改 README；專案方向與待確認清單在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">README sha256 9467a1bffe3d</span>
+  <p style="margin-top:12px"><span class="fact">README sha256 ca22dc1497a3</span>
      —— 這是產生它的那份 README 的指紋。跟 repo 裡的 README 對不上，就是這一頁落後了。</p>
 </footer>
 </main>
