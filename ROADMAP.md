@@ -58,6 +58,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | M1 | CLI 結構化：`--json`、transport 抽象層、裝置序號、電量 | **已完成** |
 | M2a | 區網掃描：`hangar scan`、`scan_*` 層、lan backend 的候選清單、MAC／序號識別合併、`--fix-ip` | **已完成** |
 | M2b | hub 骨架：常駐服務 + 唯讀裝置牆網頁 | **已完成**（Python 3 標準函式庫） |
+| M2c | 裝置牆的第三個資料來源：`hangar usb --json`，讓插在 hub 那台上的手機（含 `unauthorized`）看得見 | 待做（見「[USB 也是一個來源](#usb-也是一個來源m2c插著的手機在牆上是隱形的)」）|
 | M3a | agent 骨架：enroll、`/hello` 與 `/status`、`hangar` 這側接上、hub 顯示 | **已完成，而且在 Pixel 4 / Android 13 上實機驗過** |
 | M3b | mDNS 廣播 + `hangar scan` 找得到 agent（找不到就退回探 5599） | **已完成**（電腦端兩條路都有測試；手機端的 `NsdManager` 廣播還沒在實機上看過 —— 見待確認清單 B3）|
 | M3c | 重開機後自己打開無線偵錯（**不是** 5555，Android 11+ 才有） | 待實測那幾條先確認 |
@@ -96,7 +97,7 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.2.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2291` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2300` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | hub `/api/devices` | schema **7** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
 | agent 協定 | schema **2**，版本 `0.1.0` | `agent/app/build.gradle.kts` |
@@ -165,6 +166,76 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
    的所有知識都來自 `hangar list --json` 與 `hangar scan --json`，沒有自己去碰
    adb 或網路。要多顯示一個欄位是去改 hangar，不是在 hub 裡另外接一條路 ——
    這樣 CLI 與網頁永遠不會各說各話。
+
+## USB 也是一個來源（M2c）：插著的手機在牆上是隱形的
+
+> **待做。** 症狀是「新手機掃不到」，但掃描沒有壞 —— 是裝置牆的資料來源
+> 少了一個，而少掉的那個正好就是「新手機剛到」的那個。
+
+一支剛到的 Samsung A34：USB 插著、偵錯開了、`adb devices` 是 `device`（授權過了），
+在裝置牆上找不到。實際查下來，它其實**掃到了**，是那一列匿名的
+`192.168.0.155`、`mac 3e:19:e2:35:b1:6b`、`vendor: null`、`adb_port: closed` ——
+跟隔壁的智慧插座長得一模一樣。三件事疊起來讓它認不出來：
+
+1. **MAC 隨機化**：`3e:` 是 locally-administered 位，`scan_mac_is_random`
+   （`hangar:414`）判定是隨機 MAC 就不查 OUI，所以沒有「Samsung」這個提示。
+   這是「現實限制」那節第一條的直接後果，不是 bug。
+2. **沒有 profile，所以沒有名字**：`cmd_list` 只走 `list_profiles`。
+3. **5555 是關的**：`service.adb.tcp.port` 空的，所以 `adb_port: closed`。
+
+第三條是這一條的重點，也是使用者一定會踩的認知落差：**「開了偵錯而且授權了」
+跟「牆上看得見」是兩件不相干的事**。授權的是 USB 那把金鑰，掃描探的是 TCP 5555，
+而 5555 要 `adb tcpip 5555` 才會開 —— 那正是 `hangar setup` 做的事。
+所以在牆的視角，一支還沒 setup 的手機**無論偵錯開得多正確都是匿名的**，
+而使用者手上握著「我明明都開好了」這個強烈的反證，會往錯的方向查很久。
+
+真正的缺口是：裝置牆的資料來源只有兩個 —— `hangar list --json`（已設定的
+profile）與 `hangar scan --json`（區網 ARP）。**`adb devices` 不在裡面。**
+一支插著 USB、adb 狀態是 `device` 的手機，兩邊都不算，於是完全隱形。
+
+### 要做的：第三個來源
+
+| 元件 | 動到的地方 |
+|---|---|
+| `hangar` | 新增 `hangar usb --json`：列出**這台電腦上 USB 接著**的裝置，含 `device_serial`、`adb_state`（`device` / `unauthorized` / `offline`）、機型。序號與機型沿用 `usb_serials` 那一組既有函式，不要另外寫一套解析 |
+| hub | 第三個 poller（`poller` 與 `REFRESH_MIN` 已經是照 kind 查表的，`hub/hangar_hub.py:382`），`merge()` 多吃一份；`/api/devices` 的 `sources` 多一個 `"usb"`，`API_SCHEMA` → **8** |
+| 裝置牆 | 沒有 IP 的卡片要顯示得了（現在每張卡都預設有 IP）；`unmanaged` + USB 的卡片給一個「入伍」動作 |
+| 測試 | `test_hub.sh` 的 merge 案例補「只有 USB 這一份」與「USB ＋ scan 同一支」；`tests/mockbin` 那支假 `adb` 要餵得出 `unauthorized` |
+
+合併鍵不用另外想：USB 這一份給得出 `DEVICE_SERIAL`，那本來就是
+`merge()`（`hub/hangar_hub.py:131`）優先序最高的識別碼，所以已經是 profile 的
+手機會直接併回它原本那張卡（順帶多一個「USB 也接著」的事實），
+沒設定過的才會長出新的一張。`scan_match_profiles`（`hangar:650`）那條路完全不動。
+
+**`unauthorized` 是這裡最值錢的一格。** 「有人插了一支手機但沒人去按那個允許」
+現在是查不出來的 —— 而 `merge()` 的排序表裡 `unauthorized` 本來就排第一位，
+位置早就留好了。這一格也正好是「待實測 2」（hub 代按那個對話框）要盯的狀態，
+兩條線看的是同一個東西。
+
+### 三個刻意不做的決定
+
+**不塞進 `scan --json` 的 `hosts[]`。** `scan_*` 那一層的語意是「這個區網上有
+什麼」，每一筆都有 IP 跟 MAC。USB 裝置兩個都沒有，混進去會讓 `hosts[]` 裡出現
+一種要特別處理的東西，而 `SCAN_SCHEMA` 的消費者不只 hub。獨立的指令 ＋ 獨立的
+schema 比較誠實，`--json` 這層的加法本來就便宜。
+
+**hub 還是不碰 adb。** 「這對現在的程式碼意味著什麼」第 7 條的規矩不破例：
+hub 對手機的所有知識都來自 `hangar` 的 `--json`。要多一個來源就多一個唯讀指令，
+不是在 hub 裡開一條自己跑 adb 的路 —— 否則 CLI 跟網頁就開始各說各話了。
+
+**牆上看得到的是「插在 hub 那台上的 USB」，不是「插在任何人電腦上的」。**
+這跟掃描是同一個視角問題（掃的也一直是 hub 那台所在的網段），不是新的限制，
+但 UI 上要講清楚，否則 RD 插在自己筆電上的手機沒出現又會變成一次誤判。
+要做到「每台電腦都回報自己插了什麼」是 helper 那一側的事，那是另一條線，
+現在不開。
+
+### 順帶要修的文案
+
+就算第三個來源做出來了，「掃不到」這個提問還是會再出現 —— 因為手機不在同一個
+Wi-Fi、或 USB 插在別人電腦上的時候，它本來就該是匿名的。`hangar scan` 跟裝置牆
+在「掃到了一台沒有廠商、5555 關著的機器」時，應該直接把話講完：
+**這可能是一支還沒 `setup` 的 Android，開了偵錯也一樣看不出來。**
+這比多一個欄位有用。
 
 ## M3 協定：agent 跟另外兩邊怎麼講話
 

@@ -182,5 +182,29 @@ printf 'PHONE_HOST="zenfone"\nPHONE_IP="100.99.99.99"\nTRANSPORT="tailscale"\nPH
 assert "IP 換了就不留舊 MAC" "" \
   "$(grep -E '^PHONE_MAC=' "$XDG_CONFIG_HOME/hangar/profiles/zenfone.conf" | cut -d'"' -f2)"
 
+echo "=== M17. 迴圈體把 stdin 吸乾，也不可以少掉手機 ==="
+# 真的 `adb … shell …` 會把 stdin 轉發給手機、一路讀到 EOF——也就是把呼叫端的
+# stdin 整個吸乾。profile 迴圈若用預設的 stdin，第一支手機處理完，process
+# substitution 剩下的行就沒了，迴圈**安靜地**結束：exit 0、沒有錯誤訊息，就是
+# 少了幾支手機，`hangar list` 與裝置牆上一起消失。只有一個 profile 時完全看不
+# 出來，所以這條測試一定要有兩支。修法是讓迴圈改讀 fd 3（見 list_profiles 上面
+# 那段註解）。mockbin 的假 adb 不模擬這個行為，這裡用一個只在本節生效的 shim。
+two_phones; echo work > "$XDG_CONFIG_HOME/hangar/default"
+GREEDY="$MOCK_STATE/greedybin"; mkdir -p "$GREEDY"
+cat > "$GREEDY/adb" <<SHIM
+#!/usr/bin/env bash
+# 跟真的 adb 一樣：shell 子指令會把 stdin 讀到 EOF 為止
+sub="\$1"; [ "\$1" = "-s" ] && sub="\$3"
+[ "\$sub" = "shell" ] && cat >/dev/null 2>&1
+exec "$SP/mockbin/adb" "\$@"
+SHIM
+chmod +x "$GREEDY/adb"
+# stdin 給 /dev/null：迴圈外的 adb 呼叫才不會卡在一個沒人關的管線上等 EOF。
+# 迴圈內的那些讀到的是 process substitution，本來就會自己 EOF。
+out="$(PATH="$GREEDY:$PATH" "$PM" list </dev/null 2>&1)"
+check "第一支還在"        "work"     "$out"
+check "第二支沒有被吃掉"  "test"     "$out"
+check "預設標記還在"      "\* *work" "$out"
+
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

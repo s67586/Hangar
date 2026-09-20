@@ -653,10 +653,10 @@ scan_match_profiles() {
 
   # 先把 profile 讀成一張表。每台主機都重讀一次檔案在 /24 上是幾百次 grep，
   # hub 之後會固定輪詢，沒必要這樣花。
-  while IFS= read -r n; do
+  while IFS= read -r n <&3; do
     [ -n "$n" ] || continue
     ptab="${ptab}${n}|$(profile_field "$n" PHONE_IP)|$(profile_field "$n" PHONE_MAC)|$(profile_field "$n" TRANSPORT)"$'\n'
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   # 第一輪：MAC 對得上就是它，IP 換過也一樣。一個 profile 只認領一台。
   while IFS='|' read -r ip mac rest; do
@@ -1239,6 +1239,15 @@ profile_set_field() {
   return 0
 }
 
+# 走訪這份清單的迴圈一律用 fd 3 讀（`while … read -r n <&3; do … done 3< <(…)`），
+# 不要用預設的 stdin。
+#
+# 為什麼：`adb … shell …` 會把 stdin 整個吸乾（它要把 stdin 轉發給手機，讀到
+# EOF 為止）。迴圈體裡只要碰一次 adb，process substitution 剩下的行就沒了，
+# 迴圈**安靜地**在第一支手機之後結束 —— 不是錯誤、不是逾時，就是少了幾支，
+# exit code 還是 0。只有一個 profile 的時候完全看不出來，第二支一加就中。
+# 實際踩過：`hangar list` 只印得出排在前面的那一支，裝置牆跟著少一張卡。
+# 把迴圈的輸入挪到 fd 3，迴圈體再怎麼吃 stdin 都跟這份清單無關。
 list_profiles() {
   [ -d "$PROFILE_DIR" ] || return 0
   local f n
@@ -1301,7 +1310,7 @@ EOF
 print_profile_table() {
   local def n; def="$(get_default_profile 2>/dev/null)"
   local i=0
-  while IFS= read -r n; do
+  while IFS= read -r n <&3; do
     [ -n "$n" ] || continue
     i=$((i + 1))
     local PHONE_HOST="" PHONE_IP=""
@@ -1309,7 +1318,7 @@ print_profile_table() {
     . "$(profile_path "$n")" 2>/dev/null
     local mark=" "; [ "$n" = "$def" ] && mark="*"
     printf '   %2d) %s %-16s %-16s %s\n' "$i" "$mark" "$n" "$PHONE_IP" "${PHONE_HOST:-}"
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 }
 
 # resolve_profile [name] — 決定要操作哪一支手機，結果放進 $PROFILE
@@ -1778,12 +1787,12 @@ pick_usb_serial() {
   # 插了多支手機 → 讓使用者選
   info "偵測到 $total 支 USB 裝置：" >&2
   local i=0 s model
-  while IFS= read -r s; do
+  while IFS= read -r s <&3; do
     [ -n "$s" ] || continue
     i=$((i + 1))
     model="$(run_timeout 8 adb -s "$s" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
     printf '   %2d) %-20s %s\n' "$i" "$s" "${model:-?}" >&2
-  done < <(printf '%s\n' "$serials")
+  done 3< <(printf '%s\n' "$serials")
   local n
   while :; do
     printf '%s' "  選擇要設定的手機（1-${total}）＞ " >&2
@@ -1982,12 +1991,12 @@ cmd_setup() {
   fi
   # 不同名稱卻指到同一個 IP → 提醒重複
   local other
-  while IFS= read -r other; do
+  while IFS= read -r other <&3; do
     [ -n "$other" ] && [ "$other" != "$PROFILE" ] || continue
     if grep -qE "^PHONE_IP=\"$PHONE_IP\"" "$(profile_path "$other")" 2>/dev/null; then
       warn "profile「${other}」也指向 ${PHONE_IP}，兩者是同一支手機"
     fi
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   SERIAL="${PHONE_IP}:${ADB_PORT}"
   # setup 目前只走 Tailscale 這條路（節點選單、取 IP 都是 tailnet 的概念）。
@@ -2127,7 +2136,7 @@ cmd_all() {
   [ "$total" -gt 0 ] || { err "還沒有設定任何手機"; hint "hangar setup"; exit 1; }
 
   local started=0 failed=0 name
-  while IFS= read -r name; do
+  while IFS= read -r name <&3; do
     [ -n "$name" ] || continue
     echo
     info "── $name ──"
@@ -2153,7 +2162,7 @@ cmd_all() {
       rm -f "$CONFIG_DIR/.pid-$name"
       failed=$((failed + 1))
     fi
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   echo
   ok "已啟動 $started 個視窗${failed:+，失敗 $failed 支}"
@@ -2522,7 +2531,7 @@ cmd_list() {
 
   if [ "$JSON_MODE" -eq 1 ]; then
     local objs="" n isdef
-    while IFS= read -r n; do
+    while IFS= read -r n <&3; do
       [ -n "$n" ] || continue
       load_profile_soft "$n" || { warn "略過壞掉的 profile：$n"; continue; }
       transport_prepare
@@ -2530,7 +2539,7 @@ cmd_list() {
       probe_device "$deep" 0
       isdef=0; [ "$n" = "$def" ] && isdef=1
       objs="${objs}$(device_json "$isdef")"$'\n'
-    done < <(list_profiles)
+    done 3< <(list_profiles)
     printf '%s' "$objs" | jq -s --argjson schema "$JSON_SCHEMA" \
       '{ schema: $schema, devices: . }'
     return 0
@@ -2545,7 +2554,7 @@ cmd_list() {
   printf '  %s\n' "$(printf '─%.0s' $(seq 1 84))"
 
   local n
-  while IFS= read -r n; do
+  while IFS= read -r n <&3; do
     [ -n "$n" ] || continue
     load_profile_soft "$n" || continue
     transport_prepare
@@ -2587,7 +2596,7 @@ cmd_list() {
       "$adb_col" "$(pad "$adb_txt" 13)" "$C_0" \
       "$bat_col" "$(pad "$bat_txt" 10)" "$C_0" \
       "${PHONE_HOST:-}"
-  done < <(list_profiles)
+  done 3< <(list_profiles)
 
   printf '\n  %s* = 預設（hangar use <名稱> 可更換）　!= 電量偏低%s\n\n' "$C_DIM" "$C_0"
 }

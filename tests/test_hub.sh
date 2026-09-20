@@ -287,6 +287,49 @@ only_scan='merge(None, {"hosts":[{"ip":"192.168.1.77","mac":"a4:03:e7:01:02:03",
 assert "名字還在"     "work"    "$(m "${only_scan}[0]['name']")"
 assert "狀態說不知道" "unknown" "$(m "${only_scan}[0]['state']")"
 
+# --- 掃描那側對不上 profile 名字時的兩條退路 -------------------------------
+# scan_match_profiles 只認得「profile 的 PHONE_IP／PHONE_MAC 對得上」的手機。
+# 走 tailscale 的手機 PHONE_IP 是 100.x，PHONE_MAC 又還沒學到，所以掃描回來的
+# 那一筆 profile 是 null —— 但 list 那側用 adb 問得到同一張網卡的 MAC。
+# 不接這條退路的話，同一支手機會在牆上出現兩次（實際踩過：A34 一張走 tailscale
+# 的卡，加一張匿名的區網卡）。
+
+# (1) 序號對得上就是同一台，即使掃描沒認出 profile
+by_ser='merge(
+  {"devices":[{"profile":"work","ip":"100.1.1.1","device_serial":"S1","adb_state":"device"}]},
+  {"hosts":[{"ip":"192.168.1.77","mac":"a4:03:e7:01:02:03","profile":None,"device_serial":"S1"}]})'
+assert "序號對得上就不另開一張" "1"            "$(m "len(${by_ser})")"
+assert "併進原本那張卡"         "work"         "$(m "${by_ser}[0]['name']")"
+assert "區網位址補上去"         "192.168.1.77" "$(m "${by_ser}[0]['lan_ip']")"
+
+# (2) 連序號都沒有時，用 adb 問到的 MAC 對 —— 這就是 A34 那個情境
+by_mac='merge(
+  {"devices":[{"profile":"work","ip":"100.1.1.1","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"3e:19:e2:35:b1:6b","randomized":True,
+                      "vendor":None,"ssid":"TestNet"}}]},
+  {"hosts":[{"ip":"192.168.0.155","mac":"3e:19:e2:35:b1:6b","profile":None,
+             "device_serial":None,"adb_port":"closed"}]})'
+assert "MAC 對得上就不另開一張" "1"             "$(m "len(${by_mac})")"
+assert "併進原本那張卡"         "work"          "$(m "${by_mac}[0]['name']")"
+assert "區網位址補上去"         "192.168.0.155" "$(m "${by_mac}[0]['lan_ip']")"
+assert "兩個來源都記著"         "['list', 'scan']" "$(m "${by_mac}[0]['sources']")"
+
+# (3) 大小寫不一樣也要對得上：adb 給小寫，某些系統的 ARP 表給大寫
+mixed='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"3e:19:e2:35:b1:6b","randomized":True,
+                      "vendor":None,"ssid":None}}]},
+  {"hosts":[{"ip":"192.168.0.155","mac":"3E:19:E2:35:B1:6B","profile":None}]})'
+assert "大小寫不同仍是同一台" "1" "$(m "len(${mixed})")"
+
+# (4) 反過來：MAC 不一樣就是不同的兩台，不可以亂併
+diff_mac='merge(
+  {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device",
+               "mac":{"address":"3e:19:e2:35:b1:6b","randomized":True,
+                      "vendor":None,"ssid":None}}]},
+  {"hosts":[{"ip":"192.168.0.155","mac":"aa:bb:cc:dd:ee:ff","profile":None}]})'
+assert "MAC 不同就分開兩張" "2" "$(m "len(${diff_mac})")"
+
 echo "=== H9. 接真的 hangar（不是假的）—— 兩邊的 JSON 不可以各走各的 ==="
 # 前面幾節餵的是手寫的 JSON，擋得住 hub 自己的迴歸，擋不住「hangar 改了欄位、
 # hub 沒跟上」。這一節用 mockbin 的假 adb／arp 跑真正的 hangar，把兩邊接起來。
