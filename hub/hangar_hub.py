@@ -54,7 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 7
+API_SCHEMA = 8
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -145,8 +145,8 @@ def _index(entry, by_profile, by_serial, by_mac):
         by_mac.setdefault(key, entry)
 
 
-def merge(list_data, scan_data):
-    """把 list 與 scan 兩份資料合成一張裝置牆。
+def merge(list_data, scan_data, usb_data=None):
+    """把 list、scan、usb 三份資料合成一張裝置牆。
 
     識別碼的優先順序跟 hangar scan 那一層同一套：DEVICE_SERIAL > MAC > IP。
     序號是跨 IP、跨連線方式都不變的，所以只要 profile 記過序號，同一支手機在
@@ -156,6 +156,10 @@ def merge(list_data, scan_data):
     tailscale 的手機 profile 記的是 100.x，區網上掃到的是 192.168.x，兩邊對不
     上。所以這裡不只看 h["profile"]：序號（mDNS TXT 給得出來）與 MAC 對得上
     就是同一支手機，不能讓它在牆上多長出一張 unmanaged 的卡。
+
+    第三份（usb）給得出 DEVICE_SERIAL，那本來就是這裡優先序最高的識別碼，
+    所以已經設定過的手機會直接併回原本那張卡，只是多一個「USB 也接著」的事實。
+    usb_data 可以是 None：--no-usb 或舊的呼叫端都還走得通。
     """
     devices = []
     by_profile = {}
@@ -192,6 +196,8 @@ def merge(list_data, scan_data):
             # 區網那半邊的欄位，等下面掃描結果對上了再補
             "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
             "is_gateway": False,
+            # USB 那一份對上了才有：{adb_serial, adb_state}
+            "usb": None,
             "sources": ["list"],
             "errors": list(d.get("errors") or []),
         }
@@ -222,7 +228,8 @@ def merge(list_data, scan_data):
                 "mac": None, "vendor": None, "mac_randomized": None,
                 "mac_ssid": None,
                 "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
-                "agent": None, "is_gateway": False, "sources": [], "errors": [],
+                "agent": None, "is_gateway": False, "usb": None,
+                "sources": [], "errors": [],
             }
             devices.append(entry)
             _index(entry, by_profile, by_serial, by_mac)
@@ -247,6 +254,7 @@ def merge(list_data, scan_data):
                            "enrolled": (h.get("agent") or {}).get("enrolled")} if h.get("agent") else None),
                 # 這個網段的閘道器。每次掃描都會出現，標出來才不用每次重新猜
                 "is_gateway": bool(h.get("is_gateway")),
+                "usb": None,
                 "sources": ["scan"], "errors": [],
             })
             continue
@@ -278,6 +286,51 @@ def merge(list_data, scan_data):
         if "scan" not in entry["sources"]:
             entry["sources"].append("scan")
 
+    # 第三份：這台機器上 USB 接著的。
+    #
+    # 這一份存在的理由是「插著 USB、偵錯開了、但還沒 setup」的手機在另外兩份
+    # 裡都不算：list 只看 profile，scan 探的是 5555，而 5555 要 adb tcpip 才會
+    # 開。使用者手上握著「我明明都開好了」這個強烈的反證，會往錯的方向查很久。
+    #
+    # 對不上 scan 那一列是已知的：那種手機的 MAC 通常是隨機的，scan 也拿不到
+    # 序號，沒有任何共同的鍵。牆上會同時有一張匿名的掃描卡與一張 USB 卡 ——
+    # 併不起來，但至少 USB 這張講得出它是誰。
+    for u in (usb_data or {}).get("devices", []):
+        serial = u.get("device_serial")
+        entry = by_serial.get(serial) if serial else None
+        if entry is None and u.get("profile"):
+            entry = by_profile.get(u["profile"])
+        usb_info = {"adb_serial": u.get("adb_serial"),
+                    "adb_state": u.get("adb_state")}
+        if entry is not None:
+            entry["usb"] = usb_info
+            # 機型：USB 問得到而另外兩邊問不到，是常有的（手機沒開 5555）
+            if not entry.get("model") and u.get("model"):
+                entry["model"] = u.get("model")
+            if "usb" not in entry["sources"]:
+                entry["sources"].append("usb")
+            continue
+        devices.append({
+            "key": "serial:" + (serial or u.get("adb_serial") or ""),
+            "name": u.get("profile"), "default": False,
+            # unauthorized 是這一份最值錢的一格：「有人插了手機，但沒人去按
+            # 那個允許」在這之前查不出來。排序表裡它本來就排第一位。
+            "state": ("unauthorized" if u.get("adb_state") == "unauthorized"
+                      else "unmanaged"),
+            "transport": None,
+            # 沒有 IP —— 這一份是牆上第一種沒有位址的卡
+            "ip": None, "adb_serial": None,
+            "device_serial": serial,
+            "adb_state": u.get("adb_state"), "reachability": None,
+            "model": u.get("model"), "android": None, "battery": None,
+            "mirroring": False,
+            "mac": None, "vendor": None, "mac_randomized": None, "mac_ssid": None,
+            "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
+            "agent": None, "is_gateway": False,
+            "usb": usb_info,
+            "sources": ["usb"], "errors": [],
+        })
+
     # 排序：要注意的排前面（電量低 > 設定過的 > 掃到的），同類再按名稱／IP
     order = {"unauthorized": 0, "no_adb": 1, "offline": 2, "unknown": 3,
              "agent_only": 4, "ready": 5, "unmanaged": 6}
@@ -302,18 +355,21 @@ def _ip_key(ip):
 # ------------------------------------------------------------------ 狀態 ----
 
 class State:
-    """兩個輪詢執行緒寫、HTTP 執行緒讀的那份共用狀態。
+    """三個輪詢執行緒寫、HTTP 執行緒讀的那份共用狀態。
 
-    掃描比 list 慢很多（ping 整個 /24），所以兩邊各自照自己的節奏跑，誰先回來
-    就先更新誰 —— 網頁要的是「最新知道的樣子」，不是「兩邊同時量到的樣子」。
+    掃描比 list 慢很多（ping 整個 /24），USB 又比 list 更快，所以每一邊各自照
+    自己的節奏跑，誰先回來就先更新誰 —— 網頁要的是「最新知道的樣子」，不是
+    「三邊同時量到的樣子」。
     """
 
     def __init__(self):
         self._lock = threading.Lock()
         self.list_data = None
         self.scan_data = None
+        self.usb_data = None
         self.list_at = None
         self.scan_at = None
+        self.usb_at = None
         self.errors = {}          # 來源 → 錯誤字串（連不到 hangar 這種）
         # 主動輪詢用：每個來源一個「醒來」旗標，POST /api/refresh 就是把它立起來
         self.wake = {}            # 來源 → threading.Event
@@ -343,15 +399,18 @@ class State:
             self.errors.pop(kind, None)
             if kind == "list":
                 self.list_data, self.list_at = data, time.time()
+            elif kind == "usb":
+                self.usb_data, self.usb_at = data, time.time()
             else:
                 self.scan_data, self.scan_at = data, time.time()
 
     def snapshot(self):
         with self._lock:
-            devices = merge(self.list_data, self.scan_data)
+            devices = merge(self.list_data, self.scan_data, self.usb_data)
             errors = [{"source": k, "message": v} for k, v in self.errors.items()]
             # hangar 自己回報的錯誤（掃不動、缺工具…）也一起端上去
-            for src, data in (("list", self.list_data), ("scan", self.scan_data)):
+            for src, data in (("list", self.list_data), ("scan", self.scan_data),
+                              ("usb", self.usb_data)):
                 for e in (data or {}).get("errors", []) or []:
                     errors.append({"source": src, "code": e.get("code"),
                                    "message": e.get("message")})
@@ -363,7 +422,8 @@ class State:
                 "host": hostname(),
                 "devices": devices,
                 "subnet": (self.scan_data or {}).get("subnet"),
-                "polled_at": {"list": self.list_at, "scan": self.scan_at},
+                "polled_at": {"list": self.list_at, "scan": self.scan_at,
+                              "usb": self.usb_at},
                 # 現在有沒有哪一邊正在問。網頁靠這個把「更新中」顯示出來 ——
                 # 按了按鈕之後畫面要有反應，不然使用者會再按一次。
                 "polling": {k: bool(v) for k, v in self.busy.items()},
@@ -407,7 +467,7 @@ def poller(state, kind, hangar, args, interval, timeout, stop):
 
 # 主動輪詢的最小間隔。按鈕按住不放不該變成對整個區網洗 ping ——
 # 掃描那一邊尤其：它會對 254 個位址各送一個封包。
-REFRESH_MIN = {"list": 5.0, "scan": 30.0}
+REFRESH_MIN = {"list": 5.0, "scan": 30.0, "usb": 5.0}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -503,7 +563,11 @@ def main(argv=None):
     ap.add_argument("--scan-interval", type=float, default=300.0,
                     help="多久掃一次區網（秒，預設 300 —— ping 整個 /24 不便宜）")
     ap.add_argument("--subnet", default=None, help="掃描網段，同 hangar scan --subnet")
+    ap.add_argument("--usb-interval", type=float, default=15.0,
+                    help="多久問一次本機 USB（秒，預設 15 —— 只問本機 adb，很便宜）")
     ap.add_argument("--no-scan", action="store_true", help="完全不掃區網")
+    ap.add_argument("--no-usb", action="store_true",
+                    help="不回報這台機器上 USB 接著的裝置")
     ap.add_argument("--timeout", type=float, default=120.0, help="單次 hangar 的逾時（秒）")
     args = ap.parse_args(argv)
 
@@ -517,7 +581,7 @@ def main(argv=None):
     threads = []
 
     # 每個來源一個喚醒旗標。poller 等在它上面，/api/refresh 把它立起來。
-    for kind in ("list", "scan"):
+    for kind in ("list", "scan", "usb"):
         state.wake[kind] = threading.Event()
 
     list_args = ["list", "--json", "--probe"]
@@ -534,6 +598,14 @@ def main(argv=None):
         threads.append(threading.Thread(
             target=poller, args=(state, "scan", hangar, scan_args,
                                  args.scan_interval, args.timeout, stop), daemon=True))
+    if args.no_usb:
+        state.wake.pop("usb", None)       # 沒人服務的旗標不要留著騙人
+    else:
+        # 牆上看得到的是「插在 hub 這台機器上的 USB」，不是「插在任何人電腦上
+        # 的」—— 跟掃描是同一個視角問題（掃的也一直是 hub 所在的網段）。
+        threads.append(threading.Thread(
+            target=poller, args=(state, "usb", hangar, ["usb", "--json"],
+                                 args.usb_interval, args.timeout, stop), daemon=True))
     for t in threads:
         t.start()
 

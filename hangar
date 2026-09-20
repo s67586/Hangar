@@ -17,7 +17,7 @@
 #
 set -uo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 ADB_PORT=5555
 # 手機端 agent 聽的埠（見 ROADMAP 的「M3 協定」）
 AGENT_PORT_DEFAULT=5599
@@ -178,6 +178,7 @@ require_deps() {
 #   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
 
 SCAN_SCHEMA=7
+USB_SCHEMA=1
 SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
 case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
 SCAN_SUBNET=""        # 要掃的 /24 前三段，例如 192.168.1
@@ -1223,6 +1224,21 @@ profile_field() { # <profile> <欄位名> — 不 source，避免污染呼叫端
   grep -E "^$2=" "$(profile_path "$1")" | head -1 | cut -d'"' -f2
 }
 
+# 序號 → profile 名稱（對不上就 return 1）。
+#
+# 用 fd 4 而不是 stdin：呼叫它的迴圈自己可能已經佔著 fd 3，而更上層還可能在
+# 跑 adb —— adb 會把 stdin 吸乾，那正是「第二支之後的手機會消失」那個 bug。
+profile_for_serial() { # <device_serial>
+  local want="$1" n got
+  [ -n "$want" ] || return 1
+  while IFS= read -r n <&4; do
+    [ -n "$n" ] || continue
+    got="$(profile_field "$n" DEVICE_SERIAL)" || got=""
+    [ -n "$got" ] && [ "$got" = "$want" ] && { printf '%s' "$n"; return 0; }
+  done 4< <(list_profiles)
+  return 1
+}
+
 # profile_set_field <profile> <欄位名> <值> — 只動這一個欄位，其他行原封不動。
 # save_profile 是「整份重寫」，要先把所有欄位都讀進全域變數才安全；掃描只是想
 # 補記一個 MAC，用這個就好。
@@ -1583,13 +1599,13 @@ battery_colored() {
   fi
 }
 
-usb_serials() { # 所有非 host:port 形式且狀態為 device 的 serial
-  adb devices 2>/dev/null | awk 'NR>1 && $1 != "" && $1 !~ /:/ && $2=="device" {print $1}'
+# `adb devices` 只解析這一次。host:port 形式的是網路 adb，不算 USB。
+usb_devices() { # → 每行「<serial> <狀態>」
+  adb devices 2>/dev/null | awk 'NR>1 && $1 != "" && $1 !~ /:/ && $2 != "" {print $1, $2}'
 }
 
-usb_unauthorized() {
-  adb devices 2>/dev/null | awk 'NR>1 && $1 != "" && $1 !~ /:/ && $2=="unauthorized" {print $1; exit}'
-}
+usb_serials()     { usb_devices | awk '$2=="device" {print $1}'; }
+usb_unauthorized() { usb_devices | awk '$2=="unauthorized" {print $1; exit}'; }
 
 # adb server 自己掛掉時的訊息（跟「連不到手機」是兩回事，不能混為一談）
 ADB_DAEMON_ERR='cannot connect to daemon|daemon still not running|failed to start daemon|protocol fault|adb server version'
@@ -3161,6 +3177,7 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
   hangar scan --fix-ip            順便把「認得出是同一支手機、但 profile 指著
                                    舊 IP」的那幾支修好
   hangar scan --json              同上，輸出 JSON
+  hangar usb [--json]             這台電腦上 USB 接著的裝置（含未授權的）
   hangar enroll [-p 手機] [--apk <檔>]
                                    用 USB 或網路 ADB 在這支手機上裝 agent
   hangar enroll [-p 手機] --reinstall
@@ -3227,6 +3244,106 @@ scrcpy 關掉後螢幕會維持關著，按一下手機電源鍵就回來。
 限制：手機重開機後 adb 的 ${ADB_PORT} 埠會消失（非 root 無法持久化），
       必須把那支手機接回 USB 或回到同一區網重跑一次 \`hangar setup\`。
 EOF
+}
+
+# hangar usb — 這台電腦上 USB 接著的裝置
+#
+# 裝置牆的第三個資料來源。前兩個都看不到「插著 USB、偵錯開了、但還沒 setup」
+# 的手機：`list` 只走 profile，`scan` 探的是 TCP 5555 —— 而 5555 要
+# `adb tcpip` 才會開。**授權的是 USB 那把金鑰，跟 5555 是兩件不相干的事**，
+# 所以那種手機在牆上會是一列匿名的 IP，跟隔壁的智慧插座長得一模一樣。
+#
+# `unauthorized` 是這裡最值錢的一格：「有人插了手機但沒人去按那個允許」
+# 在這個指令出現以前是查不出來的。
+#
+# 刻意**不**塞進 `scan --json` 的 hosts[]：那一層的語意是「這個網段上有什麼」，
+# 每一筆都有 IP 跟 MAC，USB 裝置兩個都沒有。獨立的 schema 比較誠實。
+cmd_usb() {
+  JSON_MODE=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) JSON_MODE=1; shift ;;
+      *)      die "usb 不認得參數：$1" ;;
+    esac
+  done
+
+  # 這個指令只需要 adb —— 不像投影還要 scrcpy。hub 那台常駐機器上沒裝 scrcpy
+  # 也該問得出「插了什麼」，跟 cmd_scan 不走 require_deps 是同一個理由。
+  if ! command -v adb >/dev/null 2>&1; then
+    if [ "$JSON_MODE" -eq 1 ]; then
+      jq -n --argjson schema "$USB_SCHEMA" \
+        '{ schema: $schema, devices: [],
+           errors: [{ code: "adb_missing", message: "找不到 adb" }] }'
+      return 0
+    fi
+    err "找不到 adb"; hint "brew install --cask android-platform-tools"; exit 1
+  fi
+  [ "$JSON_MODE" -eq 1 ] && ! command -v jq >/dev/null 2>&1 && {
+    err "找不到 jq（--json 需要它）"; hint "brew install jq"; exit 1; }
+  migrate_legacy
+
+  local rows="" ser st model dser prof
+  # fd 3：迴圈體裡的 adb 會把 stdin 吸乾，第二支之後就會憑空消失（踩過）
+  while read -r ser st <&3; do
+    [ -n "$ser" ] || continue
+    model=""; dser=""
+    # 機型與 ro.serialno 只有 device 狀態問得到。unauthorized／offline 問不到，
+    # 但 adb 的 USB serial 本來就是硬體序號，拿它當 device_serial 仍然對得起
+    # merge —— 而「問不到」正是那一格最該被看見的時候，不能因此讓它消失。
+    if [ "$st" = "device" ]; then
+      model="$(run_timeout 8 adb -s "$ser" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
+      dser="$(run_timeout 8 adb -s "$ser" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+    fi
+    [ -n "$dser" ] || dser="$ser"
+    prof="$(profile_for_serial "$dser")" || prof=""
+    rows="${rows}${ser}|${st}|${model}|${dser}|${prof}"$'\n'
+  done 3< <(usb_devices)
+
+  if [ "$JSON_MODE" -eq 1 ]; then
+    local objs=""
+    while IFS='|' read -r ser st model dser prof; do
+      [ -n "$ser" ] || continue
+      objs="${objs}$(jq -n --arg ser "$ser" --arg st "$st" --arg model "$model" \
+        --arg dser "$dser" --arg prof "$prof" '
+        def s: if . == "" then null else . end;
+        { adb_serial:    $ser,
+          adb_state:     $st,
+          device_serial: ($dser | s),
+          model:         ($model | s),
+          profile:       ($prof | s) }')"$'\n'
+    done <<< "$rows"
+    printf '%s' "$objs" | jq -s --argjson schema "$USB_SCHEMA" \
+      '{ schema: $schema, devices: ., errors: [] }'
+    return 0
+  fi
+
+  local total
+  total="$(printf '%s' "$rows" | grep -c . || true)"
+  if [ "${total:-0}" -eq 0 ]; then
+    info "這台電腦上沒有 USB 接著的 Android 裝置"
+    return 0
+  fi
+  printf '\n  %s %s %s %s\n' \
+    "$(pad '序號' 20)" "$(pad '狀態' 14)" "$(pad '身分' 12)" "機型"
+  printf '  %s\n' "────────────────────────────────────────────────────────"
+  local unauth=0 s_col s_txt
+  while IFS='|' read -r ser st model dser prof; do
+    [ -n "$ser" ] || continue
+    case "$st" in
+      device)       s_col="$C_GRN"; s_txt="已授權" ;;
+      unauthorized) s_col="$C_RED"; s_txt="未授權"; unauth=1 ;;
+      *)            s_col="$C_YEL"; s_txt="$st" ;;
+    esac
+    printf '  %s %s%s%s %s %s\n' \
+      "$(pad "$dser" 20)" "$s_col" "$(pad "$s_txt" 14)" "$C_0" \
+      "$(pad "${prof:--}" 12)" "${model:-?}"
+  done <<< "$rows"
+  echo
+  if [ "$unauth" -eq 1 ]; then
+    warn "有未授權的裝置：請到那支手機上按「一律允許透過這台電腦」"
+  fi
+  printf '  %s插著 USB 不等於牆上看得見 —— 那要 hangar setup 把 %s 打開%s\n\n' \
+    "$C_DIM" "$ADB_PORT" "$C_0"
 }
 
 # hangar scan — 列出這個網段上看得到的裝置
@@ -3347,7 +3464,7 @@ cmd_scan() {
     exit 1
   fi
 
-  local total rnd_any=0 open_n=0
+  local total rnd_any=0 open_n=0 anon_n=0
   total="$(printf '%s' "$SCAN_HOSTS" | grep -c . || true)"
   if [ "${total:-0}" -eq 0 ]; then
     warn "這個網段（${SCAN_SUBNET}.0/24）上沒看到其他裝置"
@@ -3394,7 +3511,12 @@ cmd_scan() {
     prof="${prof%%|*}"
     if [ -n "$prof" ]; then p_txt="$prof"
     elif [ -n "$SCAN_GATEWAY" ] && [ "$ip" = "$SCAN_GATEWAY" ]; then p_txt="閘道器"
-    else p_txt="-"; fi
+    else
+      p_txt="-"
+      # 認不出是什麼的那幾台：沒 profile、不是閘道器、5555 關著、也沒有 agent。
+      # 一支還沒 setup 的 Android 長的就是這個樣子 —— 跟智慧插座一模一樣。
+      [ "$adb" != "open" ] && [ -z "$agent" ] && anon_n=$(( anon_n + 1 ))
+    fi
 
     # 顏色碼放在補齊過的內容外面，才不會被算進欄寬
     printf '  %s %s %s%s%s %s%s%s %s %s%s%s\n' \
@@ -3420,6 +3542,15 @@ cmd_scan() {
   else
     printf '  %s沒開偵錯的裝置只看得到 IP / MAC —— 機型與電量要等手機端 agent app%s\n' \
       "$C_DIM" "$C_0"
+  fi
+  # 「掃不到我的手機」這個提問就算多了 USB 這個來源也還是會出現 —— 手機不在
+  # 同一個 Wi-Fi、或 USB 插在別人電腦上的時候，它本來就該是匿名的。與其多一個
+  # 欄位，不如在看到匿名那幾台時直接把話講完：**開了偵錯也一樣看不出來**。
+  if [ "$anon_n" -gt 0 ]; then
+    printf '  %s其中 %s 台認不出是什麼：可能是一支還沒 hangar setup 的 Android ——%s\n' \
+      "$C_DIM" "$anon_n" "$C_0"
+    printf '  %s  偵錯開得再正確，%s 沒打開在這裡就是匿名的（那是 setup 做的事）%s\n' \
+      "$C_DIM" "$ADB_PORT" "$C_0"
   fi
   if [ "$rnd_any" -eq 1 ]; then
     printf '  %s隨機 MAC 的裝置不能只靠 MAC 認人：使用者「忘記網路」再連就會換一組%s\n' \
@@ -3465,6 +3596,7 @@ main() {
     reset)           shift; cmd_reset "$@" ;;
     list|ls)         shift; cmd_list "$@" ;;
     scan)            shift; cmd_scan "$@" ;;
+    usb)             shift; cmd_usb "$@" ;;
     enroll)          shift; cmd_enroll "$@" ;;
     ring)            shift; cmd_ring "$@" ;;
     adb|debug)       shift; cmd_adb "$@" ;;

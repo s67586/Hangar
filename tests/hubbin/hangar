@@ -17,5 +17,11 @@ case "$1" in
     [ -f "$MOCK_STATE/scan_fail" ] && { echo "掃不動" >&2; exit 1; }
     cat "$MOCK_STATE/scan_json"
     ;;
+  usb)
+    [ -f "$MOCK_STATE/usb_fail" ] && { echo "問不到 adb" >&2; exit 1; }
+    # 沒準備檔案就當「沒有插任何東西」—— 大部分測試不關心這一份
+    if [ -f "$MOCK_STATE/usb_json" ]; then cat "$MOCK_STATE/usb_json"
+    else echo '{"schema":1,"devices":[],"errors":[]}'; fi
+    ;;
   *) echo "假 hangar 不認得：$1" >&2; exit 2 ;;
 esac
