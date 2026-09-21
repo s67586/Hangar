@@ -580,6 +580,67 @@ scan_adb_open() { # <ip> → open / closed / unknown
   then printf 'open'; else printf 'closed'; fi
 }
 
+# scan_probe_one <ip> → "adb|agent 版本|是否入伍"
+#
+# 一台的份。拆出來是為了讓上面那層能把它平行丟出去 —— 這裡面每一個動作都是
+# 在等對方回話，不是在算什麼。
+scan_probe_one() {
+  local adb agent="" enrolled="" rec
+  adb="$(scan_adb_open "$1")"
+  # mDNS 已經報過名的就不用再探一次埠，直接問版本
+  if scan_mdns_for "$1" >/dev/null; then
+    rec="$(scan_agent_at "$1" 1)"
+    # 答不出話也還是要標成有 agent —— mDNS 說它在，只是 curl 沒裝或它剛好沒回
+    [ -n "$rec" ] || rec="?|"
+  else
+    rec="$(scan_agent_at "$1")"
+  fi
+  if [ -n "$rec" ]; then
+    agent="${rec%%|*}"
+    enrolled="${rec#*|}"
+    [ "$rec" = "$agent" ] && enrolled=""
+  fi
+  printf '%s|%s|%s' "$adb" "$agent" "$enrolled"
+}
+
+# 把 SCAN_HOSTS 裡每一台的 5555 與 5599 探一遍，結果填回去。
+#
+# **為什麼要平行**：這段原本是一台接一台跑的。在「埠沒開就立刻回 RST」的網路上
+# 每台只花十幾毫秒，慢不起來，所以看不出問題。但對方改成**靜默丟棄** SYN 時
+# （公司的資安設備看到有人掃整個網段就會這樣做），每一次探測都變成等滿
+# run_timeout 的 3 秒 —— 一個 /24 上 47 台就是好幾分鐘，hub 那邊 120 秒的逾時
+# 永遠等不到結果，裝置牆上會一台都不出現。這是真的踩過的坑。
+#
+# ping sweep 一開始就是平行的（SCAN_PARALLEL），探埠沒有理由不是。
+#
+# 每台的結果寫進一個以 IP 命名的檔案，再照原本的順序併回去 —— 平行跑的東西
+# 不能直接往同一個變數上接，那是誰先回來就誰在前面。
+scan_probe_hosts() {
+  local dir ip mac vendor rnd rest rec new="" running=0
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/hangar-scan.XXXXXX" 2>/dev/null)" || dir=""
+  if [ -n "$dir" ]; then
+    while IFS='|' read -r ip mac vendor rnd rest; do
+      [ -n "$ip" ] || continue
+      scan_probe_one "$ip" > "$dir/$ip" &
+      running=$(( running + 1 ))
+      if [ "$running" -ge "$SCAN_PARALLEL" ]; then wait; running=0; fi
+    done <<< "$SCAN_HOSTS"
+    wait
+  fi
+  while IFS='|' read -r ip mac vendor rnd rest <&3; do
+    [ -n "$ip" ] || continue
+    if [ -n "$dir" ] && [ -f "$dir/$ip" ]; then
+      rec="$(cat "$dir/$ip")"
+    else
+      # mktemp 失敗時的退路：慢，但不會因此少掉一整欄資料
+      rec="$(scan_probe_one "$ip")"
+    fi
+    new="${new}${ip}|${mac}|${vendor}|${rnd}|${rec}"$'\n'
+  done 3<<< "$SCAN_HOSTS"
+  [ -n "$dir" ] && rm -rf "$dir"
+  SCAN_HOSTS="$new"
+}
+
 # scan_run <subnet 或空> <要不要 ping sweep 0/1> <要不要測 5555 0/1>
 #   結果放在 SCAN_HOSTS，錯誤放在 SCAN_ERRORS。掃得動就 return 0。
 scan_run() {
@@ -598,7 +659,8 @@ scan_run() {
   [ "$do_probe" -eq 1 ] && scan_mdns_collect
   [ "$do_sweep" -eq 1 ] && scan_sweep
 
-  local ip mac vendor rnd adb agent agent_enrolled agent_rec
+  # 先把「這個網段上有哪幾台」整理出來。這一段不碰網路，探埠留到下面一次做完。
+  local ip mac vendor rnd
   while read -r ip mac; do
     [ -n "$ip" ] || continue
     case "$ip" in "${SCAN_SUBNET}."*) : ;; *) continue ;; esac
@@ -610,26 +672,11 @@ scan_run() {
     rnd=0; scan_mac_is_random "$mac" && rnd=1
     vendor=""
     [ "$rnd" -eq 0 ] && vendor="$(scan_vendor "$mac")"
-    adb="unknown"
-    agent=""; agent_enrolled=""; agent_rec=""
-    if [ "$do_probe" -eq 1 ]; then
-      adb="$(scan_adb_open "$ip")"
-      # mDNS 已經報過名的就不用再探一次埠，直接問版本
-      if scan_mdns_for "$ip" >/dev/null; then
-        agent_rec="$(scan_agent_at "$ip" 1)"
-        # 答不出話也還是要標成有 agent —— mDNS 說它在，只是 curl 沒裝或它剛好沒回
-        [ -n "$agent_rec" ] || agent_rec="?|"
-      else
-        agent_rec="$(scan_agent_at "$ip")"
-      fi
-      if [ -n "$agent_rec" ]; then
-        agent="${agent_rec%%|*}"
-        agent_enrolled="${agent_rec#*|}"
-        [ "$agent_rec" = "$agent" ] && agent_enrolled=""
-      fi
-    fi
-    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|${adb}|${agent}|${agent_enrolled}"$'\n'
+    # 沒探的時候長什麼樣，--no-probe 就是停在這個樣子
+    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|unknown||"$'\n'
   done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+
+  [ "$do_probe" -eq 1 ] && scan_probe_hosts
 
   scan_match_profiles
   return 0
