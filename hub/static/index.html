@@ -195,14 +195,15 @@
         </div>
         <div>
           <b>helper 才負責操作</b>
-          <p>投影、響鈴、註冊、更新 agent 與切換偵錯，都由按按鈕這台電腦上的 helper 執行。</p>
+          <p>投影、響鈴、註冊、更新 agent 與切換偵錯，都由按按鈕這台電腦上的 helper 執行。<code>hangar wall</code> 會把 hub 與這台電腦的 helper 一起帶起來，但 helper 仍是另一個只綁 127.0.0.1 的服務。</p>
         </div>
       </div>
 
       <div class="help-setup">
         <h3>先讓這台電腦能操作</h3>
         <ol>
-          <li>執行 <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次。</li>
+          <li>這一頁就是從這台電腦的 <code>hangar wall</code> 開出來的話，按鈕本來就是活的 —— 鑰匙由 hub 直接交給這一頁（它只回答本機）。</li>
+          <li>hub 在別台機器上時，這台要自己跑 <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次。</li>
           <li>第一次投影某支手機前，在這台電腦跑一次 <code>hangar setup</code>；adb 授權綁定的是每台電腦自己的金鑰。</li>
         </ol>
       </div>
@@ -280,15 +281,71 @@ function row(dt, dd, cls) {
 // scrcpy 視窗開在那台常駐機器的螢幕上，沒有人看得到。網頁又啟動不了本機程式，
 // 所以那台電腦要自己跑一支 helper（helper/hangar_helper.py），這頁再去叫它。
 //
-// 鑰匙是 helper 印出來的連結帶進來的，放在 # 後面 —— # 不會送到伺服器，所以
-// hub 從頭到尾不知道這把鑰匙。存進 localStorage 之後這台瀏覽器就記得了。
+// 鑰匙有兩條路進來：
+//
+//   自動配對   hub 跟 helper 在同一台（hangar wall）的時候，hub 的
+//              GET /api/helper 直接把埠與鑰匙給這一頁 —— 但它**只回答
+//              loopback**，所以只有在跑 hub 的那台電腦上開這一頁才拿得到。
+//   帶鑰匙的連結  helper 獨立跑在別台電腦上時的那條路。鑰匙放在 # 後面 ——
+//              # 不會送到伺服器，所以 hub 從頭到尾不知道這把鑰匙。存進
+//              localStorage 之後這台瀏覽器就記得了。
+//
+// localStorage 那份優先：它是這台瀏覽器明確被告知過的東西。自動配對只是在
+// 沒有（或那一份已經用不動了）的時候補上。
 const HELPER_KEY = "hangar.helper";
 const HELPER_PORT = 8788;
 
-function helperCfg() {
+// 自動配對拿到的設定。刻意**不**寫進 localStorage：hub 換一把鑰匙（--new-helper-token）
+// 之後，下一次問就自動跟上，不會留著一份過期的在瀏覽器裡騙人。
+let autoCfg = null;
+// 自動配對問到了什麼：null = 還沒問 / "ok" / "remote"（403，這一頁不是從 hub 那台
+// 開的）/ "off"（404，hub 沒有內嵌 helper）/ "none"（舊版 hub，沒有這個端點）
+let autoWhy = null;
+// hub 講的那句原因，"off" 的時候要原封不動顯示出來（是 --no-helper 還是
+// --no-auto-pair，還是 helper 的埠被佔住了，下一步完全不一樣）
+let autoReason = "";
+// 下一步。hub 講什麼就顯示什麼 —— 這裡不去猜
+let autoHint = "";
+
+async function autoPair() {
+  autoReason = ""; autoHint = "";
+  try {
+    const r = await fetch("/api/helper", { cache: "no-store" });
+    if (r.status === 403) { autoCfg = null; autoWhy = "remote"; return; }
+    if (r.status === 404) {
+      // 舊版 hub 也是 404。分得出來的是回應內容：這個端點存在時會給 JSON 的
+      // ok:false + reason，不存在時是 BaseHTTPRequestHandler 的 HTML 錯誤頁。
+      let j = null;
+      try { j = await r.json(); } catch (e) { /* 舊版 hub */ }
+      autoCfg = null;
+      autoWhy = j && j.reason ? "off" : "none";
+      autoReason = (j && j.reason) || "";
+      autoHint = (j && j.hint) || "";
+      return;
+    }
+    const j = await r.json();
+    if (!j.ok || !j.token) {
+      autoCfg = null; autoWhy = "off";
+      autoReason = j.reason || ""; autoHint = j.hint || "";
+      return;
+    }
+    autoCfg = { token: j.token, port: j.port || HELPER_PORT };
+    autoWhy = "ok";
+  } catch (e) {
+    // hub 自己叫不動（頁面是舊的、網路斷了）—— 那不是 helper 的問題，
+    // 底下的輪詢本來就會把它顯示出來
+    autoCfg = null; autoWhy = "none";
+  }
+}
+
+function storedCfg() {
   // localStorage 在無痕視窗或擋了網站資料時會直接丟例外，不能讓它打死整頁
   try { return JSON.parse(localStorage.getItem(HELPER_KEY) || "null"); }
   catch (e) { return null; }
+}
+
+function helperCfg() {
+  return storedCfg() || autoCfg;
 }
 
 function adoptKeyFromHash() {
@@ -311,25 +368,41 @@ window.addEventListener("hashchange", () => { if (adoptKeyFromHash()) helperTick
 // status: none（沒設定過）/ ok / nokey（鑰匙不對）/ down（叫不動）
 let helper = { status: "none" };
 
-async function helperPing() {
-  const cfg = helperCfg();
-  if (!cfg) { helper = { status: "none" }; return; }
+async function pingCfg(cfg) {
   try {
     const r = await fetch(`http://127.0.0.1:${cfg.port}/healthz`,
       { headers: { Authorization: "Bearer " + cfg.token }, cache: "no-store" });
-    if (r.status === 401) { helper = { status: "nokey" }; return; }
+    if (r.status === 401) return { status: "nokey" };
     const j = await r.json();
-    helper = { status: "ok", host: j.host, profiles: j.profiles || [] };
+    return { status: "ok", host: j.host, profiles: j.profiles || [] };
   } catch (e) {
     // 連不上跟「Origin 被擋掉」在瀏覽器裡長得一模一樣（被擋的回應讀不到），
-    // 所以這裡兩個原因都要講，而且要把這一頁的網址原封不動印出來讓人去比對
-    helper = { status: "down" };
+    // 所以下面那句話兩個原因都要講，而且要把這一頁的網址原封不動印出來讓人比對
+    return { status: "down" };
   }
+}
+
+async function helperPing() {
+  // 兩份設定都試，localStorage 那份優先。它可能是上一次在別的地方配對留下來的
+  // （埠換了、鑰匙換了），而一份過期的記憶不該把一個好好的 helper 擋在外面。
+  const stored = storedCfg();
+  let out = null;
+  if (stored) {
+    out = await pingCfg(stored);
+    if (out.status === "ok") { helper = out; return; }
+  }
+  const differs = autoCfg && (!stored || autoCfg.token !== stored.token
+                              || autoCfg.port !== stored.port);
+  if (differs) {
+    const auto = await pingCfg(autoCfg);
+    if (auto.status === "ok") { helper = auto; return; }
+    out = out || auto;
+  }
+  helper = out || { status: "none" };
 }
 
 function helperLine() {
   const el = document.getElementById("helper");
-  const port = (helperCfg() || {}).port || HELPER_PORT;
   if (helper.status === "ok") {
     el.className = "helper";
     el.innerHTML = `這台電腦：<b>${esc(helper.host || "?")}</b>` +
@@ -342,11 +415,19 @@ function helperLine() {
     el.className = "helper off";
     el.innerHTML = "叫不動這台電腦的 helper：它沒在跑，或者它的 <code>--hub</code> " +
       `跟這一頁的網址對不起來（這一頁是 <code>${esc(location.origin)}</code>）。`;
+  } else if (autoWhy === "off") {
+    // helper 沒起來是 hub 那邊的決定 —— 把它的原話帶過來，不然這裡只能猜
+    el.className = "helper off";
+    el.innerHTML = `這個 hub 沒有把鑰匙交給這一頁：${esc(autoReason)}` +
+      (autoHint ? `　—— ${esc(autoHint)}` : "");
   } else {
     el.className = "helper";
     el.innerHTML = "要按投影、響鈴或偵錯按鈕，這台電腦得先跑一支 helper：" +
       `<code>./helper/hangar_helper.py --hub ${esc(location.origin)}</code>` +
-      "，然後照它印出來的連結進來一次。";
+      "，然後照它印出來的連結進來一次。" +
+      (autoWhy === "remote" ? "" :
+        "　（hub 跟你在同一台的話，改用 <code>hangar wall</code> 開，" +
+        "鑰匙會自動給這一頁。）");
   }
 }
 
@@ -1091,7 +1172,14 @@ btn.addEventListener("click", async () => {
 
 // helper 只在這台電腦上，問它很便宜，但也不必比畫面更新還勤
 // 這一行要在 hub 還沒回話的時候就畫得出來，所以它不經過 paint()
-async function helperTick() { await helperPing(); helperLine(); paint(); }
+async function helperTick() {
+  // 還沒問過，或現在沒有可用的 helper 時，去問一次自動配對。同源的一個 GET，
+  // 便宜到可以每一輪都問 —— 換來的是「後來才開 hangar wall」不必重新整理頁面。
+  if (autoWhy === null || helper.status !== "ok") await autoPair();
+  await helperPing();
+  helperLine();
+  paint();
+}
 
 tick();
 helperTick();

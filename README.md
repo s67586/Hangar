@@ -13,7 +13,7 @@ mDNS 廣播則本來就只在區網成立。
 |---|---|
 | [`hangar`](hangar) | CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源 |
 | [`hub/`](hub) | 常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件） |
-| [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動 |
+| [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動。`hangar wall` 會連它一起帶起來 |
 | [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
 
 > **[📖 使用手冊（一頁可讀版）](https://claude.ai/artifact/WyegAVdz2UzVitcvwB5kZ8)**
@@ -33,8 +33,7 @@ hangar usb                  # 這台電腦上 USB 接著的（含沒按授權的
 hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
 hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自己開回來）
-./hub/hangar_hub.py         # 裝置牆：http://127.0.0.1:8787/
-./helper/hangar_helper.py --hub http://裝置牆的網址    # 牆上的動作按鈕要按得動
+hangar wall                 # 裝置牆：http://127.0.0.1:8787/（動作按鈕直接可用）
 ```
 
 `setup` 預設建立的是**區網直連**的 profile。手機要拿去別的網段、4G/5G 或 NAT
