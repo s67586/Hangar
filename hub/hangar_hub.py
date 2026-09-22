@@ -110,30 +110,28 @@ def load_helper(path=HELPER_PATH):
 
 
 def local_ips():
-    """這台機器上看得到的位址。拿不到就算了 —— 少一個名字只代表從那個網址開的
-    頁面叫不動 helper，不是 hub 起不來。"""
-    ips = []
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None):
-            ip = info[4][0].split("%")[0]     # 去掉 IPv6 的 scope id
-            if ip not in ips:
-                ips.append(ip)
-    except OSError:
-        pass
-    # 主機名解不出區網位址的機器很多（macOS 常常只給 127.0.0.1）。這招問的是
-    # 核心的路由表：UDP socket 的 connect 不會送出任何封包，但 getsockname()
-    # 會說「真要出去的話會用哪張網卡」。
+    """這台機器對外會用哪個位址。拿不到就算了 —— 少一個名字只代表從那個網址開
+    的頁面叫不動 helper，不是 hub 起不來。
+
+    **這條路上一個名字解析都不准有。** 它跑在「hub 已經綁好、但還沒進
+    serve_forever」的那一小段裡，任何會卡住的呼叫都會讓 hub 看起來像死了：
+    socket 綁著、連線排在 backlog 裡、沒有人 accept，而啟動訊息早就印出去了。
+    上面那個 Server 跳過 server_bind 裡的 getfqdn() 是完全同一個理由 —— 在反向
+    解析不通或很慢的機器上（GitHub 的 macOS runner 就是這樣）那會一路卡到 DNS
+    逾時。getaddrinfo(gethostname()) 是同一個陷阱的另一個入口。
+
+    所以這裡問的是核心的路由表：UDP socket 的 connect 不送出任何封包、也不做
+    名字解析，但 getsockname() 會說「真要出去的話會用哪張網卡」。代價是多網卡
+    的機器只拿得到主要那一張 —— 另外那些要自己用 --hub 補。
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 53))
-        ip = s.getsockname()[0]
-        if ip not in ips:
-            ips.append(ip)
+        return [s.getsockname()[0]]
     except OSError:
-        pass
+        return []
     finally:
         s.close()
-    return ips
 
 
 def local_origins(port):
@@ -148,6 +146,9 @@ def local_origins(port):
     把區網 IP 放進白名單並沒有放寬任何權限。白名單管的是「哪一頁的 JS 叫得動
     **這台**的 helper」；同事在他自己的電腦上開 http://192.168.1.5:8787，他的
     瀏覽器打的是他自己的 127.0.0.1，從頭到尾碰不到這台。
+
+    gethostname() 只是讀核心裡的那個字串，不做解析 —— 這條路不碰 DNS，理由見
+    local_ips()。
     """
     names = ["127.0.0.1", "localhost", "[::1]", socket.gethostname(), hostname()]
     names += local_ips()

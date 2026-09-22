@@ -170,7 +170,23 @@ if ! hub_start; then
   echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"; exit 1
 fi
 echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
-assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
+
+# 印出網址之後就必須**馬上**開始服務。
+#
+# 這條看起來是廢話，但它擋的是一種很難查的壞法：綁好 socket 到進 serve_forever
+# 之間多做了一件會卡住的事（DNS、跑一次 hangar、等某個檔案）。那段期間 socket
+# 是綁著的，連線排在 backlog 裡沒有人 accept —— 啟動訊息早就印出去了，看起來
+# 一切正常，實際上每個請求都掛到逾時。反向解析很慢的機器上真的發生過。
+t0="$(date +%s)"
+out="$(get "$HUB_URL/healthz")"
+t1="$(date +%s)"
+assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$out")"
+if [ "$((t1 - t0))" -le 3 ]; then
+  printf '  PASS  %s\n' "印出網址之後馬上就服務得了"; PASS=$((PASS+1))
+else
+  printf '  FAIL  %s（等了 %s 秒）\n' "印出網址之後馬上就服務得了" "$((t1 - t0))"
+  FAIL=$((FAIL+1))
+fi
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 check  "首頁不快取舊版按鈕事件" "Cache-Control: no-store" "$(get_headers "$HUB_URL/")"
 check  "首頁含註冊 handler" "async function enroll" "$(get "$HUB_URL/")"
