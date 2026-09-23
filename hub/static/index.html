@@ -151,10 +151,16 @@
     <div class="grid" id="grid"></div>
   </section>
 
-  <section class="zone muted" id="zone-others" hidden>
-    <h2 class="zone-h" id="h-others"></h2>
-    <p class="zone-note" id="others-note"></p>
-    <div class="grid" id="grid-others"></div>
+  <section class="zone muted" id="zone-usb" hidden>
+    <h2 class="zone-h" id="h-usb"></h2>
+    <p class="zone-note" id="usb-note"></p>
+    <div class="grid" id="grid-usb"></div>
+  </section>
+
+  <section class="zone muted" id="zone-scan" hidden>
+    <h2 class="zone-h" id="h-scan"></h2>
+    <p class="zone-note" id="scan-note"></p>
+    <div class="grid" id="grid-scan"></div>
   </section>
 
   <div id="empty"></div>
@@ -1127,20 +1133,26 @@ function paint() {
   document.getElementById("grid").innerHTML = mine.map(card).join("");
   document.getElementById("zone-mine").hidden = mine.length === 0;
 
-  // 這一區的標題與說明要照實際來源改口：USB 那一份的卡不在網段上，
-  // 說成「掃描看得到它們在這個網段上」是錯的（而且正好錯在最會誤導的地方）。
-  const usbOnly = others.filter(d => (d.sources || []).includes("usb"));
-  const scanned = others.filter(d => (d.sources || []).includes("scan"));
-  document.getElementById("h-others").innerHTML =
-    usbOnly.length && !scanned.length
-      ? `USB 上還有 <b>${others.length}</b> 台`
-      : `還沒納管的 <b>${others.length}</b> 台`;
-  document.getElementById("others-note").textContent =
-    [scanned.length ? "掃描看得到它們在這個網段上" : "",
-     usbOnly.length ? `有 ${usbOnly.length} 台是插在 ${(latest && latest.host) || "hub 那台電腦"} 的 USB 上（還沒 setup，所以掃描認不出來）` : ""]
-      .filter(Boolean).join("；") + "，但都還沒有對應的設定。";
-  document.getElementById("grid-others").innerHTML = others.map(card).join("");
-  document.getElementById("zone-others").hidden = others.length === 0;
+  // 還沒納管的再依來源分兩區：插在 hub USB 上的是伸手就能 setup 的，
+  // 網段掃描看到的只知道它在網路上。混在一起的話，說明文字只能含糊帶過。
+  // 同時出現在兩邊的算 USB —— 它就在手邊，這才是要緊的事。
+  const usb = others.filter(d => (d.sources || []).includes("usb"));
+  const scanned = others.filter(d => !(d.sources || []).includes("usb"));
+  const hubName = (latest && latest.host) || "hub 那台電腦";
+
+  document.getElementById("h-usb").innerHTML =
+    `USB 上還沒納管的 <b>${usb.length}</b> 台`;
+  document.getElementById("usb-note").textContent =
+    `插在 ${hubName} 的 USB 上，還沒 setup，所以掃描認不出來。`;
+  document.getElementById("grid-usb").innerHTML = usb.map(card).join("");
+  document.getElementById("zone-usb").hidden = usb.length === 0;
+
+  document.getElementById("h-scan").innerHTML =
+    `網段上還沒納管的 <b>${scanned.length}</b> 台`;
+  document.getElementById("scan-note").textContent =
+    "掃描看得到它們在這個網段上，但都還沒有對應的設定。";
+  document.getElementById("grid-scan").innerHTML = scanned.map(card).join("");
+  document.getElementById("zone-scan").hidden = scanned.length === 0;
 
   document.getElementById("empty").innerHTML = ds.length ? ""
     : `<div class="empty">還沒看到任何裝置。hangar 那邊先跑得起來嗎？<code>hangar list</code> / <code>hangar scan</code></div>`;
