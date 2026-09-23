@@ -320,7 +320,7 @@ m() { python3 -c '
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("hub", sys.argv[1])
 hub = importlib.util.module_from_spec(spec); spec.loader.exec_module(hub)
-print(eval(sys.argv[2], {}, {"merge": hub.merge}))
+print(eval(sys.argv[2], {"merge": hub.merge, "hub": hub}))
 ' "$HUB" "$1" 2>/dev/null; }
 
 assert "兩邊都沒資料也不會爆" "0" "$(m 'len(merge(None, None))')"
@@ -899,6 +899,39 @@ stale='merge({"devices":[{"profile":"far","device_serial":"S9","adb_state":"disc
   checkins={"S9":{"at":0,"profile":"far","peer_ip":"1.2.3.4","ips":[],"payload":{}}}, now=10000)'
 assert "回報太久以前 → 不算新鮮"  "False"   "$(m "${stale}[0]['checkin']['fresh']")"
 assert "不新鮮就不改狀態"          "offline" "$(m "${stale}[0]['state']")"
+
+echo "=== H22. 偵錯關著又叫不動（stranded）：要讓人看得見 ==="
+# M4 沒有自動復原，偵錯關掉之後唯一開得回來的路是 agent。agent 也叫不動的那支
+# 要在牆上明顯到不用盯。agent 叫不動那一輪 list 不帶 agent.adb，所以靠的是
+# hub 記住的「最後一次看到」。
+# dict 先放進單引號變數：bash 3.2 會在 "$(... "{a,b}" ...)" 裡做大括號展開
+off123='{"S1":{"enabled":False,"at":123}}'; on123='{"S1":{"enabled":True,"at":123}}'
+off1='{"S1":{"enabled":False,"at":1}}'
+alive='{"devices":[{"profile":"qa","device_serial":"S1","adb_state":"disconnected","agent":{"reachable":True,"adb":{"enabled":False}}}]}'
+adb_up='{"devices":[{"profile":"qa","device_serial":"S1","adb_state":"device","agent":{"reachable":False}}]}'
+no_agent='{"devices":[{"profile":"qa","device_serial":"S1","adb_state":"disconnected"}]}'
+lost='{"devices":[{"profile":"qa","device_serial":"S1","adb_state":"disconnected","reachability":"offline","agent":{"reachable":False,"version":None,"enrolled":None}}]}'
+assert "最後看到是關的 → stranded" "123" \
+  "$(m "merge(${lost}, None, adb_seen=${off123})[0]['stranded']['adb_seen_off_at']")"
+assert "最後看到是開的 → 不算"     "None" "$(m "merge(${lost}, None, adb_seen=${on123})[0]['stranded']")"
+assert "沒看過 → 不猜"             "None" "$(m "merge(${lost}, None)[0]['stranded']")"
+assert "agent 答得出話 → 不算"     "None" \
+  "$(m "merge(${alive}, None, adb_seen=${off1})[0]['stranded']")"
+assert "adb 通著（偵錯一定開著）→ 不算" "None" \
+  "$(m "merge(${adb_up}, None, adb_seen=${off1})[0]['stranded']")"
+assert "沒入伍的手機 → 不算"       "None" \
+  "$(m "merge(${no_agent}, None, adb_seen=${off1})[0]['stranded']")"
+two='{"devices":[{"profile":"a-low","device_serial":"S0","adb_state":"device","battery":{"level":5}},{"profile":"z-qa","device_serial":"S1","adb_state":"disconnected","agent":{"reachable":False}}]}'
+assert "排在電量低的前面"          "z-qa" "$(m "merge(${two}, None, adb_seen=${off1})[0]['name']")"
+
+rec='(lambda seen: [hub.record_adb_seen(seen, {"devices":[{"device_serial":"S1","agent":{"reachable":True,"adb":{"enabled":False}}}]}, 10), hub.record_adb_seen(seen, {"devices":[{"device_serial":"S1","adb_state":"disconnected","agent":{"reachable":False}}]}, 20), seen][-1])({})'
+assert "agent 答得出話時記下來"       "False" "$(m "${rec}['S1']['enabled']")"
+assert "叫不動的那一輪不蓋掉最後一次" "10"    "$(m "${rec}['S1']['at']")"
+assert "adb 通著就記成開著"           "True" \
+  "$(m '(lambda s: [hub.record_adb_seen(s, {"devices":[{"device_serial":"S1","adb_state":"device","agent":{"reachable":False}}]}, 5), s["S1"]["enabled"]][-1])({})')"
+ci='(lambda st: [setattr(st, "tokens", {"S1": ("qa", "t")}), setattr(st, "tokens_at", 1e18), st.checkin({"device_serial":"S1","adb":{"enabled":False}}, "t", "1.2.3.4", now=50), st.adb_seen][-1])(hub.State())'
+assert "主動回報帶的偵錯開關也記"     "{'S1': {'enabled': False, 'at': 50}}" "$(m "$ci")"
+check  "牆上有橫幅"                   "要有人到手機旁邊處理" "$(cat "$SP/../hub/static/index.html")"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
