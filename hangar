@@ -3170,10 +3170,15 @@ enroll_handoff() { # <port>
 
   token="$(agent_gen_token)"
   [ -n "$token" ] || die "產不出 token"
+  # hub 沒設就整個不帶：adb shell 會把參數串成一行交給手機的 sh，空字串在那裡
+  # 就消失了，am 會看到一個沒有值的 --es hub 而整個廣播失敗。agent 那邊沒收到
+  # 這個 extra 就當成空的。
+  local hub_extra=()
+  [ -n "${AGENT_HUB:-}" ] && hub_extra=(--es hub "$AGENT_HUB")
   out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
           -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.ENROLL \
           --es serial "$DEVICE_SERIAL" --es token "$token" \
-          --es name "$PROFILE" --es hub "${AGENT_HUB:-}" 2>&1)"
+          --es name "$PROFILE" ${hub_extra[@]+"${hub_extra[@]}"} 2>&1)"
   if printf '%s' "$out" | grep -q 'already_enrolled'; then
     err "這支手機已經入伍過了"
     # 同一個 already_enrolled，底下是兩種完全不同的處境，給錯提示會把人帶去
@@ -3284,10 +3289,12 @@ agent_can_human() {
 # 是 exported 的廣播，同一支手機上的其他 app 也發得出來 —— 沒有 token 就能改
 # 的話，誰都能把手機的回報導去別的地方（回報裡帶著 token）。
 enroll_set_hub() {
-  local out
+  local out hub_extra=()
+  # --no-hub 就是不帶 hub 這個 extra（空字串過不了 adb shell，見 enroll_handoff）
+  [ -n "${AGENT_HUB:-}" ] && hub_extra=(--es hub "$AGENT_HUB")
   out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
           -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.SET_HUB \
-          --es token "$AGENT_TOKEN" --es hub "${AGENT_HUB:-}" 2>&1)"
+          --es token "$AGENT_TOKEN" ${hub_extra[@]+"${hub_extra[@]}"} 2>&1)"
   if printf '%s' "$out" | grep -q 'data="hub_set"'; then
     save_profile --quiet
     if [ -n "$AGENT_HUB" ]; then ok "agent 會往 ${AGENT_HUB} 回報"

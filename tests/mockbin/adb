@@ -76,6 +76,17 @@ case "$1" in
             exit 0 ;;
           am)
             echo "am $*" >> "$S/adb_log"
+            # 真的 adb shell 會把參數串成一行交給手機的 sh，空字串在那裡就消失
+            # 了 —— am 會看到一個沒有值的 --es 而整個失敗。這裡照做，不然測試
+            # 抓不到「帶了空的 extra」這種 bug（真的踩過：--no-hub 與沒帶 --hub
+            # 的入伍都會壞）。
+            for a in "$@"; do
+              if [ -z "$a" ]; then
+                echo "Exception occurred while executing 'broadcast':"
+                echo 'java.lang.IllegalArgumentException: Argument expected after "..."'
+                exit 0
+              fi
+            done
             # 入伍廣播：把 token 寫下來，假 agent 之後就認這一組
             tok=""; ser_in=""; name_in=""; hub_in=""; set_hub=0
             prev=""
