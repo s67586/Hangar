@@ -126,15 +126,18 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 9ef5721e9c6c</span><span class="fact">hangar v1.5.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 43987c96e063</span><span class="fact">hangar v1.5.0</span></div>
 </header>
 
 <div class="cols">
-<nav class="toc" aria-label="目錄"><ol><li><a href="#這份文件怎麼讀">這份文件怎麼讀</a></li><li><a href="#它解決了什麼">它解決了什麼</a></li><li><a href="#安裝">安裝</a></li><li><a href="#環境前提">環境前提</a></li><li><a href="#使用">使用</a></li><li><a href="#多台手機">多台手機</a></li><li><a href="#手機重開機後">手機重開機後</a></li><li><a href="#區網掃描">區網掃描</a></li><li><a href="#機器可讀的輸出--json">機器可讀的輸出（--json）</a></li><li><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></li><li><a href="#手機端-agent">手機端 agent</a></li><li><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></li><li><a href="#從裝置牆上按投影">從裝置牆上按投影</a></li><li><a href="#tailscale-acl強烈建議">Tailscale ACL（強烈建議）</a></li><li><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑（FLAG_SECURE）</a></li><li><a href="#疑難排解">疑難排解</a></li><li><a href="#參與開發">參與開發</a></li><li><a href="#授權">授權</a></li></ol></nav>
+<nav class="toc" aria-label="目錄"><ol><li><a href="#這份文件怎麼讀">這份文件怎麼讀</a></li><li><a href="#它解決了什麼">它解決了什麼</a></li><li><a href="#安裝">安裝</a></li><li><a href="#環境前提">環境前提</a></li><li><a href="#使用">使用</a></li><li><a href="#多台手機">多台手機</a></li><li><a href="#手機重開機後">手機重開機後</a></li><li><a href="#區網掃描">區網掃描</a></li><li><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></li><li><a href="#機器可讀的輸出--json">機器可讀的輸出（--json）</a></li><li><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></li><li><a href="#手機端-agent">手機端 agent</a></li><li><a href="#從裝置牆上按投影">從裝置牆上按投影</a></li><li><a href="#tailscale-acl強烈建議">Tailscale ACL（強烈建議）</a></li><li><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑（FLAG_SECURE）</a></li><li><a href="#機房放公司-apk-的注意事項">機房放公司 APK 的注意事項</a></li><li><a href="#疑難排解">疑難排解</a></li><li><a href="#參與開發">參與開發</a></li><li><a href="#授權">授權</a></li></ol></nav>
 <main>
 <p>一整隊 Android 測試機的停放、維護與調度。</p>
 <p>主場是<strong>同一個區網</strong>：掃得出網段上有哪些裝置、用 <strong>scrcpy</strong> 投影畫面，並且管得到 那些<strong>沒開偵錯、adb 碰不到</strong>的手機。</p>
 <p>手機不在同一個區網時（4G/5G、在別的網段、在公司 NAT 後面），加上 <strong>Tailscale</strong> 就照樣投得到 —— 那是<strong>建議的加值選項，不是前提</strong>。裝置牆的掃描（ARP）與 agent 的 mDNS 廣播則本來就只在區網成立。</p>
+<p><strong>同一個公司區網、但手機在另一個網段</strong>（Wi-Fi 與有線分在不同 VLAN、中間有路由） 有兩條不用 Tailscale 的路，可以一起用：</p>
+<ul><li><code>hangar scan --subnet 10.20.30</code>：不在這台網段上的 /24 會改成逐台探 5555／5599 （hub 要連得到手機；拿不到 MAC）</li><li><code>hangar wall --checkin 0.0.0.0:8789</code> 加上 <code>hangar enroll --hub http://&lt;hub&gt;:8789</code>： 手機上的 agent 定期<strong>主動回報</strong>給 hub（只要手機連得到 hub 就行）</li></ul>
+<p>見<a href="#跨網段">區網掃描</a>與 <a href="#跨網段主動回報check-in">hub</a>。</p>
 <div class="tw"><table><tr><td class="wrap"><a href="../hangar"><code>hangar</code></a></td><td class="wrap">CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源</td></tr><tr><td class="wrap"><a href="../hub"><code>hub/</code></a></td><td class="wrap">常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）</td></tr><tr><td class="wrap"><a href="../helper"><code>helper/</code></a></td><td class="wrap">跑在<strong>你自己那台電腦</strong>上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動。<code>hangar wall</code> 會連它一起帶起來</td></tr><tr><td class="wrap"><a href="../agent"><code>agent/</code></a></td><td class="wrap">手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型</td></tr></table></div>
 <div class="note"><p>專案方向、程式分層、測試涵蓋範圍與待確認清單見 <a href="../ROADMAP.md">ROADMAP.md</a>。</p></div>
 <div class="term"><div class="bar">shell</div><pre>hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
@@ -155,7 +158,7 @@ hangar wall                 # 裝置牆：http://127.0.0.1:8787/（動作按鈕�
 <p>README 走的是<strong>裝起來 → 設定一支手機 → 每天投影</strong>這條路，從頭讀到尾就夠用了：</p>
 <p><a href="#它解決了什麼">它解決了什麼</a> · <a href="#安裝">安裝</a> · <a href="#環境前提">環境前提</a> · <a href="#使用">使用</a> · <a href="#多台手機">多台手機</a> · <a href="#手機重開機後">手機重開機後</a> · <a href="#疑難排解">疑難排解</a></p>
 <p>每個題目再往下挖的部分放在 <a href="../docs"><code>docs/</code></a>，一份一個題目，需要時再跳過去：</p>
-<div class="tw"><table><tr><th></th><th>什麼時候看</th></tr><tr><td class="wrap"><a href="#區網掃描">區網掃描</a></td><td class="wrap"><code>hangar scan</code> 的完整說明：怎麼認出哪一台是哪支手機、<code>--fix-ip</code>、掃描拿不到什麼</td></tr><tr><td class="wrap"><a href="#機器可讀的輸出--json">機器可讀的輸出（<code>--json</code>）</a></td><td class="wrap"><code>list</code> / <code>status</code> / <code>scan</code> 的 schema 與 error code。要拿 hangar 當資料來源就看這份</td></tr><tr><td class="wrap"><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></td><td class="wrap">第二台電腦怎麼接上同一支手機，RD 怎麼把 app build 進去</td></tr><tr><td class="wrap"><a href="#手機端-agent">手機端 agent</a></td><td class="wrap">讓<strong>沒開偵錯</strong>的手機也回報得了電量與機型的那支 app：入伍、升級、限制</td></tr><tr><td class="wrap"><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></td><td class="wrap">常駐服務與那頁裝置牆：參數、更新頻率、狀態的意思、換一台 hub</td></tr><tr><td class="wrap"><a href="#從裝置牆上按投影">從裝置牆上按投影</a></td><td class="wrap">牆上那幾顆按鈕（投影、響鈴、切偵錯、入伍）怎麼運作，以及 helper 的三道鎖</td></tr><tr><td class="wrap"><a href="#tailscale-acl強烈建議">Tailscale ACL</a></td><td class="wrap">走 Tailscale 時<strong>強烈建議</strong>設的白名單</td></tr><tr><td class="wrap"><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑</a></td><td class="wrap">投影某些畫面時整片黑掉（<code>FLAG_SECURE</code>）的處理方式</td></tr></table></div>
+<div class="tw"><table><tr><th></th><th>什麼時候看</th></tr><tr><td class="wrap"><a href="#區網掃描">區網掃描</a></td><td class="wrap"><code>hangar scan</code> 的完整說明：怎麼認出哪一台是哪支手機、<code>--fix-ip</code>、掃描拿不到什麼</td></tr><tr><td class="wrap"><a href="#機器可讀的輸出--json">機器可讀的輸出（<code>--json</code>）</a></td><td class="wrap"><code>list</code> / <code>status</code> / <code>scan</code> 的 schema 與 error code。要拿 hangar 當資料來源就看這份</td></tr><tr><td class="wrap"><a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a></td><td class="wrap">第二台電腦怎麼接上同一支手機，RD 怎麼把 app build 進去</td></tr><tr><td class="wrap"><a href="#手機端-agent">手機端 agent</a></td><td class="wrap">讓<strong>沒開偵錯</strong>的手機也回報得了電量與機型的那支 app：入伍、升級、限制</td></tr><tr><td class="wrap"><a href="#hub裝置牆網頁">hub（裝置牆網頁）</a></td><td class="wrap">常駐服務與那頁裝置牆：參數、更新頻率、狀態的意思、換一台 hub</td></tr><tr><td class="wrap"><a href="#從裝置牆上按投影">從裝置牆上按投影</a></td><td class="wrap">牆上那幾顆按鈕（投影、響鈴、切偵錯、入伍）怎麼運作，以及 helper 的三道鎖</td></tr><tr><td class="wrap"><a href="#tailscale-acl強烈建議">Tailscale ACL</a></td><td class="wrap">走 Tailscale 時<strong>強烈建議</strong>設的白名單</td></tr><tr><td class="wrap"><a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑</a></td><td class="wrap">投影某些畫面時整片黑掉（<code>FLAG_SECURE</code>）的處理方式</td></tr><tr><td class="wrap"><a href="#機房放公司-apk-的注意事項">機房放公司 APK 的注意事項</a></td><td class="wrap">沒加固的測試版放在共用測試機上，誰拿得走什麼、測試版與加固版怎麼分開對待</td></tr></table></div>
 </section>
 <section id="它解決了什麼">
 <h2 id="它解決了什麼">它解決了什麼</h2>
@@ -330,6 +333,7 @@ hangar all          <span class="c"># 兩支一起開，視窗標題各是 work 
 <p><code>list</code> 只看得到<strong>已經設定過</strong>的手機。<code>hangar scan</code> 反過來：不管有沒有設定、 有沒有開偵錯，只回答「這個區網上現在有哪些東西」。</p>
 <div class="term"><div class="bar">bash</div><pre>hangar scan                        <span class="c"># 掃預設路由所在的那個 /24</span>
 hangar scan --subnet 192.168.1     <span class="c"># 指定網段（也吃 192.168.1.0/24 或網段內任一 IP）</span>
+hangar scan --subnet 192.168.1 --subnet 10.20.30   <span class="c"># 好幾個；不在這台網段上的逐台探埠</span>
 hangar scan --no-ping              <span class="c"># 不做 ping sweep，只讀現有的 ARP 表（快很多）</span>
 hangar scan --no-probe             <span class="c"># 不去測每台的 5555</span>
 hangar scan --fix-ip               <span class="c"># 把「認得出、但 profile 指著舊 IP」的那幾支修好</span>
@@ -346,6 +350,10 @@ hangar scan --json</pre></div>
 <p>它怎麼做到的：先對整個 /24 各送一個 ping 把核心的 ARP 表填起來，再讀 <code>arp -an</code> （沒有 <code>arp</code> 就用 <code>ip neigh</code>），最後對每個找到的 IP 測一次 5555。ARP 表裡的廣播 與多播位址（<code>ff:ff:…</code>、mDNS 的 <code>01:00:5e:…</code>）會濾掉 —— 那些背後沒有一台機器。</p>
 <p><code>身分</code> 那一欄回答的是「這台對我們來說是什麼」：已經設定過的手機叫什麼名字、 是不是這個網段的<strong>閘道器</strong>、還是完全不認識（<code>-</code>）。閘道器每次掃描都會出現而且 絕對不是測試機，標出來才不用每次重新想一次「192.168.1.1 是什麼」。</p>
 <div class="note"><p>閘道位址是問<strong>掃描用的那張介面</strong>拿到的（macOS 問 DHCP 給的 router，Linux 問 那張介面的預設路由），不是問「預設路由的 gateway」—— 跑 Tailscale 的機器上 預設路由是點對點通道，根本沒有閘道那一欄。問不到就不標，不會亂猜一台。</p></div>
+<h3 id="跨網段">跨網段</h3>
+<p>ARP、ping sweep、mDNS 都過不了路由器：路由器後面的手機永遠不會出現在這台電腦的 ARP 表裡。所以 <code>--subnet</code> 指到<strong>不是這台電腦所在的 /24</strong> 時，改成對 .1–.254 每個 位址直接探 5555 與 5599，有回應的才列出來（JSON 裡 <code>routed: true</code>， <code>subnets[]</code> 也標出哪幾段是這樣掃的）。</p>
+<p>代價：</p>
+<ul><li><strong>拿不到 MAC</strong>，只能靠 IP 對 profile；<code>--fix-ip</code> 對這些主機不做事（沒有 MAC 無法 確認 IP 背後還是同一支）。</li><li><strong>5555 沒開、也沒裝 agent 的手機跨網段看不到</strong> —— 掃到的只有「有東西在聽」的。</li><li><strong>不會拿 profile 的 token 去問「你是誰」</strong>：對面是誰還不知道，token 送出去就收不回來。 要認人，讓 agent 主動回報（<a href="#跨網段主動回報check-in">hub 的 <code>--checkin</code></a>）。</li><li>要 hub 連得到手機。只有手機 → hub 通的網路，用主動回報。</li><li>對方如果靜默丟棄 SYN，一個 /24 要 20 秒上下（64 台平行、每台兩個埠各等 3 秒）。</li></ul>
 <h3 id="身分-那欄怎麼認出是哪一支手機"><code>身分</code> 那欄怎麼認出是哪一支手機</h3>
 <p>只比 IP 是不夠的：DHCP 換一次位址，同一支手機就會變成「另一台」；更糟的是 舊 IP 被分給別的機器時，只比 IP 會把那台<strong>誤認</strong>成你的手機。所以識別碼的可靠度 由高到低是：</p>
 <div class="tw"><table><tr><th></th><th>穩定度</th><th>掃描拿得到嗎</th></tr><tr><td class="wrap"><code>DEVICE_SERIAL</code></td><td class="wrap">跨 IP、跨連線方式都不變</td><td class="wrap">拿不到（要 adb 連上才有）</td></tr><tr><td class="wrap">MAC</td><td class="wrap">同一個 SSID 下穩定</td><td class="wrap">拿得到</td></tr><tr><td class="wrap">IP</td><td class="wrap">隨時會變</td><td class="wrap">拿得到</td></tr></table></div>
@@ -361,6 +369,122 @@ hangar scan --json</pre></div>
 <p><code>DEVICE_SERIAL</code> 掃描自己拿不到，但 profile 裡有，所以對上之後會一起附在 <code>--json</code> 輸出裡 —— 那是 hub 把 <code>scan</code> 與 <code>list</code> 兩份資料合起來時該用的主鍵。</p>
 <p>需要知道的限制：</p>
 <ul><li><strong>拿不到機型，也拿不到電量。</strong> 沒開偵錯的手機 adb 完全碰不到，網路層只給得出 IP 與 MAC。這一欄要補齊得等手機端的 agent app（見 <a href="../ROADMAP.md">ROADMAP</a>）。</li><li><strong>隨機 MAC 查不到廠商。</strong> Android 10+ / iOS 14+ 對每個 SSID 用一組隨機 MAC， <code>廠商</code> 會直接寫「隨機 MAC」而不是亂猜一個牌子。它在同一個 SSID 底下仍然穩定， 所以照樣拿來認人；但使用者「忘記網路」再重連就會換一組，那時會退回比 IP， 然後把新的那組重新記起來。</li><li><strong>tailscale profile 也認得出來，但不會說它的 IP 過期。</strong> 那種 profile 存的是 100.x 的 tailnet 位址，跟區網 IP 本來就不一樣，拿來比沒有意義。</li><li><strong>廠商要靠系統上現成的 OUI 資料庫。</strong> 裝了 <code>nmap</code> 或 <code>arp-scan</code> 就有；沒有的話 這一欄一律是 <code>?</code>。hangar 不內建自己的表 —— 完整的表好幾萬筆，只抄一小份會把 不認得的廠商全部誤判成不知名。要指定自己的表：<code>HANGAR_OUI_FILE=/path/to/oui</code>。</li><li><strong>只掃 /24。</strong> 更大的網段逐台 ping 不現實，偵測到 <code>/16</code> 這種會直接要你用 <code>--subnet</code> 指定。網段比 <code>/24</code> 小（<code>/28</code> 之類）則是掃包住它的那個 <code>/24</code>。</li><li><strong><code>scan</code> 不需要 adb 也不需要 scrcpy。</strong> 它只用到 <code>ping</code>、<code>arp</code>／<code>ip</code>、<code>nc</code>， 在一台只裝了網路工具的常駐機器上也跑得動 —— 之後 hub 就是那種機器。</li></ul>
+</section>
+<section id="hub裝置牆網頁">
+<h2 id="hub裝置牆網頁">hub（裝置牆網頁）</h2>
+<p>一台常駐機器跑 <code>hub/hangar_hub.py</code>，定期問 hangar 三件事，然後把結果合成一頁 裝置牆：</p>
+<div class="term"><div class="bar">shell</div><pre>hangar list --json --probe   已經設定過的手機：adb 狀態、機型、電量
+hangar scan --json           區網上看得到的所有東西：IP、MAC、廠商、5555
+hangar usb  --json           插在 hub 這台機器上的 USB 裝置（含未授權的）</pre></div>
+<p>三份資料用 <code>DEVICE_SERIAL</code> &gt; MAC &gt; IP 的順序合併，所以同一支手機不會變成三張卡。</p>
+<div class="note"><p><strong>第三份為什麼需要</strong>：一支剛到的手機插著 USB、偵錯開了、<code>adb devices</code> 也是 <code>device</code>，在牆上卻是匿名的一列 —— 因為 <code>list</code> 只看 profile，而 <code>scan</code> 探的是 TCP 5555，那要 <code>hangar setup</code> 才會打開。<strong>授權的是 USB 那把金鑰，跟 5555 是 兩件不相干的事。</strong> 沒有這一份的話，「我明明都開好了」會讓人往錯的方向查很久。</p><p>看得到的是<strong>插在 hub 那台機器上</strong>的 USB，不是插在每個人筆電上的 —— 跟掃描 是同一個視角問題（掃的也一直是 hub 所在的網段）。</p></div>
+<div class="term"><div class="bar">bash</div><pre>hangar wall                               <span class="c"># 只綁 127.0.0.1:8787</span>
+hangar wall --bind 0.0.0.0 --port 8787    <span class="c"># 要給同事看才這樣開</span>
+./hub/hangar_hub.py                       <span class="c"># 同一支；wall 只是轉發過去</span></pre></div>
+<p><code>hangar wall</code> 跟直接跑 <code>hub/hangar_hub.py</code> 是同一支程式、同一組參數 —— 它只負責 從 symlink 一路找回 repo 再 <code>exec</code> 過去，這樣不必記得 repo 放在哪。</p>
+<p>用的是 Python 3 的標準函式庫，<strong>沒有任何套件要裝</strong> —— 常駐機器上不該為了看一頁 網頁而先裝一套生態系，跟 <code>hangar</code> 自己是一支無相依 bash script 是同一個理由。</p>
+<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--bind</code> / <code>--port</code></td><td class="wrap"><code>127.0.0.1</code> / <code>8787</code></td><td class="wrap">預設只有本機看得到</td></tr><tr><td class="wrap"><code>--list-interval</code></td><td class="wrap">30 秒</td><td class="wrap">多久問一次 <code>hangar list</code></td></tr><tr><td class="wrap"><code>--scan-interval</code></td><td class="wrap">300 秒</td><td class="wrap">多久掃一次區網（ping 整個 /24 不便宜）</td></tr><tr><td class="wrap"><code>--usb-interval</code></td><td class="wrap">15 秒</td><td class="wrap">多久問一次本機 USB（只問本機 adb，很便宜）</td></tr><tr><td class="wrap"><code>--subnet</code></td><td class="wrap">自動偵測</td><td class="wrap">同 <code>hangar scan --subnet</code></td></tr><tr><td class="wrap"><code>--no-scan</code></td><td class="wrap"></td><td class="wrap">完全不掃區網，只看已設定的手機</td></tr><tr><td class="wrap"><code>--no-usb</code></td><td class="wrap"></td><td class="wrap">不回報這台機器上 USB 接著的裝置</td></tr><tr><td class="wrap"><code>--no-helper</code></td><td class="wrap"></td><td class="wrap">不要把 helper 一起帶起來（見下面）</td></tr><tr><td class="wrap"><code>--helper-port</code></td><td class="wrap"><code>8788</code></td><td class="wrap">內嵌 helper 的埠（<code>0</code> = 隨便挑）</td></tr><tr><td class="wrap"><code>--no-auto-pair</code></td><td class="wrap"></td><td class="wrap">不把鑰匙交給這一頁，改用啟動時印出來的連結</td></tr><tr><td class="wrap"><code>--helper-token-file</code></td><td class="wrap"><code>~/.config/hangar/helper.token</code></td><td class="wrap">helper 的鑰匙放哪</td></tr><tr><td class="wrap"><code>--new-helper-token</code></td><td class="wrap"></td><td class="wrap">換一把新的（舊的連結就失效了）</td></tr><tr><td class="wrap"><code>--hub</code></td><td class="wrap"></td><td class="wrap">額外的 Origin，走反向代理之類的情況才需要</td></tr></table></div>
+<p>端點：<code>/</code>（裝置牆）、<code>/api/devices</code>（合併後的 JSON）、<code>/api/helper</code>（見下面）、 <code>/api/refresh</code>（POST，見下面）、<code>/healthz</code>。</p>
+<h3 id="helper-跟著一起起來">helper 跟著一起起來</h3>
+<p>裝置牆上的動作按鈕（投影、響鈴、切偵錯、入伍）從來不是 hub 在做 —— 那些事得發生 在<strong>按按鈕的那台電腦</strong>上，所以做事的一直是 <a href="#從裝置牆上按投影">helper</a>。但最常見的 情形是 hub 跟 helper 在同一台（自己的筆電），那時候「兩個 process」只剩成本：兩個 終端機、<code>--hub</code> 要跟網址列一字不差、還要去開那個帶鑰匙的連結。</p>
+<p>所以 hub 預設會把 helper 帶進<strong>同一個 process</strong>。要注意的是它<strong>不是同一個 listener</strong>：</p>
+<ul><li>helper 照樣自己綁 <code>127.0.0.1</code>，hub 的 <code>--bind</code> 不會傳給它</li><li>Origin 白名單與 token 那三道鎖原封不動</li><li><strong>hub 這一邊仍然一個會動到手機的端點都沒有</strong> —— <code>POST /mirror</code> 打到 hub 是 404</li></ul>
+<p>Origin 白名單不必再自己打：hub 知道自己聽哪個埠，會把 <code>127.0.0.1</code>、<code>localhost</code>、 主機名與這台機器對外那個位址都算進去。那正是獨立跑 helper 時最常打錯的地方 （差一個字就是 403，而且錯誤發生在瀏覽器裡）。</p>
+<p>推導出來的位址只有<strong>主要那一張網卡</strong>的。這條路上刻意一個名字解析都不做 —— 它跑在 hub 綁好、但還沒開始服務的那一小段，卡住的話整個 hub 會看起來像死了 （反向解析很慢的機器上真的發生過）。多網卡的機器要從第二張的位址開這一頁的話， 用 <code>--hub</code> 補上去：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar wall --bind 0.0.0.0 --hub http://10.1.2.3:8787</pre></div>
+<p>鑰匙走 <code>GET /api/helper</code>，而它<strong>只回答 loopback</strong>：</p>
+<div class="term"><div class="bar">bash</div><pre>curl -s http://127.0.0.1:8787/api/helper
+{&quot;ok&quot;: true, &quot;port&quot;: 8788, &quot;token&quot;: &quot;…&quot;}
+
+curl -s http://192.168.1.5:8787/api/helper     <span class="c"># 同事從區網打同一個端點</span>
+{&quot;ok&quot;: false, &quot;reason&quot;: &quot;動作按鈕只在跑 hub 的那台機器上按得動&quot;, &quot;hint&quot;: &quot;…&quot;}</pre></div>
+<p>所以同事從區網開同一頁，行為跟以前完全一樣：他那台要自己跑一支 helper。</p>
+<div class="note"><p><strong>多人共用的機器要關掉自動配對。</strong> 這個端點等於把 helper 的鑰匙交給「任何能從 loopback 打到 hub 的東西」，繞過了鑰匙檔那個 <code>0600</code>。在自己的筆電上這不是新 風險（本來就是同一個人），但在多人共用帳號的機器上是 —— 那種機器要帶 <code>--no-auto-pair</code>（鑰匙只走啟動時印出來的那個連結）或乾脆 <code>--no-helper</code>。</p></div>
+<p>helper 起不來（最常見的是 8788 已經有一支獨立的 helper 在用）不會把 hub 一起拖 下水：hub 照常是一頁看得到的裝置牆，原因印在啟動訊息裡，牆上那行字也會講出來。</p>
+<h3 id="多久更新一次">多久更新一次</h3>
+<p>三層，各自獨立：</p>
+<div class="tw"><table><tr><th></th><th>預設</th><th></th></tr><tr><td class="wrap"><code>hangar list --probe</code></td><td class="wrap">30 秒</td><td class="wrap">已設定手機的狀態與電量</td></tr><tr><td class="wrap"><code>hangar scan</code></td><td class="wrap">300 秒</td><td class="wrap">區網上還有什麼（ping 整個 /24 不便宜，所以慢）</td></tr><tr><td class="wrap">網頁重抓 <code>/api/devices</code></td><td class="wrap">10 秒</td><td class="wrap">純讀 hub 的快取，不會去碰手機</td></tr></table></div>
+<p>所以牆上的東西最舊會是「間隔 + 10 秒」前的。不想等的話按頁面上的<strong>立即更新</strong>， 或直接打：</p>
+<div class="term"><div class="bar">bash</div><pre>curl -X POST &#x27;http://127.0.0.1:8787/api/refresh?what=all&#x27;   <span class="c"># 或 what=list / what=scan</span></pre></div>
+<p>它只是把輪詢<strong>提早叫醒</strong>，不是另外開一條路去問手機 —— 跑的還是同樣那兩個 <code>hangar</code> 指令，一樣不帶 <code>--fix-ip</code>。</p>
+<p>有最小間隔擋著：<code>list</code> 5 秒、<code>scan</code> 30 秒（掃描會對 254 個位址各送一個封包， 按住不放不該變成洗 ping）。太快就回 <code>429</code> 並告訴你還要等幾秒：</p>
+<div class="term"><div class="bar">json</div><pre>{ &quot;ok&quot;: false, &quot;refreshed&quot;: [], &quot;throttled&quot;: [ { &quot;source&quot;: &quot;scan&quot;, &quot;retry_after_s&quot;: 22.0 } ] }</pre></div>
+<p><code>GET /api/refresh</code> 是 404 —— 觸發器不該掛在 GET 上，不然任何會預抓網址的東西 都會去戳一次手機。</p>
+<h3 id="起不來的時候">起不來的時候</h3>
+<p>最常見的是埠被自己上一個 hub 佔著：</p>
+<div class="term"><div class="bar">shell</div><pre>127.0.0.1:8787 已經有人在用了
+  多半是另一個 hangar hub 還在跑：
+    pgrep -fl hangar_hub.py       # 看是不是它
+    pkill -f hangar_hub.py        # 收掉
+  或者換一個埠：--port 8788</pre></div>
+<p><code>--port 80</code> 這種 1024 以下的埠會說是權限問題，<code>--bind</code> 給了這台機器上沒有的 位址則會說是位址問題 —— 三件事分開講，因為要做的事完全不同。</p>
+<h3 id="那頁上的狀態是什麼意思">那頁上的狀態是什麼意思</h3>
+<div class="tw"><table><tr><td class="wrap"><code>ready</code></td><td class="wrap">adb 是 <code>device</code>，可以 build 也可以投影</td></tr><tr><td class="wrap"><code>no_adb</code></td><td class="wrap">連得到，但 adb 不是 <code>device</code> —— 幾乎都是手機重開機把 5555 弄丟了</td></tr><tr><td class="wrap"><code>unauthorized</code></td><td class="wrap">這台 hub 還沒被那支手機授權過（要有人在手機上按允許）</td></tr><tr><td class="wrap"><code>offline</code></td><td class="wrap">手機不在線上</td></tr><tr><td class="wrap"><code>unknown</code></td><td class="wrap">只從掃描看到它，<code>hangar list</code> 那邊沒資料（那次輪詢多半失敗了）</td></tr><tr><td class="wrap"><code>unmanaged</code></td><td class="wrap">掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP、MAC、廠商</td></tr></table></div>
+<p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序 （見<a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
+<h3 id="跨網段主動回報check-in">跨網段：主動回報（check-in）</h3>
+<p>hub 看到的手機預設都是「hub 這台問得到的」：掃描只掃 hub 所在的網段，list 要連 得進手機。手機在路由器後面（另一個 VLAN、只放單向的防火牆）時，兩條都斷。</p>
+<p>反方向常常是通的，所以可以讓手機自己來報到：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar wall --checkin 0.0.0.0:8789                 <span class="c"># 另開一個埠收回報</span>
+hangar enroll -p work --hub http://10.0.1.5:8789   <span class="c"># 告訴手機往哪裡送（已入伍的只改這一項）</span>
+hangar enroll -p work --no-hub                     <span class="c"># 不要再回報了</span></pre></div>
+<ul><li>手機每 60 秒送一次（網路一換馬上送），內容跟 agent 的 <code>/status</code> 一樣，再加上 它現在所有的 IPv4。</li><li>卡片上多一格「主動回報」與「N 秒前」。list 問不到、但回報是新鮮的（3 分鐘內）→ 狀態是 <code>agent_only</code>，電量與機型用回報的補；手機報的位址裡沒有 profile 那個 IP → 標「profile 指著舊 IP」。</li><li><strong>收得到回報不代表按鈕按得動</strong>：投影、響鈴、切偵錯都是 helper → CLI → 手機， 那是反方向。卡片會直接講「hub 連不到這支手機，只收得到它主動送來的回報」。</li><li>驗的是入伍時的 token：hub 啟動時跑一次 <code>hangar agent-tokens --json</code>，之後遇到 不認得的序號（剛入伍的）最多每 10 秒重讀一次。所以 <strong>hub 要跟入伍那台是同一個 使用者、讀得到同一份 profile</strong>。</li><li>回報那個埠是<strong>另一個 listener</strong>，上面只有 <code>POST /api/checkin</code>；<code>--bind</code> 仍然 決定裝置牆給不給別人看，兩件事分開。</li></ul>
+<p>多個網段也可以一起掃：<code>--subnet</code> 給好幾次，不在 hub 網段上的會逐台探埠（見 <a href="#跨網段">區網掃描</a>），逾時會按網段數放大。</p>
+<h3 id="這一版是唯讀的">這一版是唯讀的</h3>
+<p>裝置牆不會去動手機，也不會去改設定檔：輪詢只跑 <code>list</code> 與 <code>scan</code>，<strong>刻意不帶 <code>--fix-ip</code></strong>（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 <code>hangar scan --fix-ip</code>。</p>
+<p>牆上的<strong>投影、響鈴、切偵錯按鈕也沒有破壞這件事</strong>：它們叫的不是 hub，而是你 自己那台電腦上的 helper（見<a href="#從裝置牆上按投影">從裝置牆上按投影</a>）。helper 再呼叫 CLI，CLI 才去碰手機裡的 agent。hub 這一側仍然只有唯讀資料與輪詢喚醒 端點；沒有任何 <code>/api/*</code> 寫入手機的路。<code>--checkin</code> 收到的回報也只放在記憶體， 不寫 profile。</p>
+<p>在卡片上，響鈴只對「agent 可達且宣告 <code>can.ring</code>」的手機啟用；偵錯只對宣告 <code>can.toggle_adb</code> 且回報了 <code>adb.enabled</code> 的手機啟用。helper 沒有啟動時，按鈕會 改成複製 <code>hangar ring</code>／<code>hangar adb</code> 指令。<strong>在瀏覽器裡直接看到畫面（網頁投影 串流）仍然是遠期目標</strong> —— 投影本身維持走 CLI 的 scrcpy，那顆按鈕省的是打字， 不是換掉投影的方式。</p>
+<h3 id="換一台-hub">換一台 hub</h3>
+<p>hub 本身是<strong>無狀態的</strong> —— 它把看到的東西放在記憶體裡，重開就重新問一次 hangar。 所以「搬 hub」實際上搬的是三樣東西，而且只有一樣會痛。</p>
+<div class="tw"><table><tr><th>要搬的</th><th>怎麼搬</th><th>痛不痛</th></tr><tr><td class="wrap"><code>~/.config/hangar/</code>（profiles、預設值）</td><td class="wrap"><code>scp -r</code> 或 <code>rsync</code></td><td class="wrap">不痛</td></tr><tr><td class="wrap">常駐設定（launchd plist／systemd unit）</td><td class="wrap">照上面重寫一份</td><td class="wrap">不痛</td></tr><tr><td class="wrap"><strong>手機對這台電腦的 adb 授權</strong></td><td class="wrap">見下面</td><td class="wrap"><strong>會痛</strong></td></tr></table></div>
+<h4 id="會痛的那一樣">會痛的那一樣</h4>
+<p>adb 的授權綁在每台電腦自己的金鑰（<code>~/.android/adbkey</code>）上。新的 hub 是一把新 金鑰，所有手機都會把它當陌生人 —— 每一支都要有人在手機螢幕上按一次「一律允許」。 十支手機就是十次。</p>
+<p><strong>agent 那條路不受影響</strong>：<code>AGENT_TOKEN</code> 在 profile 裡，profile 搬過去，新 hub 就問得到入伍過的手機。所以入伍過的手機在搬 hub 時是「電量與機型照樣看得到， 只是 adb 進不去」。這也是 agent 在這件事上的實際價值。</p>
+<h4 id="如果是汰換而不是多一台">如果是「汰換」而不是「多一台」</h4>
+<p>舊機器要退役的話，把金鑰一起搬過去是合理的 —— 你搬的是同一個身分，不是複製 一份出來：</p>
+<div class="term"><div class="bar">bash</div><pre><span class="c"># 在新機器上</span>
+scp 舊hub:~/.android/adbkey     ~/.android/
+scp 舊hub:~/.android/adbkey.pub ~/.android/
+adb kill-server
+
+<span class="c"># 確認新機器接手了</span>
+hangar list
+
+<span class="c"># 然後把舊機器上的那把砍掉 —— 這一步不做，你就是把完整裝置控制權複製了一份</span>
+ssh 舊hub &#x27;rm -f ~/.android/adbkey ~/.android/adbkey.pub &amp;&amp; adb kill-server&#x27;</pre></div>
+<div class="note"><p>這跟<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>裡「<strong>不要把 <code>adbkey</code> 複製到別台 電腦</strong>」不衝突：那條講的是同時存在的多台電腦（複製＝多一份完整控制權）。 汰換是搬移，前提是<strong>舊的那份要刪掉</strong>。 做不到「確定刪掉」的話，就老老實實一支一支按。</p></div>
+<h4 id="搬完檢查這幾件事">搬完檢查這幾件事</h4>
+<div class="term"><div class="bar">bash</div><pre>hangar list                      <span class="c"># 每一支的狀態都對嗎</span>
+hangar scan --fix-ip             <span class="c"># 新機器可能在不同網段，順便把換過的 IP 修對</span>
+curl -s localhost:8787/healthz   <span class="c"># hub 起來了嗎</span>
+curl -s localhost:8787/api/devices | jq &#x27;.errors&#x27;   <span class="c"># 有沒有藏著的錯誤</span></pre></div>
+<p>還有三件容易忘的：</p>
+<ul><li><strong>Tailscale</strong>：新機器要加進 tailnet，而且 ACL 的 <code>src</code> 要有它（打 <code>tag:devbox</code> 的話就不用改 ACL）。</li><li><strong>網址變了</strong>：有人把舊 hub 的位址加了書籤的話要通知。</li><li><strong><code>~/.config/hangar/</code> 現在可能有祕密</strong>：入伍過的手機 profile 裡有 <code>AGENT_TOKEN</code>。 用 <code>scp</code>／<code>rsync</code> 搬沒問題（走加密通道），但別丟進共用雲端硬碟。</li></ul>
+<h3 id="讓它開機就自己跑">讓它開機就自己跑</h3>
+<p>macOS（launchd，存成 <code>~/Library/LaunchAgents/com.hangar.hub.plist</code>）：</p>
+<div class="term"><div class="bar">xml</div><pre>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
+&lt;plist version=&quot;1.0&quot;&gt;&lt;dict&gt;
+  &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;com.hangar.hub&lt;/string&gt;
+  &lt;key&gt;ProgramArguments&lt;/key&gt;
+  &lt;array&gt;
+    &lt;string&gt;/usr/bin/python3&lt;/string&gt;
+    &lt;string&gt;/Users/你/Hangar/hub/hangar_hub.py&lt;/string&gt;
+    &lt;string&gt;--hangar&lt;/string&gt;&lt;string&gt;/usr/local/bin/hangar&lt;/string&gt;
+  &lt;/array&gt;
+  &lt;key&gt;RunAtLoad&lt;/key&gt;&lt;true/&gt;
+  &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
+&lt;/dict&gt;&lt;/plist&gt;</pre></div>
+<div class="term"><div class="bar">bash</div><pre>launchctl load ~/Library/LaunchAgents/com.hangar.hub.plist</pre></div>
+<p>Linux（systemd user unit，存成 <code>~/.config/systemd/user/hangar-hub.service</code>）：</p>
+<div class="term"><div class="bar">ini</div><pre>[Unit]
+Description=Hangar hub
+[Service]
+ExecStart=/usr/bin/python3 %h/Hangar/hub/hangar_hub.py --hangar /usr/local/bin/hangar
+Restart=always
+[Install]
+WantedBy=default.target</pre></div>
+<div class="term"><div class="bar">bash</div><pre>systemctl --user enable --now hangar-hub</pre></div>
+<div class="note"><p>常駐機器上的 <code>hangar</code> 要先自己跑得起來（<code>hangar list</code> / <code>hangar scan</code> 有東西）， hub 只是把它們的 <code>--json</code> 接起來。掃描需要 <code>ping</code> 與 <code>arp</code>／<code>ip</code>，<code>--probe</code> 要電量則需要 adb —— 但 hub 本身不需要 scrcpy。</p></div>
 </section>
 <section id="機器可讀的輸出--json">
 <h2 id="機器可讀的輸出--json">機器可讀的輸出（--json）</h2>
@@ -566,116 +690,13 @@ cd .. &amp;&amp; hangar enroll -p work --reinstall</pre></div>
   &quot;agent&quot;:   { &quot;reachable&quot;: true, &quot;version&quot;: &quot;0.1.2&quot;, &quot;enrolled&quot;: true } }</pre></div>
 <p><code>agent.reachable</code> 是 <code>false</code> 而 profile 又有 token，意思是<strong>這支手機入伍過但 agent 現在叫不動</strong> —— 現在可能還沒事（adb 還通），但下次重開機就會失聯。 裝置牆會把這件事標出來。</p>
 <p><code>hangar scan</code> 也會順手探每台的 5599：探得到就在 <code>agent</code> 欄標「有」。它先用 <code>nc</code> 測埠、只對有回應的發 HTTP —— 一個 /24 上大多數東西沒有 agent，每台都等 逾時的話掃描會從幾秒變成幾分鐘。</p>
+<h3 id="主動回報給-hub跨網段">主動回報給 hub（跨網段）</h3>
+<p>平常是電腦端來問 agent。手機在另一個網段、hub 連不進去的時候，可以讓 agent 反過來 定期往 hub 送：</p>
+<div class="term"><div class="bar">bash</div><pre>hangar enroll -p work --hub http://10.0.1.5:8789   <span class="c"># 新入伍或已入伍都可以</span>
+hangar enroll -p work --no-hub</pre></div>
+<ul><li>hub 那邊要帶 <code>--checkin</code>（見 <a href="#跨網段主動回報check-in">hub</a>）。</li><li>已入伍的手機只發一個 <code>com.hangar.agent.SET_HUB</code> 廣播，不重裝、不換 token； 廣播要帶 token，手機上其他 app 改不動它。舊版 agent 不認得這個廣播，先 <code>--reinstall</code>（<code>--reinstall --hub …</code> 會一起做）。</li><li>回報是明文 HTTP，跟電腦端問 5599 一樣靠 token；所以 app 開了 <code>usesCleartextTraffic</code>。</li><li>手機上打開 Hangar Agent 看得到回報對象、上次成功的時間與最近的錯誤。</li></ul>
 <h3 id="限制">限制</h3>
 <ul><li><strong>需要 <code>curl</code></strong>（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。</li><li><strong>agent 拿不到自己的 MAC</strong>（Android 6+ 對一般 app 回傳假的 <code>02:00:00:00:00:00</code>），所以 agent 回報的資料裡沒有這一欄。MAC 由另外兩條路 取得：<code>hangar scan</code> 從 ARP 表學，或 <code>hangar list --probe</code> 用 <code>adb shell cmd wifi status</code> 問 —— 後者連 adb 通得到但不在同一段區網的手機 也拿得到。</li><li><strong>agent 也拿不到硬體序號</strong>（Android 10+ 要特權權限），所以序號是入伍時由電腦 這一側寫進去的 —— 兩邊因此一定是同一個字串。</li><li><strong>切偵錯已由 agent 實作，而且是全手動的。</strong> <code>POST /hangar/v1/adb</code> 支援雙向 切換，CLI 是 <code>hangar adb -p work --off</code> / <code>--on</code>。偵錯的開關<strong>只會因為有人按 了才改變</strong>：agent 不排鬧鐘、不在開機時改它，關掉之後就一直關著。能力不足的 裝置會明確回報，不會把「不能寫」誤當成成功。</li><li><strong>響鈴已由 agent 實作。</strong> <code>hangar ring -p work --seconds 30</code> 走 alarm stream、 震動與高優先度通知，最長 120 秒；<code>--stop</code> 或手機通知上的「找到了」都能停止。</li></ul>
-</section>
-<section id="hub裝置牆網頁">
-<h2 id="hub裝置牆網頁">hub（裝置牆網頁）</h2>
-<p>一台常駐機器跑 <code>hub/hangar_hub.py</code>，定期問 hangar 三件事，然後把結果合成一頁 裝置牆：</p>
-<div class="term"><div class="bar">shell</div><pre>hangar list --json --probe   已經設定過的手機：adb 狀態、機型、電量
-hangar scan --json           區網上看得到的所有東西：IP、MAC、廠商、5555
-hangar usb  --json           插在 hub 這台機器上的 USB 裝置（含未授權的）</pre></div>
-<p>三份資料用 <code>DEVICE_SERIAL</code> &gt; MAC &gt; IP 的順序合併，所以同一支手機不會變成三張卡。</p>
-<div class="note"><p><strong>第三份為什麼需要</strong>：一支剛到的手機插著 USB、偵錯開了、<code>adb devices</code> 也是 <code>device</code>，在牆上卻是匿名的一列 —— 因為 <code>list</code> 只看 profile，而 <code>scan</code> 探的是 TCP 5555，那要 <code>hangar setup</code> 才會打開。<strong>授權的是 USB 那把金鑰，跟 5555 是 兩件不相干的事。</strong> 沒有這一份的話，「我明明都開好了」會讓人往錯的方向查很久。</p><p>看得到的是<strong>插在 hub 那台機器上</strong>的 USB，不是插在每個人筆電上的 —— 跟掃描 是同一個視角問題（掃的也一直是 hub 所在的網段）。</p></div>
-<div class="term"><div class="bar">bash</div><pre>hangar wall                               <span class="c"># 只綁 127.0.0.1:8787</span>
-hangar wall --bind 0.0.0.0 --port 8787    <span class="c"># 要給同事看才這樣開</span>
-./hub/hangar_hub.py                       <span class="c"># 同一支；wall 只是轉發過去</span></pre></div>
-<p><code>hangar wall</code> 跟直接跑 <code>hub/hangar_hub.py</code> 是同一支程式、同一組參數 —— 它只負責 從 symlink 一路找回 repo 再 <code>exec</code> 過去，這樣不必記得 repo 放在哪。</p>
-<p>用的是 Python 3 的標準函式庫，<strong>沒有任何套件要裝</strong> —— 常駐機器上不該為了看一頁 網頁而先裝一套生態系，跟 <code>hangar</code> 自己是一支無相依 bash script 是同一個理由。</p>
-<div class="tw"><table><tr><th>參數</th><th>預設</th><th></th></tr><tr><td class="wrap"><code>--hangar</code></td><td class="wrap">repo 裡那支</td><td class="wrap">hangar 執行檔的路徑</td></tr><tr><td class="wrap"><code>--bind</code> / <code>--port</code></td><td class="wrap"><code>127.0.0.1</code> / <code>8787</code></td><td class="wrap">預設只有本機看得到</td></tr><tr><td class="wrap"><code>--list-interval</code></td><td class="wrap">30 秒</td><td class="wrap">多久問一次 <code>hangar list</code></td></tr><tr><td class="wrap"><code>--scan-interval</code></td><td class="wrap">300 秒</td><td class="wrap">多久掃一次區網（ping 整個 /24 不便宜）</td></tr><tr><td class="wrap"><code>--usb-interval</code></td><td class="wrap">15 秒</td><td class="wrap">多久問一次本機 USB（只問本機 adb，很便宜）</td></tr><tr><td class="wrap"><code>--subnet</code></td><td class="wrap">自動偵測</td><td class="wrap">同 <code>hangar scan --subnet</code></td></tr><tr><td class="wrap"><code>--no-scan</code></td><td class="wrap"></td><td class="wrap">完全不掃區網，只看已設定的手機</td></tr><tr><td class="wrap"><code>--no-usb</code></td><td class="wrap"></td><td class="wrap">不回報這台機器上 USB 接著的裝置</td></tr><tr><td class="wrap"><code>--no-helper</code></td><td class="wrap"></td><td class="wrap">不要把 helper 一起帶起來（見下面）</td></tr><tr><td class="wrap"><code>--helper-port</code></td><td class="wrap"><code>8788</code></td><td class="wrap">內嵌 helper 的埠（<code>0</code> = 隨便挑）</td></tr><tr><td class="wrap"><code>--no-auto-pair</code></td><td class="wrap"></td><td class="wrap">不把鑰匙交給這一頁，改用啟動時印出來的連結</td></tr><tr><td class="wrap"><code>--helper-token-file</code></td><td class="wrap"><code>~/.config/hangar/helper.token</code></td><td class="wrap">helper 的鑰匙放哪</td></tr><tr><td class="wrap"><code>--new-helper-token</code></td><td class="wrap"></td><td class="wrap">換一把新的（舊的連結就失效了）</td></tr><tr><td class="wrap"><code>--hub</code></td><td class="wrap"></td><td class="wrap">額外的 Origin，走反向代理之類的情況才需要</td></tr></table></div>
-<p>端點：<code>/</code>（裝置牆）、<code>/api/devices</code>（合併後的 JSON）、<code>/api/helper</code>（見下面）、 <code>/api/refresh</code>（POST，見下面）、<code>/healthz</code>。</p>
-<h3 id="helper-跟著一起起來">helper 跟著一起起來</h3>
-<p>裝置牆上的動作按鈕（投影、響鈴、切偵錯、入伍）從來不是 hub 在做 —— 那些事得發生 在<strong>按按鈕的那台電腦</strong>上，所以做事的一直是 <a href="#從裝置牆上按投影">helper</a>。但最常見的 情形是 hub 跟 helper 在同一台（自己的筆電），那時候「兩個 process」只剩成本：兩個 終端機、<code>--hub</code> 要跟網址列一字不差、還要去開那個帶鑰匙的連結。</p>
-<p>所以 hub 預設會把 helper 帶進<strong>同一個 process</strong>。要注意的是它<strong>不是同一個 listener</strong>：</p>
-<ul><li>helper 照樣自己綁 <code>127.0.0.1</code>，hub 的 <code>--bind</code> 不會傳給它</li><li>Origin 白名單與 token 那三道鎖原封不動</li><li><strong>hub 這一邊仍然一個會動到手機的端點都沒有</strong> —— <code>POST /mirror</code> 打到 hub 是 404</li></ul>
-<p>Origin 白名單不必再自己打：hub 知道自己聽哪個埠，會把 <code>127.0.0.1</code>、<code>localhost</code>、 主機名與這台機器對外那個位址都算進去。那正是獨立跑 helper 時最常打錯的地方 （差一個字就是 403，而且錯誤發生在瀏覽器裡）。</p>
-<p>推導出來的位址只有<strong>主要那一張網卡</strong>的。這條路上刻意一個名字解析都不做 —— 它跑在 hub 綁好、但還沒開始服務的那一小段，卡住的話整個 hub 會看起來像死了 （反向解析很慢的機器上真的發生過）。多網卡的機器要從第二張的位址開這一頁的話， 用 <code>--hub</code> 補上去：</p>
-<div class="term"><div class="bar">bash</div><pre>hangar wall --bind 0.0.0.0 --hub http://10.1.2.3:8787</pre></div>
-<p>鑰匙走 <code>GET /api/helper</code>，而它<strong>只回答 loopback</strong>：</p>
-<div class="term"><div class="bar">bash</div><pre>curl -s http://127.0.0.1:8787/api/helper
-{&quot;ok&quot;: true, &quot;port&quot;: 8788, &quot;token&quot;: &quot;…&quot;}
-
-curl -s http://192.168.1.5:8787/api/helper     <span class="c"># 同事從區網打同一個端點</span>
-{&quot;ok&quot;: false, &quot;reason&quot;: &quot;動作按鈕只在跑 hub 的那台機器上按得動&quot;, &quot;hint&quot;: &quot;…&quot;}</pre></div>
-<p>所以同事從區網開同一頁，行為跟以前完全一樣：他那台要自己跑一支 helper。</p>
-<div class="note"><p><strong>多人共用的機器要關掉自動配對。</strong> 這個端點等於把 helper 的鑰匙交給「任何能從 loopback 打到 hub 的東西」，繞過了鑰匙檔那個 <code>0600</code>。在自己的筆電上這不是新 風險（本來就是同一個人），但在多人共用帳號的機器上是 —— 那種機器要帶 <code>--no-auto-pair</code>（鑰匙只走啟動時印出來的那個連結）或乾脆 <code>--no-helper</code>。</p></div>
-<p>helper 起不來（最常見的是 8788 已經有一支獨立的 helper 在用）不會把 hub 一起拖 下水：hub 照常是一頁看得到的裝置牆，原因印在啟動訊息裡，牆上那行字也會講出來。</p>
-<h3 id="多久更新一次">多久更新一次</h3>
-<p>三層，各自獨立：</p>
-<div class="tw"><table><tr><th></th><th>預設</th><th></th></tr><tr><td class="wrap"><code>hangar list --probe</code></td><td class="wrap">30 秒</td><td class="wrap">已設定手機的狀態與電量</td></tr><tr><td class="wrap"><code>hangar scan</code></td><td class="wrap">300 秒</td><td class="wrap">區網上還有什麼（ping 整個 /24 不便宜，所以慢）</td></tr><tr><td class="wrap">網頁重抓 <code>/api/devices</code></td><td class="wrap">10 秒</td><td class="wrap">純讀 hub 的快取，不會去碰手機</td></tr></table></div>
-<p>所以牆上的東西最舊會是「間隔 + 10 秒」前的。不想等的話按頁面上的<strong>立即更新</strong>， 或直接打：</p>
-<div class="term"><div class="bar">bash</div><pre>curl -X POST &#x27;http://127.0.0.1:8787/api/refresh?what=all&#x27;   <span class="c"># 或 what=list / what=scan</span></pre></div>
-<p>它只是把輪詢<strong>提早叫醒</strong>，不是另外開一條路去問手機 —— 跑的還是同樣那兩個 <code>hangar</code> 指令，一樣不帶 <code>--fix-ip</code>。</p>
-<p>有最小間隔擋著：<code>list</code> 5 秒、<code>scan</code> 30 秒（掃描會對 254 個位址各送一個封包， 按住不放不該變成洗 ping）。太快就回 <code>429</code> 並告訴你還要等幾秒：</p>
-<div class="term"><div class="bar">json</div><pre>{ &quot;ok&quot;: false, &quot;refreshed&quot;: [], &quot;throttled&quot;: [ { &quot;source&quot;: &quot;scan&quot;, &quot;retry_after_s&quot;: 22.0 } ] }</pre></div>
-<p><code>GET /api/refresh</code> 是 404 —— 觸發器不該掛在 GET 上，不然任何會預抓網址的東西 都會去戳一次手機。</p>
-<h3 id="起不來的時候">起不來的時候</h3>
-<p>最常見的是埠被自己上一個 hub 佔著：</p>
-<div class="term"><div class="bar">shell</div><pre>127.0.0.1:8787 已經有人在用了
-  多半是另一個 hangar hub 還在跑：
-    pgrep -fl hangar_hub.py       # 看是不是它
-    pkill -f hangar_hub.py        # 收掉
-  或者換一個埠：--port 8788</pre></div>
-<p><code>--port 80</code> 這種 1024 以下的埠會說是權限問題，<code>--bind</code> 給了這台機器上沒有的 位址則會說是位址問題 —— 三件事分開講，因為要做的事完全不同。</p>
-<h3 id="那頁上的狀態是什麼意思">那頁上的狀態是什麼意思</h3>
-<div class="tw"><table><tr><td class="wrap"><code>ready</code></td><td class="wrap">adb 是 <code>device</code>，可以 build 也可以投影</td></tr><tr><td class="wrap"><code>no_adb</code></td><td class="wrap">連得到，但 adb 不是 <code>device</code> —— 幾乎都是手機重開機把 5555 弄丟了</td></tr><tr><td class="wrap"><code>unauthorized</code></td><td class="wrap">這台 hub 還沒被那支手機授權過（要有人在手機上按允許）</td></tr><tr><td class="wrap"><code>offline</code></td><td class="wrap">手機不在線上</td></tr><tr><td class="wrap"><code>unknown</code></td><td class="wrap">只從掃描看到它，<code>hangar list</code> 那邊沒資料（那次輪詢多半失敗了）</td></tr><tr><td class="wrap"><code>unmanaged</code></td><td class="wrap">掃得到但沒設定過。沒開偵錯的手機 adb 完全碰不到，所以只有 IP、MAC、廠商</td></tr></table></div>
-<p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序 （見<a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
-<h3 id="這一版是唯讀的">這一版是唯讀的</h3>
-<p>裝置牆不會去動手機，也不會去改設定檔：輪詢只跑 <code>list</code> 與 <code>scan</code>，<strong>刻意不帶 <code>--fix-ip</code></strong>（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 <code>hangar scan --fix-ip</code>。</p>
-<p>牆上的<strong>投影、響鈴、切偵錯按鈕也沒有破壞這件事</strong>：它們叫的不是 hub，而是你 自己那台電腦上的 helper（見<a href="#從裝置牆上按投影">從裝置牆上按投影</a>）。helper 再呼叫 CLI，CLI 才去碰手機裡的 agent。hub 這一側仍然只有唯讀資料與輪詢喚醒 端點；沒有任何 <code>/api/*</code> 寫入手機的路。</p>
-<p>在卡片上，響鈴只對「agent 可達且宣告 <code>can.ring</code>」的手機啟用；偵錯只對宣告 <code>can.toggle_adb</code> 且回報了 <code>adb.enabled</code> 的手機啟用。helper 沒有啟動時，按鈕會 改成複製 <code>hangar ring</code>／<code>hangar adb</code> 指令。<strong>在瀏覽器裡直接看到畫面（網頁投影 串流）仍然是遠期目標</strong> —— 投影本身維持走 CLI 的 scrcpy，那顆按鈕省的是打字， 不是換掉投影的方式。</p>
-<h3 id="換一台-hub">換一台 hub</h3>
-<p>hub 本身是<strong>無狀態的</strong> —— 它把看到的東西放在記憶體裡，重開就重新問一次 hangar。 所以「搬 hub」實際上搬的是三樣東西，而且只有一樣會痛。</p>
-<div class="tw"><table><tr><th>要搬的</th><th>怎麼搬</th><th>痛不痛</th></tr><tr><td class="wrap"><code>~/.config/hangar/</code>（profiles、預設值）</td><td class="wrap"><code>scp -r</code> 或 <code>rsync</code></td><td class="wrap">不痛</td></tr><tr><td class="wrap">常駐設定（launchd plist／systemd unit）</td><td class="wrap">照上面重寫一份</td><td class="wrap">不痛</td></tr><tr><td class="wrap"><strong>手機對這台電腦的 adb 授權</strong></td><td class="wrap">見下面</td><td class="wrap"><strong>會痛</strong></td></tr></table></div>
-<h4 id="會痛的那一樣">會痛的那一樣</h4>
-<p>adb 的授權綁在每台電腦自己的金鑰（<code>~/.android/adbkey</code>）上。新的 hub 是一把新 金鑰，所有手機都會把它當陌生人 —— 每一支都要有人在手機螢幕上按一次「一律允許」。 十支手機就是十次。</p>
-<p><strong>agent 那條路不受影響</strong>：<code>AGENT_TOKEN</code> 在 profile 裡，profile 搬過去，新 hub 就問得到入伍過的手機。所以入伍過的手機在搬 hub 時是「電量與機型照樣看得到， 只是 adb 進不去」。這也是 agent 在這件事上的實際價值。</p>
-<h4 id="如果是汰換而不是多一台">如果是「汰換」而不是「多一台」</h4>
-<p>舊機器要退役的話，把金鑰一起搬過去是合理的 —— 你搬的是同一個身分，不是複製 一份出來：</p>
-<div class="term"><div class="bar">bash</div><pre><span class="c"># 在新機器上</span>
-scp 舊hub:~/.android/adbkey     ~/.android/
-scp 舊hub:~/.android/adbkey.pub ~/.android/
-adb kill-server
-
-<span class="c"># 確認新機器接手了</span>
-hangar list
-
-<span class="c"># 然後把舊機器上的那把砍掉 —— 這一步不做，你就是把完整裝置控制權複製了一份</span>
-ssh 舊hub &#x27;rm -f ~/.android/adbkey ~/.android/adbkey.pub &amp;&amp; adb kill-server&#x27;</pre></div>
-<div class="note"><p>這跟<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>裡「<strong>不要把 <code>adbkey</code> 複製到別台 電腦</strong>」不衝突：那條講的是同時存在的多台電腦（複製＝多一份完整控制權）。 汰換是搬移，前提是<strong>舊的那份要刪掉</strong>。 做不到「確定刪掉」的話，就老老實實一支一支按。</p></div>
-<h4 id="搬完檢查這幾件事">搬完檢查這幾件事</h4>
-<div class="term"><div class="bar">bash</div><pre>hangar list                      <span class="c"># 每一支的狀態都對嗎</span>
-hangar scan --fix-ip             <span class="c"># 新機器可能在不同網段，順便把換過的 IP 修對</span>
-curl -s localhost:8787/healthz   <span class="c"># hub 起來了嗎</span>
-curl -s localhost:8787/api/devices | jq &#x27;.errors&#x27;   <span class="c"># 有沒有藏著的錯誤</span></pre></div>
-<p>還有三件容易忘的：</p>
-<ul><li><strong>Tailscale</strong>：新機器要加進 tailnet，而且 ACL 的 <code>src</code> 要有它（打 <code>tag:devbox</code> 的話就不用改 ACL）。</li><li><strong>網址變了</strong>：有人把舊 hub 的位址加了書籤的話要通知。</li><li><strong><code>~/.config/hangar/</code> 現在可能有祕密</strong>：入伍過的手機 profile 裡有 <code>AGENT_TOKEN</code>。 用 <code>scp</code>／<code>rsync</code> 搬沒問題（走加密通道），但別丟進共用雲端硬碟。</li></ul>
-<h3 id="讓它開機就自己跑">讓它開機就自己跑</h3>
-<p>macOS（launchd，存成 <code>~/Library/LaunchAgents/com.hangar.hub.plist</code>）：</p>
-<div class="term"><div class="bar">xml</div><pre>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
-&lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
-&lt;plist version=&quot;1.0&quot;&gt;&lt;dict&gt;
-  &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;com.hangar.hub&lt;/string&gt;
-  &lt;key&gt;ProgramArguments&lt;/key&gt;
-  &lt;array&gt;
-    &lt;string&gt;/usr/bin/python3&lt;/string&gt;
-    &lt;string&gt;/Users/你/Hangar/hub/hangar_hub.py&lt;/string&gt;
-    &lt;string&gt;--hangar&lt;/string&gt;&lt;string&gt;/usr/local/bin/hangar&lt;/string&gt;
-  &lt;/array&gt;
-  &lt;key&gt;RunAtLoad&lt;/key&gt;&lt;true/&gt;
-  &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
-&lt;/dict&gt;&lt;/plist&gt;</pre></div>
-<div class="term"><div class="bar">bash</div><pre>launchctl load ~/Library/LaunchAgents/com.hangar.hub.plist</pre></div>
-<p>Linux（systemd user unit，存成 <code>~/.config/systemd/user/hangar-hub.service</code>）：</p>
-<div class="term"><div class="bar">ini</div><pre>[Unit]
-Description=Hangar hub
-[Service]
-ExecStart=/usr/bin/python3 %h/Hangar/hub/hangar_hub.py --hangar /usr/local/bin/hangar
-Restart=always
-[Install]
-WantedBy=default.target</pre></div>
-<div class="term"><div class="bar">bash</div><pre>systemctl --user enable --now hangar-hub</pre></div>
-<div class="note"><p>常駐機器上的 <code>hangar</code> 要先自己跑得起來（<code>hangar list</code> / <code>hangar scan</code> 有東西）， hub 只是把它們的 <code>--json</code> 接起來。掃描需要 <code>ping</code> 與 <code>arp</code>／<code>ip</code>，<code>--probe</code> 要電量則需要 adb —— 但 hub 本身不需要 scrcpy。</p></div>
 </section>
 <section id="從裝置牆上按投影">
 <h2 id="從裝置牆上按投影">從裝置牆上按投影</h2>
@@ -835,6 +856,36 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
 <h3 id="不會有用的做法">不會有用的做法</h3>
 <div class="tw"><table><tr><th>試過的做法</th><th>為什麼沒用</th></tr><tr><td class="wrap">升級 scrcpy / 換版本</td><td class="wrap">擷取是系統擋的，跟 scrcpy 無關</td></tr><tr><td class="wrap"><code>--video-codec</code> / 調 bitrate / 調解析度</td><td class="wrap">送過來的畫面本來就是黑的</td></tr><tr><td class="wrap">scrcpy 3.x 的 <code>--new-display</code> 虛擬顯示器</td><td class="wrap">shell 權限開不出「secure display」，FLAG_SECURE 視窗一樣會被塗黑</td></tr><tr><td class="wrap">改 Tailscale / adb 設定</td><td class="wrap">跟傳輸層完全無關</td></tr></table></div>
 </section>
+<section id="機房放公司-apk-的注意事項">
+<h2 id="機房放公司-apk-的注意事項">機房放公司 APK 的注意事項</h2>
+<p><strong>Hangar 本身不會把公司 APK 帶出去</strong> —— agent 不碰別的 app，hub 與裝置牆也不經手 APK。真正的暴露面是：<strong>沒加固的 APK，放在一群人都有 adb 權限的共用手機上</strong>。 這份整理的是那個情境下要守的事。</p>
+<p>一句話版本：<strong>測試版裡只放測試環境的金鑰，並且假設它會被看光。</strong></p>
+<h3 id="adb-能拿走什麼">adb 能拿走什麼</h3>
+<p>手機對每一台授權過的電腦（各自的 <code>~/.android/adbkey</code>）是完全敞開的。 以下都<strong>不需要 root</strong>，也跟 agent 無關，是 adb 本來的能力：</p>
+<div class="term"><div class="bar">bash</div><pre><span class="c"># 把任何一支已安裝的 app 拉回來</span>
+adb shell pm path com.example.app          <span class="c"># → package:/data/app/.../base.apk</span>
+adb pull /data/app/.../base.apk
+
+<span class="c"># debuggable 的 build：直接讀它的私有資料</span>
+adb shell run-as com.example.app ls shared_prefs databases
+adb shell run-as com.example.app cat shared_prefs/&lt;檔名&gt;.xml
+
+<span class="c"># log：debug 版常把 API 回應、token 印出來</span>
+adb logcat</pre></div>
+<p>沒加固的 APK 拉回去之後，用 jadx 之類的工具打開就接近原始碼 —— 寫死的金鑰、 API 端點、測試後門都看得到。</p>
+<p>Hangar 放大的是<strong>人數</strong>：<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>會讓授權過的電腦 越來越多，常開偵錯也讓這些能力隨時可用。</p>
+<h3 id="5555-開著時">5555 開著時</h3>
+<p><code>adb tcpip 5555</code> 讓 adbd 在所有介面上聽（見 <a href="#tailscale-acl強烈建議">Tailscale ACL</a>）。 沒授權過的電腦連進來，手機會跳授權框，所以光靠這個 port 還進不來。要注意的是：</p>
+<ul><li><strong>授權框被人順手按了「允許」</strong>，那台電腦就永久取得授權。機房裡沒人在看的手機 跳出授權框，不要隨手按</li><li>走 Tailscale 時一定要設 ACL，否則整個 tailnet 都連得到</li></ul>
+<p>確認測試機不是「連線免授權」的系統版本：</p>
+<div class="term"><div class="bar">bash</div><pre>adb shell getprop ro.adb.secure      <span class="c"># 要是 1</span></pre></div>
+<p>eng／userdebug 版的系統常是 <code>0</code>：任何連得到 5555 的人都不需要授權。這種機器只能 放在隔離的網段，並且要把「agent 的 token 被偷聽到」當成等同 adb 被拿走 —— agent 的 5599 是明文 HTTP，token 在區網上看得到，而那組 token 可以 <a href="#手機端-agent">切偵錯</a>。</p>
+<h3 id="測試版與加固版分開對待">測試版與加固版分開對待</h3>
+<div class="tw"><table><tr><th></th><th>沒加固的測試版</th><th>加固版／正式候選版</th></tr><tr><td class="wrap">內含的金鑰、憑證、端點</td><td class="wrap"><strong>只放測試環境的</strong></td><td class="wrap">正式環境的</td></tr><tr><td class="wrap">偵錯</td><td class="wrap">開著沒關係</td><td class="wrap"><code>hangar adb -p &lt;手機&gt; --off</code> 關掉再測</td></tr><tr><td class="wrap"><code>FLAG_SECURE</code></td><td class="wrap">可以關（見<a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑</a>）</td><td class="wrap">必須開</td></tr><tr><td class="wrap"><code>android:debuggable</code></td><td class="wrap">可以開</td><td class="wrap">必須關</td></tr><tr><td class="wrap">log</td><td class="wrap">不印 token、個資</td><td class="wrap">不印 token、個資</td></tr></table></div>
+<p>關於 <code>FLAG_SECURE</code>：debug build 關掉它是為了能投影，但那也表示那幾頁可以被 <code>scrcpy --record</code> 錄下來。確認判斷條件真的綁在 <code>BuildConfig.DEBUG</code>（或同等的 build type 判斷）上，不會漏進 release。</p>
+<h3 id="日常要做的事">日常要做的事</h3>
+<ul><li><strong>正式環境的帳號不要登入測試機。</strong> 機房的每支手機都當成共用的</li><li><strong>定期清授權。</strong> 有人離職、換電腦時，在手機「開發人員選項 → 撤銷 USB 偵錯授權」， 需要的人再各自重新授權一次</li><li><strong>不要複製 <code>adbkey</code></strong>，也不要把入伍過的 profile 隨手 <code>scp</code> 給別人 —— 前者是整支手機的控制權，後者帶著 agent 的 token（見<a href="#多台電腦共用同一支手機">多台電腦共用同一支手機</a>）</li><li><strong>手機離開機房前</strong>（借出、送修、報廢）解除安裝公司 app，能重置就整支重置</li></ul>
+</section>
 <section id="疑難排解">
 <h2 id="疑難排解">疑難排解</h2>
 <div class="tw"><table><tr><th>症狀</th><th>原因 / 解法</th></tr><tr><td class="wrap"><code>Tailscale 目前是 Stopped</code></td><td class="wrap"><code>tailscale up</code></td></tr><tr><td class="wrap"><code>手機不在 tailnet 上</code></td><td class="wrap">手機端 Tailscale App 沒開，或被系統省電關掉</td></tr><tr><td class="wrap"><code>無法連上 …:5555</code> + Connection refused</td><td class="wrap">手機重開機過 → 重跑 <code>hangar setup</code></td></tr><tr><td class="wrap"><code>adb 狀態為 unauthorized</code></td><td class="wrap">手機上會跳「允許 USB 偵錯」，勾「一律允許」再按允許</td></tr><tr><td class="wrap"><code>adb 狀態為 offline</code></td><td class="wrap">Hangar 會自動重試一次；還是不行就 <code>hangar reset</code></td></tr><tr><td class="wrap">一直走 DERP relay</td><td class="wrap">兩端的 UDP 打洞被防火牆擋住。公司網路常見，<code>tailscale netcheck</code> 可以看細節</td></tr><tr><td class="wrap">畫面很卡但顯示 direct</td><td class="wrap">手機在弱訊號的行動網路，試 <code>hangar --lq</code></td></tr><tr><td class="wrap"><code>hangar all</code> 只開起來一部分</td><td class="wrap">看訊息裡哪一支失敗，通常是那支不在 tailnet 或重開過</td></tr><tr><td class="wrap">密碼頁 / 銀行 App / 鎖定畫面全黑</td><td class="wrap">App 加了 <code>FLAG_SECURE</code>，系統層擋掉擷取，見「<a href="#密碼頁面投影全黑flag_secure">密碼頁面投影全黑</a>」</td></tr><tr><td class="wrap"><code>cannot connect to daemon at tcp:5037</code></td><td class="wrap">本機 adb server 掛了（<code>adb tcpip</code> 之後偶爾會）。Hangar 會自動 <code>start-server</code> 重試一次；還是不行就 <code>adb kill-server &amp;&amp; adb start-server</code></td></tr><tr><td class="wrap">想看 scrcpy 實際參數</td><td class="wrap">Hangar 啟動前會把完整指令印出來</td></tr></table></div>
@@ -858,7 +909,7 @@ adb -s &lt;ip&gt;:5555 shell input keyevent 66</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 9ef5721e9c6c</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 43987c96e063</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
