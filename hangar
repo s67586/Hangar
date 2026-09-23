@@ -2104,6 +2104,30 @@ device_lan_ip() { # <adb serial> → 同網段的 IPv4；挑不出來 return 1
   return 1
 }
 
+# 區網 setup 收到的不是 IP。最常見的其實是「給了 Tailscale 的節點名稱，但忘了
+# --transport tailscale」—— 預設是 lan，而節點名稱在區網上沒有意義。只說「要
+# IP」的話，人手上握著「這明明是 tailnet 上的手機」這個反證，會卡在那裡。
+# 所以先問 Tailscale 認不認得這個名字，認得就把完整的指令直接給出來。
+#
+# 這裡不走 ts_load：那個問不到就整個結束，而這只是給提示的一條旁路 ——
+# Tailscale 沒裝、沒開，都照原本的錯誤訊息走。
+setup_not_an_ip() { # <使用者給的字串>
+  local want="$1" json peer ip
+  if [ -n "$TS" ] && json="$("$TS" status --json 2>/dev/null)" && [ -n "$json" ]; then
+    peer="$(TS_JSON="$json" ts_peer "$want")"
+    if [ -n "$peer" ]; then
+      ip="$(printf '%s' "$peer" | jq -r '(.TailscaleIPs // [])[0] // ""')"
+      err "「${want}」是 Tailscale 上的節點${ip:+（${ip}）}，但 setup 預設走區網"
+      # existing / alias_name 是 cmd_setup 的區域變數（bash 是動態範圍）。
+      # 指令要原樣給得出來，不然人還是得自己拼。
+      hint "改走 Tailscale：hangar setup${existing:+ --existing} --transport tailscale ${want}${alias_name:+ --name ${alias_name}}"
+      hint "要走區網就給手機在區網上的 IP（像 192.168.1.50）"
+      exit 1
+    fi
+  fi
+  die "區網的 setup 要的是手機的 IP（像 192.168.1.50），不是節點名稱：${want}"
+}
+
 # setup 第 3 步的 lan 版：決定要把哪個位址寫進 profile。
 #
 # 三條路，由可靠往不可靠排：使用者直接指定 > 問手機自己 > 區網掃描。
@@ -2114,7 +2138,7 @@ setup_pick_lan_address() { # <使用者給的 IP 或空> <adb serial 或空>
   PHONE_HOST=""     # 區網沒有「節點名」這種東西
 
   if [ -n "$want" ]; then
-    is_ipv4 "$want" || die "區網的 setup 要的是手機的 IP（像 192.168.1.50），不是節點名稱：${want}"
+    is_ipv4 "$want" || setup_not_an_ip "$want"
     PHONE_IP="$want"
     ok "手機位址：${PHONE_IP}（你指定的）"
     return 0
