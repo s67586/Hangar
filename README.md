@@ -26,10 +26,10 @@ mDNS 廣播則本來就只在區網成立。
 | [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動。`hangar wall` 會連它一起帶起來 |
 | [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
 
-> **[📖 使用手冊（一頁可讀版）](docs/manual.html)**
-> —— 這份 README 連同 `docs/` 那幾份整理成一頁，適合傳給同事。GitHub 上點開只會
-> 看到原始碼，下載下來用瀏覽器打開即可（單一檔案，不需要其他東西）。頁尾蓋著來源的
-> sha256，對不上就是那一頁落後了；**內容以 repo 裡的 Markdown 為準**。
+> **[📖 使用手冊（一頁可讀版）](https://s67586.github.io/Hangar/)**
+> —— 這份 README 連同 `docs/` 那幾份整理成一頁，適合傳給同事，打開網址就能看。
+> 原始檔是 [`docs/manual.html`](docs/manual.html)，合進 main 後由 GitHub Pages 自動發佈。
+> 頁尾蓋著來源的 sha256，對不上就是那一頁落後了；**內容以 repo 裡的 Markdown 為準**。
 
 > 專案方向、程式分層、測試涵蓋範圍與待確認清單見 [ROADMAP.md](ROADMAP.md)。
 

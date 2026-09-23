@@ -1,0 +1,68 @@
+# 把使用手冊（docs/manual.html）發佈到 GitHub Pages。
+#
+# 為什麼要有這條：manual.html 在 GitHub 上點開只看得到原始碼，要下載下來才讀得
+# 到。放上 Pages 之後同事點一個網址就能看，不需要 clone，也不需要任何帳號。
+#
+# 只發佈手冊這一頁（同時當 index.html），不是整個 docs/：其他 .md 在 GitHub 上
+# 本來就讀得到，沒必要再多一份會各自過期的副本。
+#
+# 手冊裡指回 repo 的相對連結（../hangar、../ROADMAP.md…）在 Pages 上會 404，
+# 所以發佈前改寫成 GitHub 上的網址。repo 裡的檔案不動 —— 下載下來打開的那份，
+# 相對連結仍然是對的。
+#
+# 第一次要在 repo 的 Settings → Pages → Build and deployment → Source
+# 選「GitHub Actions」，不然 deploy 那一步會失敗。
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/manual.html
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時只跑一輪；新的推上來時不要砍掉正在部署的那一輪，排在後面就好。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 發佈手冊
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # 手冊落後於 README／docs/ 的話就不要發佈 —— 發出去的會是過期的內容。
+      - name: 確認手冊是最新的
+        run: python3 tools/make_manual.py --check
+
+      - name: 組出網站
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.sha }}
+        run: |
+          mkdir -p _site
+          sed -e 's#href="\.\./docs/manual\.html"#href="./"#g' \
+              -e "s#href=\"\\.\\./#href=\"${REPO_URL}/#g" \
+              docs/manual.html > _site/index.html
+          if grep -q 'href="\.\./' _site/index.html; then
+            echo "還有沒改寫到的相對連結"; exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
