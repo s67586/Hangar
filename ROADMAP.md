@@ -102,7 +102,7 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.5.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2586` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2615` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:181` |
 | hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:63` |
@@ -257,15 +257,19 @@ profile）與 `hangar scan --json`（區網 ARP）。**`adb devices` 不在裡�
 ### 做出來之後長這樣
 
 `hangar usb --json` 吐 `{schema, devices[], errors[]}`，每一筆有 `adb_serial`、
-`adb_state`、`device_serial`、`model`、`profile`。`unauthorized` 的手機問不到
+`adb_state`、`device_serial`、`model`、`profile`、`wifi_ssid`、`wifi_ip`（後兩個
+是 `cmd wifi status` 問手機自己的；問不到、沒連 Wi-Fi 就是 `null`，schema 不升 ——
+只是加欄位）。`unauthorized` 的手機問不到
 `ro.serialno`，但 adb 的 USB serial 本來就是硬體序號，拿它當 `device_serial`
 仍然對得起 merge —— **而「問不到」正是那一格最該被看見的時候，不能因此讓它
 從牆上消失**。
 
-一個併不起來的情況，已知並且刻意留著：一支還沒 setup 的手機**同時**會在掃描
-那份裡出現一列匿名的 ARP 紀錄（隨機 MAC、沒有廠商、5555 關著）。那一列沒有
-序號也沒有任何跟 USB 這份共通的鍵，所以牆上會同時有兩張卡。硬猜「同一個網段
-上唯一一台匿名的就是它」會在有兩支的時候配錯人，寧可多一張卡。
+一支還沒 setup 的手機**同時**會在掃描那份裡出現一列匿名的 ARP 紀錄（隨機 MAC、
+沒有廠商、5555 關著）。那一列沒有序號，跟 USB 這份唯一共通的鍵是 **Wi-Fi IP**：
+USB 問得到 `wifi_ip`、而它正好等於某張匿名掃描卡的位址時，hub 就認領那張卡
+（主鍵換成序號），牆上只剩一張。問不到 IP（未授權、沒連 Wi-Fi、連的是別的網段）
+就照舊兩張卡 —— 硬猜「同一個網段上唯一一台匿名的就是它」會在有兩支的時候配錯
+人，寧可多一張卡。
 
 牆上那張 USB 卡給的動作是**複製 `hangar setup` 指令**，不是「註冊 agent」——
 helper 的 `/enroll` 吃的是 profile 名稱，而這支手機還沒有 profile；它缺的第一步

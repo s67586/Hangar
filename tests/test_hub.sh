@@ -429,6 +429,37 @@ assert "併進原本那張卡"       "work"   "$(m "${usb_merged}[0]['name']")"
 assert "三個來源都記著"       "['list', 'scan', 'usb']" "$(m "${usb_merged}[0]['sources']")"
 assert "USB 那格也在"         "ABC123" "$(m "${usb_merged}[0]['usb']['adb_serial']")"
 
+# USB 問得到 Wi-Fi：卡片講得出連著哪個 Wi-Fi、在上面是哪個位址
+usb_wifi='merge(None, None,
+  {"devices":[{"adb_serial":"ABC123","adb_state":"device","device_serial":"S9",
+               "model":"Pixel 5","profile":None,
+               "wifi_ssid":"TestNet","wifi_ip":"192.168.1.42"}]})'
+assert "Wi-Fi 名稱帶得出來" "TestNet"      "$(m "${usb_wifi}[0]['usb']['wifi_ssid']")"
+assert "Wi-Fi IP 當成卡的 IP" "192.168.1.42" "$(m "${usb_wifi}[0]['ip']")"
+
+# 同一支手機也被掃到了：靠 Wi-Fi IP 認領那張匿名的掃描卡，不另開一張
+usb_claim='merge(None,
+  {"hosts":[{"ip":"192.168.1.42","mac":"3e:19:e2:35:b1:6b","profile":None,
+             "device_serial":None,"adb_port":"closed","mac_randomized":True},
+            {"ip":"192.168.1.9","mac":"a4:03:e7:01:02:03","profile":None}]},
+  {"devices":[{"adb_serial":"ABC123","adb_state":"device","device_serial":"S9",
+               "model":"Pixel 5","profile":None,
+               "wifi_ssid":"TestNet","wifi_ip":"192.168.1.42"}]})'
+assert "認領掃描卡後仍是兩台"   "2"              "$(m "len(${usb_claim})")"
+claimed="[d for d in ${usb_claim} if d['lan_ip']=='192.168.1.42'][0]"
+assert "兩個來源都記著"         "['scan', 'usb']" "$(m "${claimed}['sources']")"
+assert "主鍵換成序號"           "serial:S9"       "$(m "${claimed}['key']")"
+assert "機型補上"               "Pixel 5"         "$(m "${claimed}['model']")"
+assert "掃到的 MAC 留著"        "3e:19:e2:35:b1:6b" "$(m "${claimed}['mac']")"
+
+# IP 對不上（連的是別的網段）就不能亂認
+usb_noclaim='merge(None,
+  {"hosts":[{"ip":"192.168.1.42","mac":"3e:19:e2:35:b1:6b","profile":None}]},
+  {"devices":[{"adb_serial":"ABC123","adb_state":"device","device_serial":"S9",
+               "model":"Pixel 5","profile":None,
+               "wifi_ssid":"Other","wifi_ip":"10.0.0.8"}]})'
+assert "IP 對不上就各自一張" "2" "$(m "len(${usb_noclaim})")"
+
 # 排序：未授權的那張要排在已設定好的前面（那是需要有人走過去的狀態）
 usb_sort='merge(
   {"devices":[{"profile":"work","device_serial":"S1","adb_state":"device"}]}, None,

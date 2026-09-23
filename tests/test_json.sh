@@ -356,12 +356,28 @@ assert "只算 USB 那兩支"   "2"      "$(q '.devices | length' "$out")"
 assert "序號問手機拿"      "PIX0000001" "$(q '.devices[0].device_serial' "$out")"
 assert "機型也拿得到"      "Pixel 7 Pro" "$(q '.devices[0].model' "$out")"
 assert "adb_state"         "device" "$(q '.devices[0].adb_state' "$out")"
+# 還沒 setup 的手機，牆上最缺的就是這兩格：連著哪個 Wi-Fi、在上面是哪個位址
+assert "Wi-Fi 名稱"        "TestNet"     "$(q '.devices[0].wifi_ssid' "$out")"
+assert "Wi-Fi IP"          "192.168.1.5" "$(q '.devices[0].wifi_ip' "$out")"
+assert "未授權的問不到 Wi-Fi" "null"     "$(q '.devices[1].wifi_ssid' "$out")"
 
 # unauthorized 是這一份最值錢的一格。問不到 ro.serialno，但 adb 的 USB serial
 # 本來就是硬體序號 —— 不能因為問不到就讓這一列消失。
 assert "未授權那支也在"    "unauthorized" "$(q '.devices[1].adb_state' "$out")"
 assert "退回用 adb serial" "BROKEN9"      "$(q '.devices[1].device_serial' "$out")"
 assert "問不到機型就是 null" "null"       "$(q '.devices[1].model' "$out")"
+
+# WifiInfo 那一行沒帶 IP（新一點的 Android）：退回去問 wlan0，不能挑到 rmnet
+touch "$MOCK_STATE/wifi_no_ip"
+out="$("$PM" usb --json 2>/dev/null)"
+assert "退回 wlan0 的位址" "192.168.1.5" "$(q '.devices[0].wifi_ip' "$out")"
+rm -f "$MOCK_STATE/wifi_no_ip"
+
+touch "$MOCK_STATE/wifi_off"
+out="$("$PM" usb --json 2>/dev/null)"
+assert "沒連 Wi-Fi 是 null"    "null" "$(q '.devices[0].wifi_ssid' "$out")"
+assert "沒連 Wi-Fi 沒有 IP"    "null" "$(q '.devices[0].wifi_ip' "$out")"
+rm -f "$MOCK_STATE/wifi_off"
 
 # 已經設定過的手機要講得出 profile 名字（給人看的；merge 靠的是序號本身）
 printf 'PHONE_IP="192.168.1.5"\nTRANSPORT="lan"\nDEVICE_SERIAL="PIX0000001"\n' \
