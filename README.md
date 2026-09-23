@@ -77,6 +77,7 @@ README 走的是**裝起來 → 設定一支手機 → 每天投影**這條路�
 | [從裝置牆上按投影](docs/wall-actions.md) | 牆上那幾顆按鈕（投影、響鈴、切偵錯、入伍）怎麼運作，以及 helper 的三道鎖 |
 | [Tailscale ACL](docs/tailscale.md) | 走 Tailscale 時**強烈建議**設的白名單 |
 | [密碼頁面投影全黑](docs/flag-secure.md) | 投影某些畫面時整片黑掉（`FLAG_SECURE`）的處理方式 |
+| [機房放公司 APK 的注意事項](docs/company-apk.md) | 沒加固的測試版放在共用測試機上，誰拿得走什麼、測試版與加固版怎麼分開對待 |
 
 ---
 
