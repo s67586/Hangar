@@ -102,7 +102,7 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.5.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2615` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2639` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:181` |
 | hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:63` |

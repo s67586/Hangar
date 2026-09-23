@@ -216,6 +216,18 @@ nocheck "沒把舊 profile 帶進來" "oldphone" "$out"
 [ -d "$XDG_CONFIG_HOME/pmirror" ] && { echo "  PASS  舊目錄原封不動"; PASS=$((PASS+1)); } || { echo "  FAIL  舊目錄被動到了"; FAIL=$((FAIL+1)); }
 rm -rf "$XDG_CONFIG_HOME/pmirror"
 
+echo "=== 20. 區網 setup 收到 Tailscale 節點名稱 → 直接給出正確的指令 ==="
+reset_state
+out="$("$PM" setup --existing pixel --name work 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && { echo "  PASS  要失敗"; PASS=$((PASS+1)); } || { echo "  FAIL  不該成功"; FAIL=$((FAIL+1)); }
+check "認得出是 tailnet 節點"       "是 Tailscale 上的節點（100.101.102.103）" "$out"
+check "原樣給出改走 Tailscale 的指令" "hangar setup --existing --transport tailscale pixel --name work" "$out"
+out="$("$PM" setup --existing no-such-node 2>&1)"
+check "不認得的名字照舊要 IP"       "要的是手機的 IP" "$out"
+echo Stopped > "$MOCK_STATE/ts_backend"
+out="$("$PM" setup --existing pixel 2>&1)"
+check "Tailscale 沒在跑也給得出提示" "--transport tailscale pixel" "$out"
+
 echo
 echo "================================"
 printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
