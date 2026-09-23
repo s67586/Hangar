@@ -132,7 +132,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 43987c96e063</span><span class="fact">hangar v1.5.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 afc7af0f8526</span><span class="fact">hangar v1.5.0</span></div>
 </header>
 
 <div class="cols">
@@ -145,6 +145,7 @@
 <ul><li><code>hangar scan --subnet 10.20.30</code>：不在這台網段上的 /24 會改成逐台探 5555／5599 （hub 要連得到手機；拿不到 MAC）</li><li><code>hangar wall --checkin 0.0.0.0:8789</code> 加上 <code>hangar enroll --hub http://&lt;hub&gt;:8789</code>： 手機上的 agent 定期<strong>主動回報</strong>給 hub（只要手機連得到 hub 就行）</li></ul>
 <p>見<a href="#跨網段">區網掃描</a>與 <a href="#跨網段主動回報check-in">hub</a>。</p>
 <div class="tw"><table><tr><td class="wrap"><a href="../hangar"><code>hangar</code></a></td><td class="wrap">CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源</td></tr><tr><td class="wrap"><a href="../hub"><code>hub/</code></a></td><td class="wrap">常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）</td></tr><tr><td class="wrap"><a href="../helper"><code>helper/</code></a></td><td class="wrap">跑在<strong>你自己那台電腦</strong>上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動。<code>hangar wall</code> 會連它一起帶起來</td></tr><tr><td class="wrap"><a href="../agent"><code>agent/</code></a></td><td class="wrap">手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型</td></tr></table></div>
+<div class="note"><p><strong><a href="https://s67586.github.io/Hangar/">📖 使用手冊（一頁可讀版）</a></strong> —— 這份 README 連同 <code>docs/</code> 那幾份整理成一頁，適合傳給同事，打開網址就能看。 原始檔是 <a href="../docs/manual.html"><code>docs/manual.html</code></a>，合進 main 後由 GitHub Pages 自動發佈。 頁尾蓋著來源的 sha256，對不上就是那一頁落後了；<strong>內容以 repo 裡的 Markdown 為準</strong>。</p></div>
 <div class="note"><p>專案方向、程式分層、測試涵蓋範圍與待確認清單見 <a href="../ROADMAP.md">ROADMAP.md</a>。</p></div>
 <div class="term"><div class="bar">shell</div><pre>hangar setup --name work    # 初始化一支手機（要同區網或插 USB）
 hangar                      # 之後隨時投影
@@ -915,7 +916,7 @@ adb logcat</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 43987c96e063</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 afc7af0f8526</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
