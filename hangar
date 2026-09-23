@@ -1150,22 +1150,28 @@ agent_gen_token() {
   fi
 }
 
-# APK 要從哪裡找。--apk 指定的優先，其次是這個 repo 裡 build 出來的那份。
-# APK 在 repo 裡，所以要找的是「這支腳本真正放在哪」，不是「它被叫的時候叫做什
-# 麼」。hangar_install.sh 裝的是 symlink（/usr/local/bin/hangar → repo/hangar），
-# 不解開就會去 /usr/local/bin/agent/ 底下找 —— 照著 README 裝的人一跑 enroll 就
-# 被告知「找不到 APK」，而 APK 明明就在。macOS 的 readlink 沒有 -f，自己走完
-# 整條鏈（symlink 可以指向另一個 symlink，也可以是相對路徑）。
-agent_find_apk() {
-  [ -n "${1:-}" ] && { [ -f "$1" ] && printf '%s' "$1" && return 0; return 1; }
-  local here f src dir
+# 「這支腳本真正放在哪」。APK 與 hub/helper 都在 repo 裡，所以要找的是這個，
+# 不是「它被叫的時候叫做什麼」。hangar_install.sh 裝的是 symlink
+# （/usr/local/bin/hangar → repo/hangar），不解開就會去 /usr/local/bin/ 底下找
+# —— 照著 README 裝的人一跑 enroll 就被告知「找不到 APK」，而 APK 明明就在。
+# macOS 的 readlink 沒有 -f，自己走完整條鏈（symlink 可以指向另一個 symlink，
+# 也可以是相對路徑）。
+repo_root() {
+  local src dir
   src="${BASH_SOURCE[0]}"
   while [ -L "$src" ]; do
     dir="$(cd -P "$(dirname "$src")" && pwd)"
     src="$(readlink "$src")"
     case "$src" in /*) ;; *) src="$dir/$src" ;; esac
   done
-  here="$(cd -P "$(dirname "$src")" && pwd)"
+  cd -P "$(dirname "$src")" && pwd
+}
+
+# APK 要從哪裡找。--apk 指定的優先，其次是這個 repo 裡 build 出來的那份。
+agent_find_apk() {
+  [ -n "${1:-}" ] && { [ -f "$1" ] && printf '%s' "$1" && return 0; return 1; }
+  local here f
+  here="$(repo_root)"
   for f in "$here"/agent/app/build/outputs/apk/release/*.apk \
            "$here"/agent/app/build/outputs/apk/debug/*.apk; do
     [ -f "$f" ] && { printf '%s' "$f"; return 0; }
@@ -3386,6 +3392,36 @@ cmd_reset() {
   fi
 }
 
+# ----------------------------------------------------------------- wall -----
+
+# 裝置牆：hub 加上「這台電腦」的 helper，一個指令。
+#
+# 兩支本來就是分開的 process，而且分開仍然是對的 —— hub 可以跑在角落那台常駐
+# 機器上，每個人再在自己的電腦上跑一支 helper。但最常見的情形是兩者都在同一台
+# （自己的筆電），那時候分開只剩下成本：兩個終端機、--hub 要跟網址列一字不差、
+# 還要去開那個帶 token 的連結。這個子指令就是把那個情形收成一行。
+#
+# 這裡只做轉發：所有參數原封不動交給 hub，hub 才是知道那些旗標意思的人。
+cmd_wall() {
+  local root hub self
+  root="$(repo_root)"
+  hub="$root/hub/hangar_hub.py"
+  self="$root/hangar"
+  if [ ! -f "$hub" ]; then
+    err "找不到 $hub"
+    hint "裝置牆在 repo 裡（hub/ 與 helper/），這支 hangar 看起來不是從 repo 跑的"
+    exit 1
+  fi
+  command -v python3 >/dev/null 2>&1 || {
+    err "找不到 python3 —— 裝置牆是 Python 寫的（只用標準函式庫，不必裝套件）"
+    hint "macOS：brew install python3"
+    exit 1
+  }
+  # exec：Ctrl-C 直接進 python，中間不要多一層 bash 擋著。
+  # --hangar 放在 "$@" 前面，使用者自己給的會覆蓋掉它（argparse 後者優先）。
+  exec python3 "$hub" --hangar "$self" "$@"
+}
+
 # ----------------------------------------------------------------- help -----
 
 cmd_help() {
@@ -3425,6 +3461,9 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
                                    讓已入伍的手機響鈴識別（0 或 --stop = 停）
   hangar adb [-p 手機] --on|--off
                                    開／關偵錯；全手動，不會自己變回去
+  hangar wall [--bind 0.0.0.0] [--no-helper]
+                                   開裝置牆：hub 與這台電腦的 helper 一起起來，
+                                   同一台機器上不用再開那個帶鑰匙的連結
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
@@ -3841,6 +3880,7 @@ main() {
     use)             shift; cmd_use "${1:-}" ;;
     forget|rm)       shift; cmd_forget "${1:-}" ;;
     all)             shift; cmd_all "$@" ;;
+    wall)            shift; cmd_wall "$@" ;;
     help|-h|--help)  cmd_help ;;
     --version|-V)    printf 'hangar %s\n' "$VERSION" ;;
     ""|-*)           cmd_mirror "$@" ;;

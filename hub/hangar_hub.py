@@ -19,12 +19,18 @@
 
     GET  /                裝置牆（HTML）
     GET  /api/devices     合併後的裝置清單（JSON）
+    GET  /api/helper      內嵌的 helper 在哪、鑰匙是什麼（**只回答 loopback**）
     POST /api/refresh     現在就去問一次（?what=list|scan|all）
     GET  /healthz         還活著嗎
+
+預設會把 helper 一起帶起來（`--no-helper` 關掉），但那是**另一個 listener**，
+而且照樣只綁 127.0.0.1：hub 這一邊仍然一個會動到手機的端點都沒有。
 """
 
 import argparse
 import errno
+import importlib.util
+import ipaddress
 import json
 import os
 import socket
@@ -59,6 +65,165 @@ API_SCHEMA = 8
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
 BATTERY_LOW = 20
+
+
+# ----------------------------------------------------------- 內嵌 helper ----
+#
+# 裝置牆上的動作按鈕（投影、響鈴、切偵錯、入伍）從來不是 hub 在做 —— 那些事得
+# 發生在**按按鈕的那台電腦**上，所以做事的一直是 helper。但最常見的情形是 hub
+# 跟 helper 在同一台（自己的筆電），那時候「兩個 process」只剩成本：兩個終端機、
+# --hub 要跟網址列一字不差、還要去開那個帶 token 的連結。
+#
+# 所以這裡把 helper 帶進同一個 process —— 但**只是同一個 process，不是同一個
+# listener**。helper 照樣自己綁 127.0.0.1，照樣走它那三道鎖，hub 這一邊還是一個
+# 會動到手機的端點都沒有。要拆開跑（hub 在角落常駐機、每人一支 helper）也完全
+# 沒變：helper/hangar_helper.py 一行都沒動。
+
+HELPER_PATH = os.path.join(HERE, "..", "helper", "hangar_helper.py")
+
+# helper 那邊的 `hangar list` 要多久算逾時。刻意不沿用 hub 的 --timeout：那個
+# 是給掃整個 /24 用的（預設 120 秒），而這裡是有人按了按鈕在等，瀏覽器那端掛
+# 兩分鐘等於沒有回應。用 helper 自己的預設值。
+HELPER_LIST_TIMEOUT = 30.0
+
+
+def load_helper(path=HELPER_PATH):
+    """把 helper 那支腳本當成模組載進來 → (模組, 錯誤字串)。
+
+    hub/ 與 helper/ 是兩個平行的目錄，不是 package。為了共用一支模組把整個 repo
+    改成 package，代價遠大於這裡的收穫，所以照路徑載。
+
+    載不起來不是致命的：hub 照樣是一頁看得到的裝置牆，只是動作按鈕要那台電腦
+    自己跑一支 helper。**hub 絕不能因為 helper 不在就起不來** —— 只複製 hub/
+    出去的部署本來就該活得下去。
+    """
+    full = os.path.abspath(path)
+    if not os.path.exists(full):
+        return None, "找不到 %s" % full
+    try:
+        spec = importlib.util.spec_from_file_location("hangar_helper", full)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:      # noqa: BLE001 —— 載不起來的理由很多種，都一樣不致命
+        return None, "載不進 %s：%s: %s" % (full, type(e).__name__, e)
+    return mod, None
+
+
+def local_ips():
+    """這台機器對外會用哪個位址。拿不到就算了 —— 少一個名字只代表從那個網址開
+    的頁面叫不動 helper，不是 hub 起不來。
+
+    **這條路上一個名字解析都不准有。** 它跑在「hub 已經綁好、但還沒進
+    serve_forever」的那一小段裡，任何會卡住的呼叫都會讓 hub 看起來像死了：
+    socket 綁著、連線排在 backlog 裡、沒有人 accept，而啟動訊息早就印出去了。
+    上面那個 Server 跳過 server_bind 裡的 getfqdn() 是完全同一個理由 —— 在反向
+    解析不通或很慢的機器上（GitHub 的 macOS runner 就是這樣）那會一路卡到 DNS
+    逾時。getaddrinfo(gethostname()) 是同一個陷阱的另一個入口。
+
+    所以這裡問的是核心的路由表：UDP socket 的 connect 不送出任何封包、也不做
+    名字解析，但 getsockname() 會說「真要出去的話會用哪張網卡」。代價是多網卡
+    的機器只拿得到主要那一張 —— 另外那些要自己用 --hub 補。
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 53))
+        return [s.getsockname()[0]]
+    except OSError:
+        return []
+    finally:
+        s.close()
+
+
+def local_origins(port):
+    """這台機器上，裝置牆可能被開成哪些 Origin。
+
+    Origin 是瀏覽器自己填的 scheme://host:port，而同一頁在同一台機器上可以從
+    好幾個名字開：localhost、127.0.0.1、主機名、區網 IP —— 對瀏覽器來說每一個
+    都是不同的來源。獨立跑 helper 時這件事是人用 --hub 講的，也正是最常打錯的
+    地方（差一個字就是 403，而且錯誤發生在瀏覽器裡）。嵌在 hub 裡就不必問了：
+    hub 知道自己聽哪個埠。
+
+    把區網 IP 放進白名單並沒有放寬任何權限。白名單管的是「哪一頁的 JS 叫得動
+    **這台**的 helper」；同事在他自己的電腦上開 http://192.168.1.5:8787，他的
+    瀏覽器打的是他自己的 127.0.0.1，從頭到尾碰不到這台。
+
+    gethostname() 只是讀核心裡的那個字串，不做解析 —— 這條路不碰 DNS，理由見
+    local_ips()。
+    """
+    names = ["127.0.0.1", "localhost", "[::1]", socket.gethostname(), hostname()]
+    names += local_ips()
+    out = []
+    for n in names:
+        if not n:
+            continue
+        host = "[%s]" % n if ":" in n and not n.startswith("[") else n
+        o = "http://%s:%d" % (host.lower(), port)
+        if o not in out:
+            out.append(o)
+    return out
+
+
+class EmbeddedHelper:
+    """起來了的內嵌 helper：要收掉它、要印連結、要回答 /api/helper 都靠這個。"""
+
+    def __init__(self, httpd, port, token, origins):
+        self.httpd = httpd
+        self.port = port
+        self.token = token
+        self.origins = origins
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def printable_origins(origins):
+    """白名單裡值得印給人看的那幾個。
+
+    白名單要寬（多一個名字只是多一頁叫得動這台的 helper，而它本來就只服務這
+    台），但印出來的連結要窄 —— 沒有人會手動去開一個 link-local 的 IPv6 網址，
+    而九行連結會讓真正該點的那一行淹掉。
+    """
+    return [o for o in origins if "[" not in o]
+
+
+def start_helper(hangar, args, hub_port):
+    """在同一個 process 裡把 helper 也開起來 → (EmbeddedHelper, 起不來的原因)。
+
+    起不來一律回一句人看得懂的原因，然後 hub 照常跑。最常見的是埠被佔住 ——
+    多半是那台電腦上還有一支獨立的 helper 活著，而那種情況下按鈕其實是好的，
+    根本不該把 hub 一起拖下水。
+    """
+    mod, err = load_helper()
+    if mod is None:
+        return None, err
+    origins = local_origins(hub_port)
+    for h in args.hub:
+        o = mod.normalize_origin(h)
+        if o not in origins:
+            origins.append(o)
+    token_file = args.helper_token_file or mod.TOKEN_FILE
+    try:
+        token = mod.load_token(token_file, args.new_helper_token)
+    except OSError as e:
+        return None, "寫不了 helper 的鑰匙檔 %s：%s" % (token_file, e)
+    mod.Handler.state = mod.State(hangar, HELPER_LIST_TIMEOUT)
+    mod.Handler.token = token
+    mod.Handler.origins = tuple(origins)
+    try:
+        # 只綁 127.0.0.1，跟獨立跑的時候一模一樣。hub 的 --bind 不會傳到這裡：
+        # 這一支會在這台電腦上開程式，沒有任何理由讓別台機器連得到它。
+        httpd = mod.Server(("127.0.0.1", args.helper_port), mod.Handler)
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            why = ("127.0.0.1:%d 已經有人在用了（多半是另一支 helper 還在跑）"
+                   % args.helper_port)
+        else:
+            why = "開不了 127.0.0.1:%d：%s" % (args.helper_port, e)
+        return None, why
+    port = httpd.socket.getsockname()[1]
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return EmbeddedHelper(httpd, port, token, origins), None
 
 
 # --------------------------------------------------------------- 叫 hangar --
@@ -473,6 +638,14 @@ REFRESH_MIN = {"list": 5.0, "scan": 30.0, "usb": 5.0}
 class Handler(BaseHTTPRequestHandler):
     server_version = "hangar-hub"
     state = None          # main() 會塞進來
+    # 內嵌的 helper：埠、鑰匙，以及沒有的話是為什麼、下一步是什麼。
+    # 下一步由這裡講而不是讓網頁去猜：--no-helper 要的是「跑一支 helper」，
+    # --no-auto-pair 要的是「用印出來的連結」，兩件事完全不一樣，而網頁手上
+    # 只有一句原因字串，去比對它的內容是遲早會走岔的做法。
+    helper_port = None
+    helper_token = None
+    helper_note = "這個 hub 沒有內嵌 helper"
+    helper_hint = ""
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -480,6 +653,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(os.path.join(STATIC_DIR, "index.html"), "text/html")
         if path == "/api/devices":
             return self._json(self.state.snapshot())
+        if path == "/api/helper":
+            return self._helper_info()
         if path == "/healthz":
             return self._json({"ok": True})
         # 靜態檔只開 static/ 底下的，而且不准往上跳
@@ -518,6 +693,45 @@ class Handler(BaseHTTPRequestHandler):
                                     "throttled": waited,
                                     "reason": "剛問過了，等一下再來"})
         return self._json(200, {"ok": True, "refreshed": woke, "throttled": waited})
+
+    def _is_loopback(self):
+        """這個請求是不是從這台機器自己來的。
+
+        來源位址偽造不了完整的 TCP handshake，所以這個判斷是真的擋得住的 ——
+        跟「Origin 是瀏覽器填的所以偽造不了」同一個性質的保證。
+        """
+        try:
+            addr = ipaddress.ip_address(self.client_address[0])
+        except (ValueError, IndexError):
+            return False
+        # ::ffff:127.0.0.1 這種 IPv4-mapped 位址的 is_loopback 是 False，
+        # 但它就是本機。雙堆疊的機器上很常見，要先攤回 IPv4 再問。
+        addr = getattr(addr, "ipv4_mapped", None) or addr
+        return addr.is_loopback
+
+    def _helper_info(self):
+        """這一頁要用的 helper 在哪、鑰匙是什麼。**只回答 loopback。**
+
+        這是整個整合唯一多出來的端點，也是把「去 helper 的終端機複製那個
+        #helper=… 連結」那一步拿掉的地方。
+
+        代價要講清楚：它等於把 helper 的鑰匙交給「任何能從 loopback 打到 hub
+        的東西」，繞過了鑰匙檔那個 0600。在自己的筆電上這不是新風險（本來就
+        是同一個人），但在多人共用帳號的機器上是 —— 那種機器要帶
+        --no-auto-pair（鑰匙只走啟動時印的那個連結）或乾脆 --no-helper。
+        這個取捨是選的，不是忘的。
+        """
+        if not self._is_loopback():
+            return self._json(403, {
+                "ok": False,
+                "reason": "動作按鈕只在跑 hub 的那台機器上按得動",
+                "hint": "你這台要自己跑一支："
+                        "./helper/hangar_helper.py --hub <這一頁的網址>"})
+        if not self.helper_token:
+            return self._json(404, {"ok": False, "reason": self.helper_note,
+                                    "hint": self.helper_hint})
+        return self._json({"ok": True, "port": self.helper_port,
+                           "token": self.helper_token})
 
     def _json(self, *args):
         """_json(obj) 或 _json(status, obj)。"""
@@ -569,6 +783,22 @@ def main(argv=None):
     ap.add_argument("--no-usb", action="store_true",
                     help="不回報這台機器上 USB 接著的裝置")
     ap.add_argument("--timeout", type=float, default=120.0, help="單次 hangar 的逾時（秒）")
+    # ---- 內嵌的 helper ----
+    # 只開這幾個旋鈕。--grace / --enroll-timeout 那些沿用 helper 自己的預設值：
+    # 要細調就跑獨立的 helper，不要把同一張參數表維護兩份。
+    ap.add_argument("--no-helper", action="store_true",
+                    help="不要把 helper 一起帶起來（牆上的動作按鈕就得靠獨立的 helper）")
+    ap.add_argument("--helper-port", type=int, default=8788,
+                    help="內嵌 helper 的埠（預設 8788，0 = 隨便挑）")
+    ap.add_argument("--no-auto-pair", action="store_true",
+                    help="不要讓這一頁自動拿到鑰匙；改用啟動時印出的那個連結")
+    ap.add_argument("--helper-token-file", default=None,
+                    help="helper 的鑰匙放哪（預設跟獨立跑的時候同一個檔）")
+    ap.add_argument("--new-helper-token", action="store_true",
+                    help="換一把新的 helper 鑰匙（舊的連結就失效了）")
+    ap.add_argument("--hub", action="append", default=[], metavar="網址",
+                    help="額外的 Origin（走反向代理之類的情況才需要）。"
+                         "這台機器自己的那些名字是自動認得的")
     args = ap.parse_args(argv)
 
     hangar = os.path.abspath(args.hangar)
@@ -638,9 +868,44 @@ def main(argv=None):
         return 1
     host, port = httpd.socket.getsockname()[:2]
     print("hangar hub: http://%s:%d/" % (host, port), flush=True)
+
+    # helper 要等 hub 綁好才起得來：Origin 白名單要知道實際的埠（--port 0 的
+    # 時候那是核心挑的）。hub 綁不上就整個收掉了，也不會走到這裡。
+    helper = None
+    if args.no_helper:
+        Handler.helper_note = "這個 hub 是帶著 --no-helper 跑的"
+        Handler.helper_hint = ("拿掉那個旗標，或在要按按鈕的那台電腦上跑一支 "
+                               "helper/hangar_helper.py")
+    else:
+        helper, why = start_helper(hangar, args, port)
+        if helper is None:
+            Handler.helper_note = why
+            Handler.helper_hint = "看 hub 那個視窗印出來的訊息"
+            print("沒有把 helper 一起帶起來：%s" % why, file=sys.stderr, flush=True)
+            print("  牆上的動作按鈕要那台電腦自己跑一支："
+                  "./helper/hangar_helper.py --hub http://%s:%d" % (host, port),
+                  file=sys.stderr, flush=True)
+        elif args.no_auto_pair:
+            Handler.helper_note = "這個 hub 是帶著 --no-auto-pair 跑的"
+            Handler.helper_hint = "用它印出來的那個 #helper=… 連結進來一次"
+            print("helper 也起來了：127.0.0.1:%d（只有這台電腦連得到）"
+                  % helper.port, flush=True)
+            print("自動配對關著，在這台電腦的瀏覽器開這個連結一次：", flush=True)
+            for o in printable_origins(helper.origins):
+                print("  %s/#helper=%s&port=%d" % (o, helper.token, helper.port),
+                      flush=True)
+        else:
+            Handler.helper_port = helper.port
+            Handler.helper_token = helper.token
+            print("helper 也起來了：127.0.0.1:%d —— 這台電腦上的投影、響鈴與"
+                  "偵錯按鈕直接可用（不必再開帶鑰匙的連結）" % helper.port,
+                  flush=True)
+
     if args.bind not in ("127.0.0.1", "localhost", "::1"):
         print("注意：綁在 %s，同網段的人都看得到這頁裝置牆" % args.bind,
               file=sys.stderr, flush=True)
+        print("　　　動作按鈕沒有跟著開放：helper 只綁 127.0.0.1，別台電腦要"
+              "自己跑一支", file=sys.stderr, flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -651,6 +916,8 @@ def main(argv=None):
         for ev in state.wake.values():
             ev.set()
         httpd.server_close()
+        if helper is not None:
+            helper.close()
     return 0
 
 

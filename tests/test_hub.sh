@@ -5,6 +5,7 @@
 #
 SP="$(cd "$(dirname "$0")" && pwd)"
 HUB="$SP/../hub/hangar_hub.py"
+PM="${1:-$SP/../hangar}"
 FAKE="$SP/hubbin/hangar"
 export MOCK_STATE="${TMPDIR:-/tmp}/hangar-test/hub"
 PASS=0; FAIL=0
@@ -59,10 +60,15 @@ JSON
 JSON
 }
 
-# 把 hub 跑起來，回傳它的網址（--port 0 讓核心挑一個沒人用的）
+# 把 hub 跑起來，回傳它的網址（--port 0 讓核心挑一個沒人用的）。
+#
+# helper 現在預設會跟著起來，所以這裡一律把它導到一個隨機埠與測試自己的鑰匙檔：
+# 8788 可能是這台機器上真的有一支 helper 在用，而 ~/.config/hangar/helper.token
+# 是使用者真正的鑰匙 —— 跑一次測試不該動到任何一個。
 hub_start() {
   HUB_OUT="$MOCK_STATE/hub_out"; : > "$HUB_OUT"
   python3 "$HUB" --hangar "$FAKE" --bind 127.0.0.1 --port 0 \
+    --helper-port 0 --helper-token-file "$MOCK_STATE/helper_token" \
     --list-interval 0.3 --scan-interval 0.3 "$@" > "$HUB_OUT" 2>"$MOCK_STATE/hub_err" &
   HUB_PID=$!
   local i url=""
@@ -72,8 +78,43 @@ hub_start() {
     sleep 0.1
   done
   HUB_URL="$url"
+  HUB_PORT="${HUB_URL##*:}"
   [ -n "$HUB_URL" ]
 }
+
+# 內嵌 helper 的埠。hub 把它印在啟動訊息裡（--helper-port 0 的時候是核心挑的）
+helper_port_of() {
+  sed -nE 's|^helper 也起來了：127\.0\.0\.1:([0-9]+).*|\1|p' "$HUB_OUT" | head -1
+}
+
+# req <方法> <網址> [Origin] [token] → "<狀態碼>|<body>"
+req() { python3 -c '
+import sys, urllib.request, urllib.error
+method, url, origin, token = sys.argv[1:5]
+r = urllib.request.Request(url, data=(b"{}" if method == "POST" else None),
+                           method=method)
+if origin: r.add_header("Origin", origin)
+if token:  r.add_header("Authorization", "Bearer " + token)
+try:
+    resp = urllib.request.urlopen(r, timeout=5)
+    print("%d|%s" % (resp.status, resp.read().decode()))
+except urllib.error.HTTPError as e:
+    print("%d|%s" % (e.code, e.read().decode()))
+except Exception as e:
+    print("0|%s" % e)' "$1" "$2" "${3:-}" "${4:-}"; }
+
+# 這台機器的區網位址。問核心的路由表，不會送出封包；拿不到就是空字串
+lan_ip() { python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(("8.8.8.8", 53))
+    ip = s.getsockname()[0]
+    print("" if ip.startswith("127.") else ip)
+except OSError:
+    pass
+finally:
+    s.close()' 2>/dev/null; }
 
 hub_stop() { [ -n "${HUB_PID:-}" ] && kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; HUB_PID=""; }
 
@@ -129,7 +170,23 @@ if ! hub_start; then
   echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"; exit 1
 fi
 echo "  PASS  起得來並印出網址"; PASS=$((PASS+1))
-assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$(get "$HUB_URL/healthz")")"
+
+# 印出網址之後就必須**馬上**開始服務。
+#
+# 這條看起來是廢話，但它擋的是一種很難查的壞法：綁好 socket 到進 serve_forever
+# 之間多做了一件會卡住的事（DNS、跑一次 hangar、等某個檔案）。那段期間 socket
+# 是綁著的，連線排在 backlog 裡沒有人 accept —— 啟動訊息早就印出去了，看起來
+# 一切正常，實際上每個請求都掛到逾時。反向解析很慢的機器上真的發生過。
+t0="$(date +%s)"
+out="$(get "$HUB_URL/healthz")"
+t1="$(date +%s)"
+assert "healthz 回 ok" "True" "$(q 'd["ok"]' "$out")"
+if [ "$((t1 - t0))" -le 3 ]; then
+  printf '  PASS  %s\n' "印出網址之後馬上就服務得了"; PASS=$((PASS+1))
+else
+  printf '  FAIL  %s（等了 %s 秒）\n' "印出網址之後馬上就服務得了" "$((t1 - t0))"
+  FAIL=$((FAIL+1))
+fi
 check  "首頁是那張裝置牆" "Hangar 裝置牆" "$(get "$HUB_URL/")"
 check  "首頁不快取舊版按鈕事件" "Cache-Control: no-store" "$(get_headers "$HUB_URL/")"
 check  "首頁含註冊 handler" "async function enroll" "$(get "$HUB_URL/")"
@@ -612,6 +669,93 @@ assert "已設定的手機也有這個欄位" "False" \
 assert "閘道器排在陌生裝置後面" "True" \
   "$(q 'str([y["ip"] for y in d["devices"] if y["state"]=="unmanaged"][-1] == "192.168.1.1")' "$out")"
 hub_stop
+
+echo "=== H15. 內嵌的 helper：預設跟著起來，但仍然是另一個只綁本機的 listener ==="
+hub_env
+hub_start || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+check "預設就把 helper 帶起來" "helper 也起來了" "$(cat "$HUB_OUT")"
+HPORT="$(helper_port_of)"
+out="$(req GET "$HUB_URL/api/helper")"
+assert "loopback 拿得到設定" "200" "${out%%|*}"
+assert "ok"                 "True"   "$(q 'str(d["ok"])' "${out#*|}")"
+assert "埠跟啟動訊息一致"    "$HPORT" "$(q 'str(d["port"])' "${out#*|}")"
+assert "鑰匙就是檔案裡那一把" "$(cat "$MOCK_STATE/helper_token" 2>/dev/null | tr -d '\n')" \
+  "$(q 'd["token"]' "${out#*|}")"
+TOK="$(q 'd["token"]' "${out#*|}")"
+
+# 三道鎖還在：沒鑰匙、錯的 Origin 都進不去，兩個都對才過。
+# helper 端點本身的行為由 test_helper.sh 涵蓋，這裡要證明的是「接線接對了」——
+# state / token / origins 這三個 class 屬性有沒有真的被 hub 設好。
+out="$(req GET "http://127.0.0.1:$HPORT/healthz")"
+assert "內嵌的 helper 一樣要鑰匙" "401" "${out%%|*}"
+out="$(req GET "http://127.0.0.1:$HPORT/healthz" "http://evil.example:9999" "$TOK")"
+assert "白名單外的頁面叫不動"     "403" "${out%%|*}"
+out="$(req GET "http://127.0.0.1:$HPORT/healthz" "$HUB_URL" "$TOK")"
+assert "hub 自己那一頁叫得動"     "200" "${out%%|*}"
+assert "而且問的是同一支 hangar"  "True" \
+  "$(q 'str("work" in d["profiles"])' "${out#*|}")"
+
+# hub 這一邊仍然一個會動到手機的端點都沒有 —— 整合的是 process，不是 listener
+for ep in mirror ring adb enroll; do
+  out="$(post "$HUB_URL/$ep")"
+  assert "hub 上沒有 /$ep" "404" "${out%%|*}"
+done
+hub_stop
+
+echo "=== H16. 鑰匙只給本機 ==="
+LAN="$(lan_ip)"
+if [ -z "$LAN" ]; then
+  echo "  SKIP  這台機器問不出區網位址，沒辦法從非 loopback 打自己"
+else
+  hub_env
+  hub_start --bind 0.0.0.0 || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+  out="$(req GET "http://$LAN:$HUB_PORT/api/helper")"
+  assert "別台電腦拿不到鑰匙" "403" "${out%%|*}"
+  check  "而且講得出下一步"   "hangar_helper.py" "${out#*|}"
+  nocheck "不可以把鑰匙漏出去" "token" "${out#*|}"
+  out="$(req GET "http://127.0.0.1:$HUB_PORT/api/helper")"
+  assert "同一台還是拿得到"   "200" "${out%%|*}"
+  hub_stop
+fi
+
+echo "=== H17. 兩種關掉的方式，各自講得出下一步 ==="
+hub_env
+hub_start --no-helper || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+nocheck "--no-helper 就真的不起" "helper 也起來了" "$(cat "$HUB_OUT")"
+out="$(req GET "$HUB_URL/api/helper")"
+assert "回 404"               "404" "${out%%|*}"
+check  "說得出是誰關的"        "no-helper" "${out#*|}"
+check  "下一步是跑一支 helper" "hangar_helper.py" "${out#*|}"
+hub_stop
+
+hub_env
+hub_start --no-auto-pair || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+check "helper 照樣起來"      "helper 也起來了" "$(cat "$HUB_OUT")"
+check "改印帶鑰匙的連結"      "#helper=" "$(cat "$HUB_OUT")"
+nocheck "連結不印 IPv6 字面位址" "#helper=.*\\[" "$(cat "$HUB_OUT")"
+out="$(req GET "$HUB_URL/api/helper")"
+assert "但這一頁拿不到鑰匙"   "404" "${out%%|*}"
+check  "說得出是誰關的"        "no-auto-pair" "${out#*|}"
+hub_stop
+
+echo "=== H18. hangar wall 就是這一支 ==="
+hub_env
+WALL_OUT="$MOCK_STATE/wall_out"; : > "$WALL_OUT"
+"$PM" wall --hangar "$FAKE" --bind 127.0.0.1 --port 0 --helper-port 0 \
+  --helper-token-file "$MOCK_STATE/wall_token" --no-scan --no-usb \
+  --list-interval 999 > "$WALL_OUT" 2>&1 &
+WALL_PID=$!
+for i in $(seq 1 50); do
+  grep -q '^hangar hub: ' "$WALL_OUT" && break
+  sleep 0.1
+done
+check   "hangar wall 起得來"    "^hangar hub: " "$(cat "$WALL_OUT")"
+check   "而且 helper 一起起來了" "helper 也起來了" "$(cat "$WALL_OUT")"
+nocheck "不該丟 traceback"       "Traceback" "$(cat "$WALL_OUT")"
+WALL_URL="$(sed -nE 's|^hangar hub: (http://[^ ]+)/$|\1|p' "$WALL_OUT" | head -1)"
+out="$(req GET "$WALL_URL/api/helper")"
+assert "鑰匙也給得出來" "200" "${out%%|*}"
+kill "$WALL_PID" 2>/dev/null; wait "$WALL_PID" 2>/dev/null
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

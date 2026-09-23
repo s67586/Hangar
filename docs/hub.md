@@ -20,9 +20,13 @@ hangar usb  --json           插在 hub 這台機器上的 USB 裝置（含未�
 > 是同一個視角問題（掃的也一直是 hub 所在的網段）。
 
 ```bash
-./hub/hangar_hub.py                       # 只綁 127.0.0.1:8787
-./hub/hangar_hub.py --bind 0.0.0.0 --port 8787   # 要給同事看才這樣開
+hangar wall                               # 只綁 127.0.0.1:8787
+hangar wall --bind 0.0.0.0 --port 8787    # 要給同事看才這樣開
+./hub/hangar_hub.py                       # 同一支；wall 只是轉發過去
 ```
+
+`hangar wall` 跟直接跑 `hub/hangar_hub.py` 是同一支程式、同一組參數 —— 它只負責
+從 symlink 一路找回 repo 再 `exec` 過去，這樣不必記得 repo 放在哪。
 
 用的是 Python 3 的標準函式庫，**沒有任何套件要裝** —— 常駐機器上不該為了看一頁
 網頁而先裝一套生態系，跟 `hangar` 自己是一支無相依 bash script 是同一個理由。
@@ -37,8 +41,62 @@ hangar usb  --json           插在 hub 這台機器上的 USB 裝置（含未�
 | `--subnet` | 自動偵測 | 同 `hangar scan --subnet` |
 | `--no-scan` | | 完全不掃區網，只看已設定的手機 |
 | `--no-usb` | | 不回報這台機器上 USB 接著的裝置 |
+| `--no-helper` | | 不要把 helper 一起帶起來（見下面） |
+| `--helper-port` | `8788` | 內嵌 helper 的埠（`0` = 隨便挑） |
+| `--no-auto-pair` | | 不把鑰匙交給這一頁，改用啟動時印出來的連結 |
+| `--helper-token-file` | `~/.config/hangar/helper.token` | helper 的鑰匙放哪 |
+| `--new-helper-token` | | 換一把新的（舊的連結就失效了） |
+| `--hub` | | 額外的 Origin，走反向代理之類的情況才需要 |
 
-端點：`/`（裝置牆）、`/api/devices`（合併後的 JSON）、`/api/refresh`（POST，見下面）、`/healthz`。
+端點：`/`（裝置牆）、`/api/devices`（合併後的 JSON）、`/api/helper`（見下面）、
+`/api/refresh`（POST，見下面）、`/healthz`。
+
+## helper 跟著一起起來
+
+裝置牆上的動作按鈕（投影、響鈴、切偵錯、入伍）從來不是 hub 在做 —— 那些事得發生
+在**按按鈕的那台電腦**上，所以做事的一直是 [helper](wall-actions.md)。但最常見的
+情形是 hub 跟 helper 在同一台（自己的筆電），那時候「兩個 process」只剩成本：兩個
+終端機、`--hub` 要跟網址列一字不差、還要去開那個帶鑰匙的連結。
+
+所以 hub 預設會把 helper 帶進**同一個 process**。要注意的是它**不是同一個
+listener**：
+
+- helper 照樣自己綁 `127.0.0.1`，hub 的 `--bind` 不會傳給它
+- Origin 白名單與 token 那三道鎖原封不動
+- **hub 這一邊仍然一個會動到手機的端點都沒有** —— `POST /mirror` 打到 hub 是 404
+
+Origin 白名單不必再自己打：hub 知道自己聽哪個埠，會把 `127.0.0.1`、`localhost`、
+主機名與這台機器對外那個位址都算進去。那正是獨立跑 helper 時最常打錯的地方
+（差一個字就是 403，而且錯誤發生在瀏覽器裡）。
+
+推導出來的位址只有**主要那一張網卡**的。這條路上刻意一個名字解析都不做 ——
+它跑在 hub 綁好、但還沒開始服務的那一小段，卡住的話整個 hub 會看起來像死了
+（反向解析很慢的機器上真的發生過）。多網卡的機器要從第二張的位址開這一頁的話，
+用 `--hub` 補上去：
+
+```bash
+hangar wall --bind 0.0.0.0 --hub http://10.1.2.3:8787
+```
+
+鑰匙走 `GET /api/helper`，而它**只回答 loopback**：
+
+```bash
+curl -s http://127.0.0.1:8787/api/helper
+{"ok": true, "port": 8788, "token": "…"}
+
+curl -s http://192.168.1.5:8787/api/helper     # 同事從區網打同一個端點
+{"ok": false, "reason": "動作按鈕只在跑 hub 的那台機器上按得動", "hint": "…"}
+```
+
+所以同事從區網開同一頁，行為跟以前完全一樣：他那台要自己跑一支 helper。
+
+> **多人共用的機器要關掉自動配對。** 這個端點等於把 helper 的鑰匙交給「任何能從
+> loopback 打到 hub 的東西」，繞過了鑰匙檔那個 `0600`。在自己的筆電上這不是新
+> 風險（本來就是同一個人），但在多人共用帳號的機器上是 —— 那種機器要帶
+> `--no-auto-pair`（鑰匙只走啟動時印出來的那個連結）或乾脆 `--no-helper`。
+
+helper 起不來（最常見的是 8788 已經有一支獨立的 helper 在用）不會把 hub 一起拖
+下水：hub 照常是一頁看得到的裝置牆，原因印在啟動訊息裡，牆上那行字也會講出來。
 
 ## 多久更新一次
 

@@ -49,11 +49,12 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | 連線方式的定位 | **區網是主場**（`TRANSPORT` 預設 `lan`，`hangar setup` 預設建區網 profile），Tailscale 是跨網路時的選項（`setup --transport tailscale`） |
 | 手機端 agent | 要裝（一次性 adb 授權，不走 Device Owner） |
 | hub 後端 | Python 3 標準函式庫，零外部相依（跟 hangar 是無相依 bash script 同一個理由） |
-| hub 部署形態 | 一台常駐機器，接在測試機的同一個區網 |
+| hub 部署形態 | 一台常駐機器，接在測試機的同一個區網；兩者在同一台時用 `hangar wall` 一次起完 |
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 | 網頁投影 | **遠期目標**，不排進 M1–M5。投影目前維持走 CLI 的 scrcpy，網頁只負責切偵錯（見里程碑下面那段） |
 | 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 `helper/`，helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
 | 牆上的響鈴按鈕 | 已完成，跟投影同一條路：走 helper，不走 hub。**hub 維持唯讀**；M4 也沿用這個動作邊界 |
+| hub 內嵌 helper（`hangar wall`） | 整合的是 **process，不是 listener**：helper 照樣自己綁 127.0.0.1、照樣走 Origin ＋ token 那三道鎖，hub 這一邊仍然一個會動到手機的端點都沒有。多出來的只有 `GET /api/helper`，而它**只回答 loopback** —— 同事從區網開同一頁拿不到鑰匙，他那台還是得自己跑一支 helper |
 
 ## 里程碑
 
@@ -101,12 +102,12 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.5.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2580` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2586` |
 | `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:181` |
-| hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:57` |
+| hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:63` |
 | agent 協定 | schema **3**，版本 `0.1.2` | `agent/app/build.gradle.kts` |
-| hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`POST /api/refresh`** | `Handler` |
+| hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、**`POST /api/refresh`** | `Handler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
 | helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
 
