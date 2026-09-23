@@ -1628,6 +1628,35 @@ adb_wifi_mac() { # <serial> — 結果放進 DEV_MAC / DEV_MAC_SSID
   return 0
 }
 
+DEV_WIFI_SSID=""; DEV_WIFI_IP=""
+
+# 手機現在連著哪個 Wi-Fi、在那個 Wi-Fi 上是哪個位址。
+#
+# 給 `hangar usb` 用：插著 USB 但還沒 setup 的手機，牆上本來只講得出機型跟序號，
+# 而要 setup 它、或在掃描那一區認出它，缺的正是這兩格。
+#
+# 跟 device_lan_ip 不同：那個只要「跟這台電腦同一個 /24」的位址，挑不到就算了；
+# 這裡要的是手機自己的 Wi-Fi 位址，不同網段也照實講 —— 「它連的是別的 Wi-Fi」
+# 本身就是答案。
+adb_wifi_net() { # <serial> — 結果放進 DEV_WIFI_SSID / DEV_WIFI_IP
+  DEV_WIFI_SSID=""; DEV_WIFI_IP=""
+  local out
+  out="$(run_timeout 10 adb -s "$1" shell cmd wifi status 2>/dev/null | tr -d '\r')"
+  DEV_WIFI_SSID="$(printf '%s\n' "$out" \
+                   | sed -nE 's/.*WifiInfo: SSID: "([^"]*)".*/\1/p' | head -1)"
+  # 沒有定位權限的呼叫端拿到的是這個佔位字，端出去會被當成一個真的名字
+  [ "$DEV_WIFI_SSID" = "<unknown ssid>" ] && DEV_WIFI_SSID=""
+  DEV_WIFI_IP="$(printf '%s\n' "$out" \
+                 | sed -nE 's|.*WifiInfo: .*, IP: /([0-9.]+).*|\1|p' | head -1)"
+  # 新一點的 Android 在 WifiInfo 那一行不一定帶 IP，退回去問 wlan 介面。
+  # 只認 wlan：行動網路那張 rmnet 的位址不是「Wi-Fi 的 IP」。
+  if [ -z "$DEV_WIFI_IP" ] && [ -n "$DEV_WIFI_SSID" ]; then
+    DEV_WIFI_IP="$(run_timeout 8 adb -s "$1" shell ip -4 addr show wlan0 2>/dev/null | tr -d '\r' \
+                   | sed -nE 's|.*inet ([0-9.]+)/.* wlan[0-9]+$|\1|p' | head -1)"
+  fi
+  [ -n "$DEV_WIFI_SSID" ] || [ -n "$DEV_WIFI_IP" ]
+}
+
 BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
 
 # dumpsys battery 的 status 是數字碼（framework BatteryManager 的定義）
@@ -3559,35 +3588,39 @@ cmd_usb() {
     err "找不到 jq（--json 需要它）"; hint "brew install jq"; exit 1; }
   migrate_legacy
 
-  local rows="" ser st model dser prof
+  local rows="" ser st model dser prof ssid wip
   # fd 3：迴圈體裡的 adb 會把 stdin 吸乾，第二支之後就會憑空消失（踩過）
   while read -r ser st <&3; do
     [ -n "$ser" ] || continue
-    model=""; dser=""
+    model=""; dser=""; ssid=""; wip=""
     # 機型與 ro.serialno 只有 device 狀態問得到。unauthorized／offline 問不到，
     # 但 adb 的 USB serial 本來就是硬體序號，拿它當 device_serial 仍然對得起
     # merge —— 而「問不到」正是那一格最該被看見的時候，不能因此讓它消失。
     if [ "$st" = "device" ]; then
       model="$(run_timeout 8 adb -s "$ser" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
       dser="$(run_timeout 8 adb -s "$ser" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+      adb_wifi_net "$ser" && { ssid="$DEV_WIFI_SSID"; wip="$DEV_WIFI_IP"; }
     fi
     [ -n "$dser" ] || dser="$ser"
     prof="$(profile_for_serial "$dser")" || prof=""
-    rows="${rows}${ser}|${st}|${model}|${dser}|${prof}"$'\n'
+    # SSID 裡可能有 |，換掉免得拆欄位時錯位（只影響顯示）
+    rows="${rows}${ser}|${st}|${model}|${dser}|${prof}|${wip}|${ssid//|/／}"$'\n'
   done 3< <(usb_devices)
 
   if [ "$JSON_MODE" -eq 1 ]; then
     local objs=""
-    while IFS='|' read -r ser st model dser prof; do
+    while IFS='|' read -r ser st model dser prof wip ssid; do
       [ -n "$ser" ] || continue
       objs="${objs}$(jq -n --arg ser "$ser" --arg st "$st" --arg model "$model" \
-        --arg dser "$dser" --arg prof "$prof" '
+        --arg dser "$dser" --arg prof "$prof" --arg wip "$wip" --arg ssid "$ssid" '
         def s: if . == "" then null else . end;
         { adb_serial:    $ser,
           adb_state:     $st,
           device_serial: ($dser | s),
           model:         ($model | s),
-          profile:       ($prof | s) }')"$'\n'
+          profile:       ($prof | s),
+          wifi_ssid:     ($ssid | s),
+          wifi_ip:       ($wip | s) }')"$'\n'
     done <<< "$rows"
     printf '%s' "$objs" | jq -s --argjson schema "$USB_SCHEMA" \
       '{ schema: $schema, devices: ., errors: [] }'
@@ -3600,20 +3633,21 @@ cmd_usb() {
     info "這台電腦上沒有 USB 接著的 Android 裝置"
     return 0
   fi
-  printf '\n  %s %s %s %s\n' \
-    "$(pad '序號' 20)" "$(pad '狀態' 14)" "$(pad '身分' 12)" "機型"
-  printf '  %s\n' "────────────────────────────────────────────────────────"
-  local unauth=0 s_col s_txt
-  while IFS='|' read -r ser st model dser prof; do
+  printf '\n  %s %s %s %s %s\n' \
+    "$(pad '序號' 20)" "$(pad '狀態' 14)" "$(pad '身分' 12)" "$(pad '機型' 16)" "Wi-Fi"
+  printf '  %s\n' "──────────────────────────────────────────────────────────────────────────────"
+  local unauth=0 s_col s_txt w_txt
+  while IFS='|' read -r ser st model dser prof wip ssid; do
     [ -n "$ser" ] || continue
     case "$st" in
       device)       s_col="$C_GRN"; s_txt="已授權" ;;
       unauthorized) s_col="$C_RED"; s_txt="未授權"; unauth=1 ;;
       *)            s_col="$C_YEL"; s_txt="$st" ;;
     esac
-    printf '  %s %s%s%s %s %s\n' \
+    w_txt="${ssid:--}"; [ -n "$wip" ] && w_txt="${w_txt}  ${wip}"
+    printf '  %s %s%s%s %s %s %s\n' \
       "$(pad "$dser" 20)" "$s_col" "$(pad "$s_txt" 14)" "$C_0" \
-      "$(pad "${prof:--}" 12)" "${model:-?}"
+      "$(pad "${prof:--}" 12)" "$(pad "${model:-?}" 16)" "$w_txt"
   done <<< "$rows"
   echo
   if [ "$unauth" -eq 1 ]; then

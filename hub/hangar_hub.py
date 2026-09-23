@@ -457,16 +457,29 @@ def merge(list_data, scan_data, usb_data=None):
     # 裡都不算：list 只看 profile，scan 探的是 5555，而 5555 要 adb tcpip 才會
     # 開。使用者手上握著「我明明都開好了」這個強烈的反證，會往錯的方向查很久。
     #
-    # 對不上 scan 那一列是已知的：那種手機的 MAC 通常是隨機的，scan 也拿不到
-    # 序號，沒有任何共同的鍵。牆上會同時有一張匿名的掃描卡與一張 USB 卡 ——
-    # 併不起來，但至少 USB 這張講得出它是誰。
+    # 對 scan 那一列靠的是 Wi-Fi IP：那種手機的 MAC 通常是隨機的，scan 也拿不到
+    # 序號，唯一的共同點是 USB 問手機自己要來的 IP 等於掃描看到的那個位址。
+    # 問不到 IP（未授權、沒連 Wi-Fi、連的是別的網段）就併不起來 —— 牆上會同時
+    # 有一張匿名的掃描卡與一張 USB 卡，但至少 USB 這張講得出它是誰。
+    scan_by_ip = {d["lan_ip"]: d for d in devices
+                  if not d["name"] and d.get("lan_ip") and d["sources"] == ["scan"]}
     for u in (usb_data or {}).get("devices", []):
         serial = u.get("device_serial")
         entry = by_serial.get(serial) if serial else None
         if entry is None and u.get("profile"):
             entry = by_profile.get(u["profile"])
         usb_info = {"adb_serial": u.get("adb_serial"),
-                    "adb_state": u.get("adb_state")}
+                    "adb_state": u.get("adb_state"),
+                    # 手機自己說的：連著哪個 Wi-Fi、在上面是哪個位址
+                    "wifi_ssid": u.get("wifi_ssid"),
+                    "wifi_ip": u.get("wifi_ip")}
+        if entry is None and u.get("wifi_ip") in scan_by_ip:
+            # 匿名的掃描卡原來就是這支：認領它，換上序號當主鍵 —— 掃描那一輪
+            # 沒回應時卡片才不會換一把鑰匙、把按到一半的狀態弄丟
+            entry = scan_by_ip.pop(u["wifi_ip"])
+            if serial:
+                entry["key"] = "serial:" + serial
+                entry["device_serial"] = serial
         if entry is not None:
             entry["usb"] = usb_info
             # 機型：USB 問得到而另外兩邊問不到，是常有的（手機沒開 5555）
@@ -483,8 +496,8 @@ def merge(list_data, scan_data, usb_data=None):
             "state": ("unauthorized" if u.get("adb_state") == "unauthorized"
                       else "unmanaged"),
             "transport": None,
-            # 沒有 IP —— 這一份是牆上第一種沒有位址的卡
-            "ip": None, "adb_serial": None,
+            # 問得到 Wi-Fi 位址就用它；未授權或沒連 Wi-Fi 的就沒有位址
+            "ip": u.get("wifi_ip"), "adb_serial": None,
             "device_serial": serial,
             "adb_state": u.get("adb_state"), "reachability": None,
             "model": u.get("model"), "android": None, "battery": None,

@@ -983,6 +983,10 @@ function card(d) {
     const USB_ZH = { device: "接著（已授權）", unauthorized: "接著（未授權）",
                      offline: "接著（offline）" };
     rows += row("USB", USB_ZH[d.usb.adb_state] || `接著（${d.usb.adb_state}）`);
+    // 手機自己說的 Wi-Fi。上面的 IP 已經是同一個位址就不重複講
+    rows += row("Wi-Fi", d.usb.wifi_ssid);
+    if (d.usb.wifi_ip && d.usb.wifi_ip !== d.ip && d.usb.wifi_ip !== d.lan_ip)
+      rows += row("Wi-Fi IP", d.usb.wifi_ip, "mono");
   }
   if (d.agent) {
     const agentText = d.agent.reachable
@@ -1018,6 +1022,8 @@ function card(d) {
   // hangar setup 才會開。不講的話他手上握著「我明明都開好了」會查很久。
   if (d.usb && d.usb.adb_state === "unauthorized")
     notes.push(`這支手機插在 ${(latest && latest.host) || "跑 hub 的那台電腦"} 上但沒有授權 —— 要有人到手機上按「一律允許透過這台電腦」`);
+  else if (d.usb && !d.name && (d.sources || []).includes("scan"))
+    notes.push(`插在 ${(latest && latest.host) || "跑 hub 的那台電腦"} 的 USB 上，掃描也看得到它在網段上。還沒 hangar setup，所以 5555 沒開`);
   else if (d.usb && !d.name)
     notes.push(`只有 USB 看得到它（插在 ${(latest && latest.host) || "跑 hub 的那台電腦"} 上）。還沒 hangar setup，所以 5555 沒開 —— 區網掃描那一份認不出它，開了偵錯也一樣`);
   else if (d.sources && d.sources.includes("usb") && d.sources.length === 1 && d.name)
@@ -1143,7 +1149,7 @@ function paint() {
   document.getElementById("h-usb").innerHTML =
     `USB 上還沒納管的 <b>${usb.length}</b> 台`;
   document.getElementById("usb-note").textContent =
-    `插在 ${hubName} 的 USB 上，還沒 setup，所以掃描認不出來。`;
+    `插在 ${hubName} 的 USB 上，還沒 setup。`;
   document.getElementById("grid-usb").innerHTML = usb.map(card).join("");
   document.getElementById("zone-usb").hidden = usb.length === 0;
 

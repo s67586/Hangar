@@ -130,7 +130,12 @@ BATT
             if [ -f "$S/wifi_off" ]; then echo "Wifi is disabled"; exit 0; fi
             echo "Wifi is enabled"
             echo "Wifi is connected to \"TestNet\""
-            echo "WifiInfo: SSID: \"TestNet\", BSSID: e8:26:89:1a:a3:d1, MAC: $mac, IP: /192.168.1.5, Security type: 0"
+            # wifi_no_ip：新一點的 Android 在 WifiInfo 那一行不帶 IP
+            if [ -f "$S/wifi_no_ip" ]; then
+              echo "WifiInfo: SSID: \"TestNet\", BSSID: e8:26:89:1a:a3:d1, MAC: $mac, Security type: 0"
+            else
+              echo "WifiInfo: SSID: \"TestNet\", BSSID: e8:26:89:1a:a3:d1, MAC: $mac, IP: /192.168.1.5, Security type: 0"
+            fi
             ;;
           ip)
             # `adb shell ip -4 addr show`。故意同時有行動網路與 Wi-Fi：
