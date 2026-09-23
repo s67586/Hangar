@@ -330,7 +330,8 @@ def _index(entry, by_profile, by_serial, by_mac):
         by_mac.setdefault(key, entry)
 
 
-def merge(list_data, scan_data, usb_data=None, checkins=None, now=None):
+def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
+          adb_seen=None):
     """把 list、scan、usb 三份資料合成一張裝置牆。
 
     識別碼的優先順序跟 hangar scan 那一層同一套：DEVICE_SERIAL > MAC > IP。
@@ -348,6 +349,10 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None):
 
     第四份（checkins）是 agent 主動回報的：序號 → State.checkin() 存下的那一筆。
     token 驗過才會存，所以它的序號可以直接拿來對卡片。
+
+    adb_seen 是 State 記下的「每支手機最後一次看到的偵錯開關」（序號 →
+    {enabled, at}）。agent 叫不動的那一輪，list 就不會帶 agent.adb，只有靠它
+    才知道這支是不是「偵錯關著又沒人叫得動」—— 見 _stranded()。
     """
     devices = []
     by_profile = {}
@@ -583,19 +588,64 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None):
     for d in devices:
         d.setdefault("routed", False)
         d.setdefault("checkin", None)
+        d["stranded"] = _stranded(d, adb_seen or {})
 
-    # 排序：要注意的排前面（電量低 > 設定過的 > 掃到的），同類再按名稱／IP
+    # 排序：要注意的排前面（偵錯關著又叫不動 > 電量低 > 設定過的 > 掃到的），
+    # 同類再按名稱／IP
     order = {"unauthorized": 0, "no_adb": 1, "offline": 2, "unknown": 3,
              "agent_only": 4, "ready": 5, "unmanaged": 6}
 
     def sort_key(d):
-        low = 0 if (d.get("battery") or {}).get("low") else 1
+        # 偵錯關著又叫不動的排最前面，比電量低還前面：電量低等得起，這支不去
+        # 碰它就永遠回不來
+        if d.get("stranded"):
+            return (0, 0, 0, d.get("name") or "", _ip_key(d.get("ip") or ""))
+        low = 1 if (d.get("battery") or {}).get("low") else 2
         # 閘道器排在同類的最後面：它每次都在，而且永遠不是要找的那台
         return (low, order.get(d["state"], 9), 1 if d.get("is_gateway") else 0,
                 d.get("name") or "", _ip_key(d.get("ip") or ""))
 
     devices.sort(key=sort_key)
     return devices
+
+
+def _stranded(d, adb_seen):
+    """「agent 沒回話 ＋ 偵錯關著」：要有人走過去的那一種。
+
+    M4 沒有自動復原（見 ROADMAP「為什麼沒有自動復原」），所以偵錯被關掉之後，
+    唯一開得回來的路就是 agent。agent 也叫不動 = 遠端沒有任何一條路回得去。
+    這裡只負責讓它**看得見**，不做任何狀態變更。
+
+    偵錯開關用的是 hub 最後一次看到的值：agent 叫不動的那一輪本來就問不到。
+    adb 此刻是通的（網路或 USB）就表示偵錯開著，不算。
+    """
+    agent = d.get("agent")
+    if not agent or agent.get("reachable") is True:
+        return None
+    if d.get("adb_state") == "device" or (d.get("usb") or {}).get("adb_state") == "device":
+        return None
+    seen = adb_seen.get(d.get("device_serial"))
+    if not seen or seen.get("enabled") is not False:
+        return None
+    return {"adb_seen_off_at": seen["at"]}
+
+
+def record_adb_seen(adb_seen, list_data, now):
+    """從一輪 list --json 更新 adb_seen（就地改）。
+
+    只在「真的知道」的時候寫：agent 答得出 adb.enabled，或 adb 本身是通的
+    （那就一定開著）。叫不動的那一輪什麼都不寫 —— 最後一次知道的值要留著。
+    """
+    for d in (list_data or {}).get("devices", []):
+        serial = d.get("device_serial")
+        if not serial:
+            continue
+        agent = d.get("agent") or {}
+        enabled = (agent.get("adb") or {}).get("enabled") if agent.get("reachable") else None
+        if isinstance(enabled, bool):
+            adb_seen[serial] = {"enabled": enabled, "at": now}
+        elif d.get("adb_state") == "device":
+            adb_seen[serial] = {"enabled": True, "at": now}
 
 
 def _blank_entry(serial, profile):
@@ -645,6 +695,9 @@ class State:
         # agent 主動回報：序號 → {at, profile, peer_ip, ips, payload}
         self.checkins = {}
         self.checkin_at = None
+        # 每支手機最後一次看到的偵錯開關：序號 → {enabled, at}。只放記憶體 ——
+        # hub 重開之後，要等 agent 再答一次話才知道
+        self.adb_seen = {}
         # 驗 check-in 用的 token 表：序號 → (profile, token)。由 hangar agent-tokens 來
         self.hangar = None
         self.tokens = {}
@@ -675,6 +728,7 @@ class State:
             self.errors.pop(kind, None)
             if kind == "list":
                 self.list_data, self.list_at = data, time.time()
+                record_adb_seen(self.adb_seen, data, self.list_at)
             elif kind == "usb":
                 self.usb_data, self.usb_at = data, time.time()
             else:
@@ -736,12 +790,17 @@ class State:
                             if isinstance(payload.get(k), (str, dict))},
             }
             self.checkin_at = now
+            # 回報裡的偵錯開關一樣是手機自己說的，當成「看到過」
+            enabled = (payload.get("adb") or {}).get("enabled") \
+                if isinstance(payload.get("adb"), dict) else None
+            if isinstance(enabled, bool):
+                self.adb_seen[serial] = {"enabled": enabled, "at": now}
         return 200, {"ok": True, "next_s": CHECKIN_NEXT_S}
 
     def snapshot(self):
         with self._lock:
             devices = merge(self.list_data, self.scan_data, self.usb_data,
-                            self.checkins)
+                            self.checkins, adb_seen=self.adb_seen)
             errors = [{"source": k, "message": v} for k, v in self.errors.items()]
             # hangar 自己回報的錯誤（掃不動、缺工具…）也一起端上去
             for src, data in (("list", self.list_data), ("scan", self.scan_data),

@@ -70,6 +70,9 @@
     padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;
   }
   .card.low { border-color: var(--bad); }
+  /* 偵錯關著又叫不動：比電量低嚴重（沒人去碰就永遠回不來），所以框更粗 */
+  .card.stranded { border: 2px solid var(--bad); }
+  .stranded-banner { color: var(--bad); font-weight: 600; font-size: 13px; }
   .top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .name { font-weight: 600; font-size: 15px; }
   .name .unnamed { color: var(--dim); font-weight: 400; }
@@ -1005,6 +1008,9 @@ function card(d) {
     rows += row("agent", agentText + enrollmentText);
     if (d.agent.adb && typeof d.agent.adb.enabled === "boolean") {
       rows += row("偵錯", d.agent.adb.enabled ? "開啟" : "關閉");
+    } else if (d.stranded) {
+      // agent 叫不動的那一輪問不到，這是 hub 記著的最後一次
+      rows += row("偵錯", `關閉（最後一次看到是 ${ago(d.stranded.adb_seen_off_at)}）`);
     }
   }
 
@@ -1021,7 +1027,8 @@ function card(d) {
   const notes = [];
   // profile 有 token 但 agent 叫不動：可能只是服務沒起來，也可能 APK 已被解除
   // 安裝。ADB 還通時 castRow() 會提供補裝／重新入伍按鈕；不要把它武斷說成已入伍。
-  if (d.agent && d.agent.reachable === false)
+  // stranded 的那張上面已經有橫幅講完了，這句不重複
+  if (d.agent && d.agent.reachable === false && !d.stranded)
     notes.push("profile 有入伍資料，但 agent 現在沒有回應 —— 可能是 app 被解除安裝或服務未啟動");
   if (d.state === "agent_only" && d.checkin && d.checkin.fresh && !(d.agent && d.agent.reachable))
     notes.push("hub 連不到這支手機，只收得到它主動送來的回報 —— 看得到、管不動（投影、響鈴要 hub 連得進去）");
@@ -1051,9 +1058,16 @@ function card(d) {
   }
   for (const e of d.errors || []) if (e.message) notes.push(e.message);
 
-  return `<div class="card ${low ? "low" : ""}">
+  // M4 沒有自動復原：偵錯關掉之後唯一開得回來的路是 agent，agent 也叫不動
+  // 就是遠端沒路可走了。這裡只讓它看得見，不自動做任何事。
+  const stranded = d.stranded
+    ? `<div class="stranded-banner">偵錯關著，agent 也沒回話 —— 遠端開不回來，要有人到手機旁邊處理</div>`
+    : "";
+
+  return `<div class="card ${low ? "low" : ""} ${d.stranded ? "stranded" : ""}">
     <div class="top"><span class="name">${name}</span>
       <span class="badge s-${esc(d.state)}">${esc(STATE_ZH[d.state] || d.state)}</span></div>
+    ${stranded}
     <dl class="rows">${rows}</dl>
     ${batt}
     ${notes.map(n => `<div class="note">${esc(n)}</div>`).join("")}
@@ -1131,9 +1145,11 @@ function paint() {
 
   const n = s => ds.filter(d => d.state === s).length;
   const lowN = ds.filter(d => d.battery && d.battery.low).length;
+  const strandedN = ds.filter(d => d.stranded).length;
   document.getElementById("counts").innerHTML =
     `<b>${ds.filter(d => d.name).length}</b> 台測試機：<b>${n("ready")}</b> 可以用、` +
     `<b>${ds.filter(d => d.agent && d.agent.reachable).length}</b> 有 agent` +
+    (strandedN ? `｜<b class="stranded-banner">${strandedN}</b> 台要有人走過去` : "") +
     (lowN ? `｜<b>${lowN}</b> 台要充電` : "");
 
   document.getElementById("errors").innerHTML = (data.errors || []).length
