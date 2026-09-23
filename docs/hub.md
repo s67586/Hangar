@@ -158,6 +158,35 @@ curl -X POST 'http://127.0.0.1:8787/api/refresh?what=all'   # 或 what=list / wh
 才退回 MAC、再退回 IP —— 跟 `hangar scan` 認人用的是同一套順序
 （見[區網掃描](scan.md)）。所以手機換了 IP，裝置牆不會多出一台幽靈。
 
+## 跨網段：主動回報（check-in）
+
+hub 看到的手機預設都是「hub 這台問得到的」：掃描只掃 hub 所在的網段，list 要連
+得進手機。手機在路由器後面（另一個 VLAN、只放單向的防火牆）時，兩條都斷。
+
+反方向常常是通的，所以可以讓手機自己來報到：
+
+```bash
+hangar wall --checkin 0.0.0.0:8789                 # 另開一個埠收回報
+hangar enroll -p work --hub http://10.0.1.5:8789   # 告訴手機往哪裡送（已入伍的只改這一項）
+hangar enroll -p work --no-hub                     # 不要再回報了
+```
+
+- 手機每 60 秒送一次（網路一換馬上送），內容跟 agent 的 `/status` 一樣，再加上
+  它現在所有的 IPv4。
+- 卡片上多一格「主動回報」與「N 秒前」。list 問不到、但回報是新鮮的（3 分鐘內）→
+  狀態是 `agent_only`，電量與機型用回報的補；手機報的位址裡沒有 profile 那個 IP →
+  標「profile 指著舊 IP」。
+- **收得到回報不代表按鈕按得動**：投影、響鈴、切偵錯都是 helper → CLI → 手機，
+  那是反方向。卡片會直接講「hub 連不到這支手機，只收得到它主動送來的回報」。
+- 驗的是入伍時的 token：hub 啟動時跑一次 `hangar agent-tokens --json`，之後遇到
+  不認得的序號（剛入伍的）最多每 10 秒重讀一次。所以 **hub 要跟入伍那台是同一個
+  使用者、讀得到同一份 profile**。
+- 回報那個埠是**另一個 listener**，上面只有 `POST /api/checkin`；`--bind` 仍然
+  決定裝置牆給不給別人看，兩件事分開。
+
+多個網段也可以一起掃：`--subnet` 給好幾次，不在 hub 網段上的會逐台探埠（見
+[區網掃描](scan.md#跨網段)），逾時會按網段數放大。
+
 ## 這一版是唯讀的
 
 裝置牆不會去動手機，也不會去改設定檔：輪詢只跑 `list` 與 `scan`，**刻意不帶
@@ -167,7 +196,8 @@ curl -X POST 'http://127.0.0.1:8787/api/refresh?what=all'   # 或 what=list / wh
 牆上的**投影、響鈴、切偵錯按鈕也沒有破壞這件事**：它們叫的不是 hub，而是你
 自己那台電腦上的 helper（見[從裝置牆上按投影](wall-actions.md)）。helper
 再呼叫 CLI，CLI 才去碰手機裡的 agent。hub 這一側仍然只有唯讀資料與輪詢喚醒
-端點；沒有任何 `/api/*` 寫入手機的路。
+端點；沒有任何 `/api/*` 寫入手機的路。`--checkin` 收到的回報也只放在記憶體，
+不寫 profile。
 
 在卡片上，響鈴只對「agent 可達且宣告 `can.ring`」的手機啟用；偵錯只對宣告
 `can.toggle_adb` 且回報了 `adb.enabled` 的手機啟用。helper 沒有啟動時，按鈕會

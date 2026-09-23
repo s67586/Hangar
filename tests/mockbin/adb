@@ -77,17 +77,29 @@ case "$1" in
           am)
             echo "am $*" >> "$S/adb_log"
             # 入伍廣播：把 token 寫下來，假 agent 之後就認這一組
-            tok=""; ser_in=""; name_in=""
+            tok=""; ser_in=""; name_in=""; hub_in=""; set_hub=0
             prev=""
             for a in "$@"; do
               case "$prev" in
                 token) tok="$a" ;;
                 serial) ser_in="$a" ;;
                 name) name_in="$a" ;;
+                hub) hub_in="$a" ;;
               esac
               prev=""
-              case "$a" in token) prev=token ;; serial) prev=serial ;; name) prev=name ;; esac
+              case "$a" in token) prev=token ;; serial) prev=serial ;; name) prev=name ;;
+                           hub) prev=hub ;; com.hangar.agent.SET_HUB) set_hub=1 ;; esac
             done
+            # 換回報對象：要帶著入伍時那組 token 才收
+            if [ "$set_hub" -eq 1 ]; then
+              if [ -n "$tok" ] && [ "$tok" = "$(cat "$S/agent_token" 2>/dev/null)" ]; then
+                printf '%s' "$hub_in" > "$S/agent_hub"
+                echo 'Broadcast completed: result=0, data="hub_set"'
+              else
+                echo 'Broadcast completed: result=1, data="unauthorized"'
+              fi
+              exit 0
+            fi
             if [ -f "$S/enroll_already" ]; then
               echo 'Broadcast completed: result=1, data="already_enrolled"'; exit 0
             fi
@@ -96,6 +108,7 @@ case "$1" in
             [ -n "$tok" ] && { rm -f "$S/agent_not_enrolled"; printf '%s' "$tok" > "$S/agent_token"; }
             [ -n "$ser_in" ] && printf '%s' "$ser_in" > "$S/agent_serial"
             [ -n "$name_in" ] && printf '%s' "$name_in" > "$S/agent_name"
+            [ -n "$tok" ] && printf '%s' "$hub_in" > "$S/agent_hub"
             echo 'Broadcast completed: result=0, data="enrolled"'
             exit 0 ;;
         esac

@@ -43,7 +43,7 @@ out="$("$PM" scan --json 2>/dev/null)"
 printf '%s' "$out" | jq -e . >/dev/null 2>&1 \
   && { echo "  PASS  是合法 JSON"; PASS=$((PASS+1)); } \
   || { echo "  FAIL  不是合法 JSON：$out"; FAIL=$((FAIL+1)); }
-assert "有 schema 版本"      "7"                "$(q '.schema' "$out")"
+assert "有 schema 版本"      "8"                "$(q '.schema' "$out")"
 assert "掃的網段寫在結果裡"  "192.168.1.0/24"   "$(q '.subnet' "$out")"
 assert "hosts 是陣列"        "array"            "$(q '.hosts | type' "$out")"
 assert "errors 是空陣列"     "0"                "$(q '.errors | length' "$out")"
@@ -369,7 +369,7 @@ assert "修好了就不再是 stale"       "false" \
 assert "而且說得出這支被修過"       "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .profile_ip_fixed' "$out")"
 assert "MAC 沒被動到"               "a4:03:e7:01:02:03" "$(pfield work PHONE_MAC)"
-assert "改檔案不影響 JSON 純淨度"   "7" "$(q '.schema' "$out")"
+assert "改檔案不影響 JSON 純淨度"   "8" "$(q '.schema' "$out")"
 # 只改該改的那一行，其他欄位不能被洗掉
 assert "TRANSPORT 還在"             "lan"  "$(pfield work TRANSPORT)"
 
@@ -447,7 +447,7 @@ echo "=== S16. 閘道器要標出來（它每次都會出現，而且絕對不�
 lan_env
 printf '192.168.1.1\n' > "$MOCK_STATE/gateway_ip"
 out="$("$PM" scan --json 2>/dev/null)"
-assert "schema 往上加了"   "7" "$(q '.schema' "$out")"
+assert "schema 往上加了"   "8" "$(q '.schema' "$out")"
 assert "閘道器標出來了"     "true" \
   "$(q '.hosts[] | select(.ip=="192.168.1.1") | .is_gateway' "$out")"
 assert "別台不可以被標成閘道器" "false" \
@@ -505,7 +505,7 @@ cat > "$MOCK_STATE/mdns_avahi" <<'AV'
 =;en0;IPv4;hangar-2345AB;_hangar-agent._tcp;local;phone.local;192.168.1.77;5599;"v=1" "serial=R58M12345AB" "model=Pixel+7+Pro"
 AV
 out="$("$PM" scan --json --no-ping 2>/dev/null)"
-assert "schema 往上加了"        "7" "$(q '.schema' "$out")"
+assert "schema 往上加了"        "8" "$(q '.schema' "$out")"
 assert "mDNS 那台認得出有 agent" "0.1.0-mock" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
 assert "mDNS 回報已入伍"       "true" \
@@ -643,6 +643,63 @@ out="$("$PM" scan --json --no-ping --no-probe 2>/dev/null)"
 assert "--no-probe 不問 mDNS" "0" "$(lines "$MOCK_STATE/avahi_log")"
 assert "--no-probe 的 agent 是 null" "null" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent' "$out")"
+
+echo "=== S20. 跨網段：不在這台電腦網段上的 /24 改成逐台探埠 ==="
+# 這台電腦在 192.168.1.x（mock 的 ifconfig）；10.20.30.x 在路由器後面。
+# ARP 表裡**故意**放一筆 10.20.30.5：那種網段在真實世界不會出現在 ARP 表，
+# 就算出現了也不該拿來用 —— 跨網段只信探埠的結果。
+lan_env
+printf '? (10.20.30.5) at 0:11:22:33:44:55 on en0 ifscope [ethernet]\n' >> "$MOCK_STATE/arp_table"
+printf '10.20.30.7\n10.20.30.9:5599\n192.168.1.77\n' > "$MOCK_STATE/nc_open_ips"
+printf '{}' > "$MOCK_STATE/agent_10.20.30.9_5599.json"
+rm -f "$MOCK_STATE/ping_log"
+out="$("$PM" scan --json --subnet 10.20.30 2>/dev/null)"
+assert "只列得出有回應的兩台" "10.20.30.7 10.20.30.9" "$(q '[.hosts[].ip] | join(" ")' "$out")"
+assert "ARP 表裡那筆不算"    "" "$(q '.hosts[] | select(.ip=="10.20.30.5") | .ip' "$out")"
+assert "標成 routed"         "true" "$(q '[.hosts[].routed] | unique | .[0]' "$out")"
+assert "沒有 MAC"            "null" "$(q '.hosts[] | select(.ip=="10.20.30.7") | .mac' "$out")"
+assert "5555 開的看得出來"   "open" "$(q '.hosts[] | select(.ip=="10.20.30.7") | .adb_port' "$out")"
+assert "只開 5599 的是 agent" "0.1.0-mock" "$(q '.hosts[] | select(.ip=="10.20.30.9") | .agent.version' "$out")"
+assert "不做 ping sweep"     "0" "$(lines "$MOCK_STATE/ping_log")"
+assert "subnets 標出 routed" "10.20.30.0/24 true" \
+  "$(q '.subnets[] | "\(.cidr) \(.routed)"' "$out")"
+assert "errors 是空的"       "0" "$(q '.errors | length' "$out")"
+
+echo "=== S21. 本機網段與跨網段一起掃 ==="
+lan_env
+printf '10.20.30.7\n192.168.1.77\n' > "$MOCK_STATE/nc_open_ips"
+out="$("$PM" scan --json --subnet 192.168.1 --subnet 10.20.30 2>/dev/null)"
+assert "subnet 還是第一個"   "192.168.1.0/24" "$(q '.subnet' "$out")"
+assert "兩個網段都列出來"    "192.168.1.0/24:false 10.20.30.0/24:true" \
+  "$(q '[.subnets[] | "\(.cidr):\(.routed)"] | join(" ")' "$out")"
+assert "本機網段照舊靠 ARP（三台）加跨網段一台" "4" "$(q '.hosts | length' "$out")"
+assert "本機網段的不標 routed" "false" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.77") | .routed' "$out")"
+assert "本機網段的閘道器照樣標" "true" \
+  "$(q '.hosts[] | select(.ip=="192.168.1.1") | .is_gateway' "$out")"
+out="$("$PM" scan --json --subnet 10.20.30,10.20.30.0/24 2>/dev/null)"
+assert "重複的網段只掃一次"  "1" "$(q '.subnets | length' "$out")"
+
+echo "=== S22. 跨網段靠 IP 對 profile，但不修 IP、也不學 MAC ==="
+lan_env
+printf '10.20.30.7\n' > "$MOCK_STATE/nc_open_ips"
+# profile 記過一組燒死的 MAC：本機網段上那會擋掉 IP 比對（IP 換人了），
+# 跨網段沒有 MAC 可比，只能信 IP
+printf 'PHONE_HOST=""\nPHONE_IP="10.20.30.7"\nTRANSPORT="lan"\nPHONE_MAC="00:11:22:33:44:77"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/far.conf"
+out="$("$PM" scan --json --subnet 10.20.30 --fix-ip 2>/dev/null)"
+assert "靠 IP 對上"   "far|ip" "$(q '.hosts[] | select(.ip=="10.20.30.7") | "\(.profile)|\(.matched_by)"' "$out")"
+check  "MAC 沒被洗掉" '00:11:22:33:44:77' "$(cat "$XDG_CONFIG_HOME/hangar/profiles/far.conf")"
+
+echo "=== S23. 跨網段的限制要講出來 ==="
+lan_env
+out="$("$PM" scan --json --subnet 10.20.30 --no-probe 2>/dev/null)"
+assert "--no-probe 時跨網段不掃" "routed_needs_probe" "$(q '.errors[0].code' "$out")"
+assert "所以一台都沒有"          "0" "$(q '.hosts | length' "$out")"
+lan_env
+: > "$MOCK_STATE/nc_open_ips"
+out="$("$PM" scan --subnet 10.20.30 2>&1)"
+check "人看的輸出講得出為什麼看不到" "5555 或 5599 有回應" "$out"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

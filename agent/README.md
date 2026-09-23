@@ -17,7 +17,8 @@
 | 重開機後自己起來 | 程式寫好了，**但還沒在實機上驗過重開機那一段**（把無線偵錯打開是 M3c，還沒做） |
 | `POST /hangar/v1/adb` 切偵錯 | 好了（M4；全手動，agent 不會自己把它改回去） |
 | `POST /hangar/v1/ring` 響鈴 | 好了（M3d；最長 120 秒，通知可停止） |
-| mDNS 廣播 | 還沒（M3b） |
+| mDNS 廣播 | 好了（M3b；見下面） |
+| 主動回報給 hub | 好了（可選；入伍時 `hangar enroll --hub`，見 [docs/agent.md](../docs/agent.md#主動回報給-hub跨網段)） |
 | `hangar enroll` | 好了 —— 電腦那一側接上了（實機跑過），下面那段手動流程留著當參考 |
 
 ## 蓋起來

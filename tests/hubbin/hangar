@@ -23,5 +23,10 @@ case "$1" in
     if [ -f "$MOCK_STATE/usb_json" ]; then cat "$MOCK_STATE/usb_json"
     else echo '{"schema":1,"devices":[],"errors":[]}'; fi
     ;;
+  agent-tokens)
+    # hub 驗主動回報用的 token 表。沒準備就是空的
+    if [ -f "$MOCK_STATE/tokens_json" ]; then cat "$MOCK_STATE/tokens_json"
+    else echo '{"schema":1,"tokens":[]}'; fi
+    ;;
   *) echo "假 hangar 不認得：$1" >&2; exit 2 ;;
 esac

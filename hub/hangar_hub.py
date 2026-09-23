@@ -23,12 +23,21 @@
     POST /api/refresh     現在就去問一次（?what=list|scan|all）
     GET  /healthz         還活著嗎
 
+另外一個**選擇性**的 listener（`--checkin HOST:PORT`，預設不開）：
+
+    POST /api/checkin     手機上的 agent 主動回報（Bearer = 入伍時的 token）
+
+它存在是為了跨網段：hub 連不到手機的時候（路由、VLAN、防火牆只放單向），
+手機往 hub 那一邊常常是通的。回報的東西只放在記憶體、不寫任何設定檔，
+而且是另一個埠 —— 讓手機回報不等於把整面牆開給同網段的人看。
+
 預設會把 helper 一起帶起來（`--no-helper` 關掉），但那是**另一個 listener**，
 而且照樣只綁 127.0.0.1：hub 這一邊仍然一個會動到手機的端點都沒有。
 """
 
 import argparse
 import errno
+import hmac
 import importlib.util
 import ipaddress
 import json
@@ -60,7 +69,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 8
+API_SCHEMA = 9
+
+# agent 主動回報（check-in）。
+#
+# CHECKIN_NEXT_S 是 hub 回給手機的「下次什麼時候再來」；過了三倍還沒來就不算
+# 新鮮 —— 一次沒送到（Wi-Fi 換手、手機睡著）不該讓卡片馬上變紅。
+CHECKIN_NEXT_S = 60
+CHECKIN_FRESH_S = 3 * CHECKIN_NEXT_S
+CHECKIN_MIN_INTERVAL = 10.0     # 同一支手機最快多久收一次
+CHECKIN_MAX_BODY = 4096
+# token 表多久重讀一次：剛入伍的手機第一次來回報時，表裡還沒有它
+TOKENS_REFRESH_S = 10.0
 
 # 跟 hangar 的 BATTERY_LOW 對齊。兩邊要是各有一套，同一支手機在 CLI 跟網頁上
 # 會給出不同的答案。
@@ -310,7 +330,7 @@ def _index(entry, by_profile, by_serial, by_mac):
         by_mac.setdefault(key, entry)
 
 
-def merge(list_data, scan_data, usb_data=None):
+def merge(list_data, scan_data, usb_data=None, checkins=None, now=None):
     """把 list、scan、usb 三份資料合成一張裝置牆。
 
     識別碼的優先順序跟 hangar scan 那一層同一套：DEVICE_SERIAL > MAC > IP。
@@ -325,6 +345,9 @@ def merge(list_data, scan_data, usb_data=None):
     第三份（usb）給得出 DEVICE_SERIAL，那本來就是這裡優先序最高的識別碼，
     所以已經設定過的手機會直接併回原本那張卡，只是多一個「USB 也接著」的事實。
     usb_data 可以是 None：--no-usb 或舊的呼叫端都還走得通。
+
+    第四份（checkins）是 agent 主動回報的：序號 → State.checkin() 存下的那一筆。
+    token 驗過才會存，所以它的序號可以直接拿來對卡片。
     """
     devices = []
     by_profile = {}
@@ -403,6 +426,8 @@ def merge(list_data, scan_data, usb_data=None):
             # 碰不到，網路層只給得出 IP 與 MAC，但它確實在那裡。
             devices.append({
                 "key": ("mac:" + h["mac"]) if h.get("mac") else "ip:" + h["ip"],
+                # 跨網段逐台探埠找到的（hangar scan 的 routed）：沒有 MAC
+                "routed": bool(h.get("routed")),
                 "name": None, "default": False, "state": "unmanaged",
                 "transport": None, "ip": h.get("ip"), "adb_serial": None,
                 "device_serial": h.get("device_serial"),
@@ -433,6 +458,7 @@ def merge(list_data, scan_data, usb_data=None):
         entry["lan_ip"] = h.get("ip")
         entry["profile_ip_stale"] = bool(h.get("profile_ip_stale"))
         entry["is_gateway"] = bool(h.get("is_gateway"))
+        entry["routed"] = bool(h.get("routed"))
         scan_agent = h.get("agent") or {}
         current_agent = entry.get("agent") or {}
         if h.get("agent") and not current_agent.get("reachable"):
@@ -509,6 +535,55 @@ def merge(list_data, scan_data, usb_data=None):
             "sources": ["usb"], "errors": [],
         })
 
+    # 第四份：agent 主動回報的。
+    #
+    # 這一份的意義是「hub 連不到手機，但手機連得到 hub」：list 那邊問不到、
+    # 掃描也掃不到，只有這裡知道它還活著、現在在哪個位址。
+    #
+    # agent.reachable **不**因為回報而變成 true —— reachable 的意思是「這台電腦
+    # 問得到它」，響鈴、切偵錯都靠那條路。收得到回報只代表反方向是通的。
+    now = time.time() if now is None else now
+    for serial, c in (checkins or {}).items():
+        entry = by_serial.get(serial) or by_profile.get(c.get("profile"))
+        age = now - c["at"]
+        fresh = age < CHECKIN_FRESH_S
+        p = c.get("payload") or {}
+        if entry is None:
+            # list 那一輪剛好失敗：跟掃描那邊同一個道理，叫得出名字比較好
+            entry = _blank_entry(serial, c.get("profile"))
+            devices.append(entry)
+            _index(entry, by_profile, by_serial, by_mac)
+        entry["checkin"] = {"at": c["at"], "age_s": int(age), "fresh": fresh,
+                            "peer_ip": c.get("peer_ip"), "ips": c.get("ips") or []}
+        if "checkin" not in entry["sources"]:
+            entry["sources"].append("checkin")
+        if not fresh:
+            continue
+        if entry["state"] in ("no_adb", "offline", "unknown"):
+            entry["state"] = "agent_only"
+        if not entry.get("battery") and p.get("battery"):
+            b = dict(p["battery"])
+            b["source"] = "checkin"
+            entry["battery"] = _battery(b)
+        for k in ("model", "android"):
+            if not entry.get(k) and p.get(k):
+                entry[k] = p[k]
+        if not entry.get("agent"):
+            entry["agent"] = {"reachable": False, "version": p.get("version"),
+                              "enrolled": True}
+        # 手機自己說它現在在哪些位址。profile 指著的那個不在裡面 = profile 舊了
+        # （只標，不修：hub 不寫設定檔）
+        ips = c.get("ips") or []
+        if (ips and entry.get("transport") == "lan" and entry.get("ip")
+                and entry["ip"] not in ips):
+            entry["profile_ip_stale"] = True
+        if not entry.get("ip") and ips:
+            entry["ip"] = ips[0]
+
+    for d in devices:
+        d.setdefault("routed", False)
+        d.setdefault("checkin", None)
+
     # 排序：要注意的排前面（電量低 > 設定過的 > 掃到的），同類再按名稱／IP
     order = {"unauthorized": 0, "no_adb": 1, "offline": 2, "unknown": 3,
              "agent_only": 4, "ready": 5, "unmanaged": 6}
@@ -521,6 +596,20 @@ def merge(list_data, scan_data, usb_data=None):
 
     devices.sort(key=sort_key)
     return devices
+
+
+def _blank_entry(serial, profile):
+    """只有序號與名字的一張卡：其他來源都還沒給資料時用。"""
+    return {
+        "key": "serial:" + serial, "name": profile, "default": False,
+        "state": "unknown", "transport": None, "ip": None, "adb_serial": None,
+        "device_serial": serial, "adb_state": None, "reachability": None,
+        "model": None, "android": None, "battery": None, "mirroring": False,
+        "mac": None, "vendor": None, "mac_randomized": None, "mac_ssid": None,
+        "adb_port": None, "lan_ip": None, "profile_ip_stale": False,
+        "agent": None, "is_gateway": False, "usb": None,
+        "sources": [], "errors": [],
+    }
 
 
 def _ip_key(ip):
@@ -553,6 +642,15 @@ class State:
         self.wake = {}            # 來源 → threading.Event
         self.started_at = {}      # 來源 → 這一輪是什麼時候開始的
         self.busy = {}            # 來源 → 現在正在跑嗎
+        # agent 主動回報：序號 → {at, profile, peer_ip, ips, payload}
+        self.checkins = {}
+        self.checkin_at = None
+        # 驗 check-in 用的 token 表：序號 → (profile, token)。由 hangar agent-tokens 來
+        self.hangar = None
+        self.tokens = {}
+        self.tokens_at = 0.0
+        self.tokens_err = None
+        self._tokens_lock = threading.Lock()
 
     def begin(self, kind):
         with self._lock:
@@ -582,9 +680,68 @@ class State:
             else:
                 self.scan_data, self.scan_at = data, time.time()
 
+    # ---- check-in ----
+
+    def load_tokens(self, force=False):
+        """重讀 token 表。太常叫就跳過（除非 force）；讀不到就沿用舊的。
+
+        token 不經過 list --json：那一份會整包端到網頁上。這裡是 hub 自己要用
+        的，跟 profile 在同一台、同一個使用者，讀它沒有擴大任何人看得到的東西。
+        """
+        with self._tokens_lock:
+            if not force and time.time() - self.tokens_at < TOKENS_REFRESH_S:
+                return
+            self.tokens_at = time.time()
+            data, err = run_hangar(self.hangar, ["agent-tokens", "--json"], 30)
+            if err:
+                self.tokens_err = err
+                return
+            tokens = {}
+            for t in (data or {}).get("tokens", []):
+                if t.get("device_serial") and t.get("token"):
+                    tokens[t["device_serial"]] = (t.get("profile"), t["token"])
+            self.tokens, self.tokens_err = tokens, None
+
+    def checkin(self, payload, token, peer, now=None):
+        """收一筆回報 → (HTTP 狀態, 回應)。
+
+        序號不認得與 token 不對回的是同一個 401：分開回的話，任何人都能拿這個
+        端點去試「這台 hub 認得哪些序號」。
+        """
+        now = time.time() if now is None else now
+        serial = payload.get("device_serial")
+        if not isinstance(serial, str) or not serial:
+            return 400, {"ok": False, "error": "bad_request",
+                         "reason": "少了 device_serial"}
+        known = self.tokens.get(serial)
+        if known is None:
+            # 剛入伍的手機：表是入伍之前讀的。重讀一次（有節流）再看
+            self.load_tokens()
+            known = self.tokens.get(serial)
+        if (known is None or not token
+                or not hmac.compare_digest(known[1].encode(), token.encode())):
+            return 401, {"ok": False, "error": "unauthorized",
+                         "reason": "序號或 token 對不上這台 hub 的 profile"}
+        with self._lock:
+            last = self.checkins.get(serial)
+            if last and now - last["at"] < CHECKIN_MIN_INTERVAL:
+                return 429, {"ok": False, "error": "too_many_requests",
+                             "retry_after_s": round(CHECKIN_MIN_INTERVAL - (now - last["at"]), 1),
+                             "next_s": CHECKIN_NEXT_S}
+            self.checkins[serial] = {
+                "at": now, "profile": known[0], "peer_ip": peer,
+                "ips": _clean_ips(payload.get("ips")),
+                "payload": {k: payload.get(k) for k in
+                            ("version", "model", "android", "battery", "adb")
+                            if isinstance(payload.get(k), (str, dict))},
+            }
+            self.checkin_at = now
+        return 200, {"ok": True, "next_s": CHECKIN_NEXT_S}
+
     def snapshot(self):
         with self._lock:
-            devices = merge(self.list_data, self.scan_data, self.usb_data)
+            devices = merge(self.list_data, self.scan_data, self.usb_data,
+                            self.checkins)
             errors = [{"source": k, "message": v} for k, v in self.errors.items()]
             # hangar 自己回報的錯誤（掃不動、缺工具…）也一起端上去
             for src, data in (("list", self.list_data), ("scan", self.scan_data),
@@ -600,13 +757,28 @@ class State:
                 "host": hostname(),
                 "devices": devices,
                 "subnet": (self.scan_data or {}).get("subnet"),
+                # 掃了哪幾個 /24、哪幾個是跨網段逐台探的（舊版 hangar 沒有這欄）
+                "subnets": (self.scan_data or {}).get("subnets"),
                 "polled_at": {"list": self.list_at, "scan": self.scan_at,
-                              "usb": self.usb_at},
+                              "usb": self.usb_at, "checkin": self.checkin_at},
                 # 現在有沒有哪一邊正在問。網頁靠這個把「更新中」顯示出來 ——
                 # 按了按鈕之後畫面要有反應，不然使用者會再按一次。
                 "polling": {k: bool(v) for k, v in self.busy.items()},
                 "errors": errors,
             }
+
+
+def _clean_ips(v):
+    """手機報上來的位址：只收 IPv4、最多 8 個。這是別人送來的資料。"""
+    out = []
+    for x in v if isinstance(v, list) else []:
+        try:
+            ip = ipaddress.ip_address(x)
+        except (ValueError, TypeError):
+            continue
+        if ip.version == 4 and not ip.is_loopback and str(ip) not in out:
+            out.append(str(ip))
+    return out[:8]
 
 
 def hostname():
@@ -776,6 +948,61 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class CheckinHandler(BaseHTTPRequestHandler):
+    """--checkin 那個 listener。只有一個端點，其他一律 404。
+
+    跟 Handler 分開是刻意的：這一個要綁在手機連得到的位址上，而裝置牆
+    （Handler）預設只綁 127.0.0.1。共用一個 listener 的話，開放回報就等於
+    把牆一起開出去。
+    """
+    server_version = "hangar-hub-checkin"
+    state = None
+
+    def do_POST(self):
+        if self.path.split("?", 1)[0] != "/api/checkin":
+            return self._json(404, {"ok": False, "error": "not_found"})
+        try:
+            length = int(self.headers.get("Content-Length", "-1"))
+        except ValueError:
+            length = -1
+        if length < 0:
+            return self._json(400, {"ok": False, "error": "bad_request",
+                                    "reason": "要有 Content-Length"})
+        if length > CHECKIN_MAX_BODY:
+            return self._json(413, {"ok": False, "error": "too_large"})
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            payload = None
+        if not isinstance(payload, dict):
+            return self._json(400, {"ok": False, "error": "bad_request",
+                                    "reason": "body 不是 JSON 物件"})
+        auth = self.headers.get("Authorization", "")
+        token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        status, body = self.state.checkin(payload, token, self.client_address[0])
+        return self._json(status, body)
+
+    def do_GET(self):
+        if self.path.split("?", 1)[0] == "/healthz":
+            return self._json({"ok": True})
+        return self._json(404, {"ok": False, "error": "not_found"})
+
+    _json = Handler._json
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def parse_checkin(v):
+    """--checkin 的值 → (host, port)。只給埠就綁全部介面：這個 listener 本來就
+    是要給別台（手機）連的，綁 127.0.0.1 沒有意義。"""
+    host, sep, port = v.rpartition(":")
+    if not sep:
+        host, port = "0.0.0.0", v
+    host = host.strip("[]") or "0.0.0.0"
+    return host, int(port)
+
+
 # ------------------------------------------------------------------ main ----
 
 def main(argv=None):
@@ -789,7 +1016,12 @@ def main(argv=None):
                     help="多久問一次 hangar list（秒，預設 30）")
     ap.add_argument("--scan-interval", type=float, default=300.0,
                     help="多久掃一次區網（秒，預設 300 —— ping 整個 /24 不便宜）")
-    ap.add_argument("--subnet", default=None, help="掃描網段，同 hangar scan --subnet")
+    ap.add_argument("--subnet", action="append", default=[],
+                    help="掃描網段，同 hangar scan --subnet；可以給好幾次，"
+                         "不在這台網段上的會逐台探埠")
+    ap.add_argument("--checkin", default=None, metavar="HOST:PORT",
+                    help="開一個讓手機上的 agent 主動回報的埠（例如 0.0.0.0:8789）。"
+                         "跨網段、hub 連不到手機時用")
     ap.add_argument("--usb-interval", type=float, default=15.0,
                     help="多久問一次本機 USB（秒，預設 15 —— 只問本機 adb，很便宜）")
     ap.add_argument("--no-scan", action="store_true", help="完全不掃區網")
@@ -836,11 +1068,13 @@ def main(argv=None):
     else:
         # 這裡刻意不帶 --fix-ip：那會改 profile，固定輪詢的程式不該無條件做。
         scan_args = ["scan", "--json"]
-        if args.subnet:
-            scan_args += ["--subnet", args.subnet]
+        for sub in args.subnet:
+            scan_args += ["--subnet", sub]
+        # 每多一個網段就多一輪逐台探埠，逾時跟著放大，不然永遠等不到結果
+        scan_timeout = args.timeout * max(1, len(args.subnet))
         threads.append(threading.Thread(
             target=poller, args=(state, "scan", hangar, scan_args,
-                                 args.scan_interval, args.timeout, stop), daemon=True))
+                                 args.scan_interval, scan_timeout, stop), daemon=True))
     if args.no_usb:
         state.wake.pop("usb", None)       # 沒人服務的旗標不要留著騙人
     else:
@@ -853,6 +1087,16 @@ def main(argv=None):
         t.start()
 
     Handler.state = state
+    CheckinHandler.state = state
+    state.hangar = hangar
+    checkin_addr = None
+    if args.checkin:
+        try:
+            checkin_addr = parse_checkin(args.checkin)
+        except ValueError:
+            print("看不懂的 --checkin：%s（要像 0.0.0.0:8789 或 8789）" % args.checkin,
+                  file=sys.stderr)
+            return 1
     try:
         httpd = Server((args.bind, args.port), Handler)
     except OSError as e:
@@ -881,6 +1125,30 @@ def main(argv=None):
         return 1
     host, port = httpd.socket.getsockname()[:2]
     print("hangar hub: http://%s:%d/" % (host, port), flush=True)
+
+    checkin_httpd = None
+    if checkin_addr:
+        try:
+            checkin_httpd = Server(checkin_addr, CheckinHandler)
+        except OSError as e:
+            # 明講要開卻開不起來：不要默默少一個功能 —— 手機那邊會一直打不進來，
+            # 而這邊看起來一切正常
+            print("開不了 check-in 的 %s:%d：%s" % (checkin_addr[0], checkin_addr[1], e),
+                  file=sys.stderr, flush=True)
+            httpd.server_close()
+            stop.set()
+            for ev in state.wake.values():
+                ev.set()
+            return 1
+        threading.Thread(target=state.load_tokens, kwargs={"force": True},
+                         daemon=True).start()
+        threading.Thread(target=checkin_httpd.serve_forever, daemon=True).start()
+        cport = checkin_httpd.socket.getsockname()[1]
+        print("check-in 也開了：%s:%d（手機上的 agent 往這裡回報）"
+              % (checkin_addr[0], cport), flush=True)
+        for ip in local_ips():
+            print("  入伍時告訴手機：hangar enroll -p <名稱> --hub http://%s:%d"
+                  % (ip, cport), flush=True)
 
     # helper 要等 hub 綁好才起得來：Origin 白名單要知道實際的埠（--port 0 的
     # 時候那是核心挑的）。hub 綁不上就整個收掉了，也不會走到這裡。
@@ -929,6 +1197,9 @@ def main(argv=None):
         for ev in state.wake.values():
             ev.set()
         httpd.server_close()
+        if checkin_httpd is not None:
+            checkin_httpd.shutdown()
+            checkin_httpd.server_close()
         if helper is not None:
             helper.close()
     return 0

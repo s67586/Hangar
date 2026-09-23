@@ -41,6 +41,7 @@ DEVICE_SERIAL=""
 PHONE_MAC=""
 AGENT_TOKEN=""
 AGENT_PORT=""
+AGENT_HUB=""
 
 # --json 時 stdout 只能有 JSON，給人看的訊息一律改走 stderr
 JSON_MODE=0
@@ -177,7 +178,7 @@ require_deps() {
 #     都會帶一份），沒有就老實說廠商不知道
 #   * 只掃 /24 —— 更大的網段逐台 ping 不現實，遇到就請人用 --subnet 指定
 
-SCAN_SCHEMA=7
+SCAN_SCHEMA=8
 USB_SCHEMA=1
 SCAN_PARALLEL="${HANGAR_SCAN_PARALLEL:-64}"   # 同時幾個 ping；再往上加不會更快
 case "$SCAN_PARALLEL" in ''|0|*[!0-9]*) SCAN_PARALLEL=64 ;; esac
@@ -191,6 +192,8 @@ SCAN_MATCHES=""       # 對回 profile 的結果："ip|profile|靠什麼對上�
 SCAN_LEARNED=""       # 這次新記住 MAC 的："profile|mac"
 SCAN_STALE=""         # profile 指著舊 IP 的："profile|舊 IP|現在的 IP"
 SCAN_FIXED=""         # --fix-ip 真的改掉的："profile|舊 IP|新 IP"
+SCAN_SUBNETS=""       # 這次掃了哪幾個 /24（空白分隔的前三段）
+SCAN_ROUTED=""        # 其中哪幾個不在這台電腦的網段上，要逐台探埠（同上格式）
 
 scan_add_error() { SCAN_ERRORS="${SCAN_ERRORS}${1}|${2}"$'\n'; }
 
@@ -198,7 +201,7 @@ scan_reset() {
   SCAN_HOSTS=""; SCAN_ERRORS=""; SCAN_SUBNET=""; SCAN_SELF_IP=""
   SCAN_MDNS=""; SCAN_MDNS_TOOL=""
   SCAN_MATCHES=""; SCAN_LEARNED=""; SCAN_STALE=""; SCAN_FIXED=""
-  SCAN_IFACE=""; SCAN_GATEWAY=""
+  SCAN_IFACE=""; SCAN_GATEWAY=""; SCAN_SUBNETS=""; SCAN_ROUTED=""
 }
 
 # 讀 ARP 表要用哪個工具。arp 兩邊都有（macOS 內建、Linux 的 net-tools），
@@ -641,45 +644,121 @@ scan_probe_hosts() {
   SCAN_HOSTS="$new"
 }
 
+# 這個 /24 跟這台電腦在不在同一段（同一個廣播網域）。
+#
+# 測不出自己的 IP 時當作是：那是 --subnet 以前唯一的語意（讀 ARP 表），
+# 不能因為多了跨網段這條路，就讓原本掃得到的東西變成逐台探埠。
+scan_subnet_is_local() { # <前三段>
+  [ -z "$SCAN_SELF_IP" ] && return 0
+  [ "${SCAN_SELF_IP%.*}" = "$1" ]
+}
+
 # scan_run <subnet 或空> <要不要 ping sweep 0/1> <要不要測 5555 0/1>
-#   結果放在 SCAN_HOSTS，錯誤放在 SCAN_ERRORS。掃得動就 return 0。
+#   subnet 可以是好幾個（空白或逗號分隔）。結果放在 SCAN_HOSTS，錯誤放在
+#   SCAN_ERRORS。掃得動就 return 0。
+#
+# **跨網段（routed）**：路由器後面的機器永遠不會出現在這台電腦的 ARP 表裡 ——
+# 表裡只有閘道器的 MAC。ping sweep 與 mDNS 也一樣過不了路由器。所以不是這台
+# 電腦所在的那個 /24，就改成對 .1–.254 每一個位址直接探 5555 與 5599，有回應的
+# 才留下來。代價要講清楚：
+#   * 拿不到 MAC —— 只能靠 IP 對 profile，--fix-ip 對這些主機不做事
+#   * 探不到的不代表不在：5555 沒開、也沒裝 agent 的手機跨網段就是看不到
+#   * 不拿 profile 的 token 去問「你是誰」—— 對面是誰還不知道，token 送出去
+#     就收不回來。認人交給 agent 主動回報（hub 的 --checkin）
 scan_run() {
-  local want="${1:-}" do_sweep="${2:-1}" do_probe="${3:-1}"
+  local wants="${1:-}" do_sweep="${2:-1}" do_probe="${3:-1}"
   scan_reset
 
+  local w local_sub="" first="" routed="" seen=" "
+  # shellcheck disable=SC2086
+  for w in ${wants//,/ } ""; do
+    # 迴圈最後那個空字串是「什麼都沒指定」時的預設網段；有指定過就跳過它
+    [ -z "$w" ] && [ -n "$first" ] && continue
+    scan_prepare "$w" || return 1
+    case "$seen" in *" $SCAN_SUBNET "*) continue ;; esac
+    seen="${seen}${SCAN_SUBNET} "
+    [ -n "$first" ] || first="$SCAN_SUBNET"
+    if scan_subnet_is_local "$SCAN_SUBNET"; then
+      local_sub="$SCAN_SUBNET"
+    else
+      routed="${routed}${SCAN_SUBNET} "
+    fi
+    SCAN_SUBNETS="${SCAN_SUBNETS}${SCAN_SUBNET} "
+  done
+  SCAN_ROUTED="$routed"
+
   local why
-  if ! why="$(scan_deps_check "$do_sweep")"; then
+  if [ -n "$local_sub" ] && ! why="$(scan_deps_check "$do_sweep")"; then
     scan_add_error "scan_unavailable" "$why"
     return 1
   fi
-  scan_prepare "$want" || return 1
-  scan_find_gateway
-  # 先問 mDNS：一次多播就知道哪幾台有 agent，省下對 254 台各探一次 5599。
-  # 沒有工具或問不到都沒關係，下面會退回逐台探。
-  [ "$do_probe" -eq 1 ] && scan_mdns_collect
-  [ "$do_sweep" -eq 1 ] && scan_sweep
+  if [ -n "$routed" ]; then
+    if [ "$do_probe" -eq 0 ]; then
+      scan_add_error "routed_needs_probe" \
+        "跨網段（${routed% }）只能靠逐台探埠，--no-probe 時這些網段不掃"
+      routed=""; SCAN_ROUTED=""
+    elif ! command -v nc >/dev/null 2>&1; then
+      scan_add_error "scan_unavailable" "找不到 nc —— 跨網段掃描要靠它逐台探埠"
+      return 1
+    fi
+  fi
 
-  # 先把「這個網段上有哪幾台」整理出來。這一段不碰網路，探埠留到下面一次做完。
-  local ip mac vendor rnd
-  while read -r ip mac; do
-    [ -n "$ip" ] || continue
-    case "$ip" in "${SCAN_SUBNET}."*) : ;; *) continue ;; esac
-    [ "$ip" = "$SCAN_SELF_IP" ] && continue
-    # 這個 /24 的網路位址與廣播位址不是裝置
-    case "${ip##*.}" in 0|255) continue ;; esac
-    mac="$(scan_norm_mac "$mac")"
-    scan_mac_is_multicast "$mac" && continue
-    rnd=0; scan_mac_is_random "$mac" && rnd=1
-    vendor=""
-    [ "$rnd" -eq 0 ] && vendor="$(scan_vendor "$mac")"
-    # 沒探的時候長什麼樣，--no-probe 就是停在這個樣子
-    SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|unknown||"$'\n'
-  done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+  local ip mac vendor rnd sub i
+  if [ -n "$local_sub" ]; then
+    SCAN_SUBNET="$local_sub"
+    scan_find_gateway
+    # 先問 mDNS：一次多播就知道哪幾台有 agent，省下對 254 台各探一次 5599。
+    # 沒有工具或問不到都沒關係，下面會退回逐台探。
+    [ "$do_probe" -eq 1 ] && scan_mdns_collect
+    [ "$do_sweep" -eq 1 ] && scan_sweep
+
+    # 先把「這個網段上有哪幾台」整理出來。這一段不碰網路，探埠留到下面一次做完。
+    while read -r ip mac; do
+      [ -n "$ip" ] || continue
+      case "$ip" in "${SCAN_SUBNET}."*) : ;; *) continue ;; esac
+      [ "$ip" = "$SCAN_SELF_IP" ] && continue
+      # 這個 /24 的網路位址與廣播位址不是裝置
+      case "${ip##*.}" in 0|255) continue ;; esac
+      mac="$(scan_norm_mac "$mac")"
+      scan_mac_is_multicast "$mac" && continue
+      rnd=0; scan_mac_is_random "$mac" && rnd=1
+      vendor=""
+      [ "$rnd" -eq 0 ] && vendor="$(scan_vendor "$mac")"
+      # 沒探的時候長什麼樣，--no-probe 就是停在這個樣子
+      SCAN_HOSTS="${SCAN_HOSTS}${ip}|${mac}|${vendor}|${rnd}|unknown||"$'\n'
+    done < <(scan_arp_table | awk '!seen[$1]++' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+  fi
+
+  # 跨網段：沒有 ARP 可讀，整個 /24 都是候選，探完再把沒回應的丟掉
+  for sub in $routed; do
+    for i in $(seq 1 254); do
+      SCAN_HOSTS="${SCAN_HOSTS}${sub}.${i}|||0|unknown||"$'\n'
+    done
+  done
 
   [ "$do_probe" -eq 1 ] && scan_probe_hosts
 
+  if [ -n "$routed" ]; then
+    local keep="" adb agent rest
+    while IFS='|' read -r ip mac vendor rnd adb agent rest; do
+      [ -n "$ip" ] || continue
+      if scan_ip_is_routed "$ip" && [ "$adb" != "open" ] && [ -z "$agent" ]; then
+        continue
+      fi
+      keep="${keep}${ip}|${mac}|${vendor}|${rnd}|${adb}|${agent}|${rest}"$'\n'
+    done <<< "$SCAN_HOSTS"
+    SCAN_HOSTS="$keep"
+  fi
+
+  # 對外（JSON 的 subnet、人看的訊息）講的是第一個網段，跟以前只有一個時一樣
+  SCAN_SUBNET="$first"
   scan_match_profiles
   return 0
+}
+
+scan_ip_is_routed() { # <ip>
+  case " $SCAN_ROUTED" in *" ${1%.*} "*) return 0 ;; esac
+  return 1
 }
 
 # 把掃到的機器對回已設定的 profile —— 掃描結果要標出哪幾台已經入伍了。
@@ -733,7 +812,8 @@ scan_match_profiles() {
       [ "$pip" = "$ip" ] || continue
       # profile 記過一組**燒死的** MAC 卻跟眼前這台不一樣 → 這個 IP 現在是別台
       # 機器的，不是這支手機。記的若是隨機 MAC 就不算數：那種本來就會換一組。
-      if [ -n "$pmac" ] && [ "$pmac" != "$mac" ] && ! scan_mac_is_random "$pmac"; then
+      # 眼前這台沒有 MAC（跨網段探到的）就沒得比，只能信 IP。
+      if [ -n "$mac" ] && [ -n "$pmac" ] && [ "$pmac" != "$mac" ] && ! scan_mac_is_random "$pmac"; then
         continue
       fi
       SCAN_MATCHES="${SCAN_MATCHES}${ip}|${pn}|ip"$'\n'
@@ -1527,7 +1607,7 @@ resolve_profile() {
 # list 這種要一次列很多支的指令用這個：一支設定壞掉不該讓整張表都不見。
 load_profile_soft() {
   PHONE_HOST=""; PHONE_IP=""; TRANSPORT=""; DEVICE_SERIAL=""; PHONE_MAC=""
-  AGENT_TOKEN=""; AGENT_PORT=""
+  AGENT_TOKEN=""; AGENT_PORT=""; AGENT_HUB=""
   # shellcheck disable=SC1090
   . "$(profile_path "$1")" 2>/dev/null || return 1
   # DEVICE_SERIAL / PHONE_MAC 是後來才加的欄位，補空值即可。
@@ -1541,6 +1621,7 @@ load_profile_soft() {
   PHONE_MAC="${PHONE_MAC:-}"
   AGENT_TOKEN="${AGENT_TOKEN:-}"
   AGENT_PORT="${AGENT_PORT:-}"
+  AGENT_HUB="${AGENT_HUB:-}"
   PROFILE="$1"
   SERIAL="${PHONE_IP}:${ADB_PORT}"
   [ -n "$PHONE_IP" ]
@@ -1568,6 +1649,8 @@ PHONE_MAC="${PHONE_MAC:-}"
 # 注意：有了 token 之後這個檔案就有祕密了，不要隨手複製給別人
 AGENT_TOKEN="${AGENT_TOKEN:-}"
 AGENT_PORT="${AGENT_PORT:-}"
+# agent 主動回報給哪個 hub（hangar enroll --hub 寫入；空的 = 不回報）
+AGENT_HUB="${AGENT_HUB:-}"
 EOF
   chmod 600 "$(profile_path "$PROFILE")"
   [ "$quiet" -eq 1 ] || ok "設定已寫入 $(profile_path "$PROFILE")"
@@ -3090,7 +3173,7 @@ enroll_handoff() { # <port>
   out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
           -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.ENROLL \
           --es serial "$DEVICE_SERIAL" --es token "$token" \
-          --es name "$PROFILE" 2>&1)"
+          --es name "$PROFILE" --es hub "${AGENT_HUB:-}" 2>&1)"
   if printf '%s' "$out" | grep -q 'already_enrolled'; then
     err "這支手機已經入伍過了"
     # 同一個 already_enrolled，底下是兩種完全不同的處境，給錯提示會把人帶去
@@ -3197,8 +3280,44 @@ agent_can_human() {
   printf '%s' "${out%、}"
 }
 
+# 已入伍的手機換一個回報對象（或關掉回報）。要 token：SET_HUB 跟 ENROLL 一樣
+# 是 exported 的廣播，同一支手機上的其他 app 也發得出來 —— 沒有 token 就能改
+# 的話，誰都能把手機的回報導去別的地方（回報裡帶著 token）。
+enroll_set_hub() {
+  local out
+  out="$(run_timeout 20 adb -s "$SERIAL" shell am broadcast \
+          -n com.hangar.agent/.EnrollReceiver -a com.hangar.agent.SET_HUB \
+          --es token "$AGENT_TOKEN" --es hub "${AGENT_HUB:-}" 2>&1)"
+  if printf '%s' "$out" | grep -q 'data="hub_set"'; then
+    save_profile --quiet
+    if [ -n "$AGENT_HUB" ]; then ok "agent 會往 ${AGENT_HUB} 回報"
+    else ok "agent 不再主動回報"; fi
+    return 0
+  fi
+  printf '%s\n' "$out"
+  if printf '%s' "$out" | grep -q 'unauthorized'; then
+    err "agent 不接受這台電腦的 token"
+    hint "手機上那支多半是別台電腦入伍的：hangar enroll -p $PROFILE --takeover"
+  else
+    err "agent 沒有回報設定成功（舊版 agent 不認得 SET_HUB —— 先 --reinstall）"
+  fi
+  return 1
+}
+
+# hub 位址要長得像 http://主機:埠。手機拿到之後會自己在後面接 /api/checkin。
+enroll_hub_url() { # <字串> → 正規化的網址；不像就 return 1
+  local u="${1%/}"
+  case "$u" in
+    http://?*|https://?*) : ;;
+    *) return 1 ;;
+  esac
+  case "$u" in */api/checkin) u="${u%/api/checkin}" ;; esac
+  printf '%s' "$u"
+}
+
 cmd_enroll() {
   local want="" apk_arg="" port="$AGENT_PORT_DEFAULT" reinstall=0 takeover=0 assume_yes=0
+  local hub_arg="" set_hub=0
   while [ $# -gt 0 ]; do
     case "$1" in
       -p)          want="${2:-}"; shift 2 ;;
@@ -3212,6 +3331,13 @@ cmd_enroll() {
       # 「第一次入伍者得之」，它是光明正大地把狀態清掉再重新入伍一次。
       --takeover)  takeover=1; shift ;;
       -y|--yes)    assume_yes=1; shift ;;
+      # 讓 agent 主動回報給這個 hub（hub 要帶 --checkin 開那個埠）。
+      # 已入伍的手機只改這一項，不重裝、不換 token。
+      --hub)       hub_arg="${2:-}"; set_hub=1
+                   [ -n "$hub_arg" ] || die "--hub 要接網址，例如 --hub http://192.168.1.5:8789"
+                   shift 2 ;;
+      --hub=*)     hub_arg="${1#--hub=}"; set_hub=1; shift ;;
+      --no-hub)    hub_arg=""; set_hub=1; shift ;;
       *) die "enroll 不認得參數：$1" ;;
     esac
   done
@@ -3220,9 +3346,15 @@ cmd_enroll() {
     die "--reinstall 與 --takeover 不能一起用：一個刻意不動 token，一個把它整組換掉"
   fi
 
+  if [ "$set_hub" -eq 1 ] && [ -n "$hub_arg" ]; then
+    hub_arg="$(enroll_hub_url "$hub_arg")" \
+      || die "--hub 要像 http://192.168.1.5:8789（hub 用 --checkin 開的那個埠）"
+  fi
+
   migrate_legacy
   resolve_profile "$want"
   load_profile "$PROFILE"
+  [ "$set_hub" -eq 1 ] && AGENT_HUB="$hub_arg"
 
   command -v adb >/dev/null 2>&1 || { err "找不到 adb"; hint "brew install --cask android-platform-tools"; exit 1; }
   agent_have_curl || { err "找不到 curl（驗證入伍結果需要它）"; exit 1; }
@@ -3236,13 +3368,20 @@ cmd_enroll() {
     exit 1
   fi
 
-  local apk
-  apk="$(agent_find_apk "$apk_arg")" || {
+  # 已經入伍過、這次只是要改回報對象：不需要 APK，也不動 token
+  local hub_only=0
+  if [ "$set_hub" -eq 1 ] && [ -n "${AGENT_TOKEN:-}" ] \
+     && [ "$reinstall" -eq 0 ] && [ "$takeover" -eq 0 ]; then
+    hub_only=1
+  fi
+
+  local apk=""
+  [ "$hub_only" -eq 1 ] || apk="$(agent_find_apk "$apk_arg")" || {
     err "找不到 agent 的 APK"
     hint "先 build：cd agent && ./gradlew assembleDebug"
     hint "或直接指定：hangar enroll --apk /path/to/app-debug.apk"
     exit 1; }
-  info "APK：$apk"
+  [ -n "$apk" ] && info "APK：$apk"
 
   # 入伍要 adb，而且只有這一次。之後 agent 自己住在手機裡，不再需要。
   # （升級是第二次 —— 但那同樣是一次性的動作，不是常態依賴。）
@@ -3257,7 +3396,16 @@ cmd_enroll() {
     hint "入伍需要 adb 通得到 —— 可用 USB，或先讓網路／Tailscale ADB 回到 device 狀態"
     exit 1; }
 
-  [ "$reinstall" -eq 1 ] && { enroll_reinstall "$apk" "$port"; return; }
+  if [ "$hub_only" -eq 1 ]; then
+    enroll_set_hub || exit 1
+    return
+  fi
+  if [ "$reinstall" -eq 1 ]; then
+    enroll_reinstall "$apk" "$port"
+    # 換完 APK 順便把回報對象設好（token 沒變，SET_HUB 用得上）
+    if [ "$set_hub" -eq 1 ]; then enroll_set_hub || exit 1; fi
+    return
+  fi
   [ "$takeover" -eq 1 ] && { enroll_takeover "$apk" "$port" "$assume_yes"; return; }
 
   echo
@@ -3473,6 +3621,8 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
                                   --probe 只對 --json 有作用，人類版表格欄位是固定的
   hangar scan [--subnet 192.168.1] [--no-ping] [--no-probe]
                                    掃描區網，列出看得到的裝置（不限已設定的）
+                                   --subnet 可給好幾次；不在這台網段上的會逐台
+                                   探 5555/5599（跨網段，沒有 MAC）
   hangar scan --fix-ip            順便把「認得出是同一支手機、但 profile 指著
                                    舊 IP」的那幾支修好
   hangar scan --json              同上，輸出 JSON
@@ -3486,6 +3636,9 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
                                    手機已入伍、但這台電腦沒有它的 token 時，
                                    清掉手機上的入伍狀態再重新入伍一次
                                    （其他電腦手上的 token 會一起失效）
+  hangar enroll [-p 手機] --hub http://<hub>:8789 | --no-hub
+                                   讓 agent 主動回報給 hub（跨網段用；hub 要帶
+                                   --checkin）。已入伍的手機只改這一項
   hangar ring [-p 手機] [--seconds 秒]
                                    讓已入伍的手機響鈴識別（0 或 --stop = 停）
   hangar adb [-p 手機] --on|--off
@@ -3493,6 +3646,8 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
   hangar wall [--bind 0.0.0.0] [--no-helper]
                                    開裝置牆：hub 與這台電腦的 helper 一起起來，
                                    同一台機器上不用再開那個帶鑰匙的連結
+  hangar wall --checkin 0.0.0.0:8789
+                                   另外開一個埠收手機的主動回報（跨網段用）
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態
@@ -3667,10 +3822,11 @@ cmd_scan() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --json)      JSON_MODE=1; shift ;;
-      --subnet)    want="${2:-}"
-                   [ -n "$want" ] || die "--subnet 要接網段，例如 --subnet 192.168.1"
+      # 可以給好幾次：不在這台電腦網段上的那些會改成逐台探埠（見 scan_run）
+      --subnet)    [ -n "${2:-}" ] || die "--subnet 要接網段，例如 --subnet 192.168.1"
+                   want="${want}${2} "
                    shift 2 ;;
-      --subnet=*)  want="${1#--subnet=}"; shift ;;
+      --subnet=*)  want="${want}${1#--subnet=} "; shift ;;
       --no-ping)   do_sweep=0; shift ;;
       --no-probe)  do_probe=0; shift ;;
       --fix-ip)    do_fix=1; shift ;;
@@ -3728,6 +3884,7 @@ cmd_scan() {
         --argjson rnd "$rnd" --arg adb "$adb" --arg prof "$prof" \
         --arg kind "$kind" --arg dser "$dser" --argjson stale "$stale" \
         --argjson fixed "$fixed" --arg agent "$agent" \
+        --argjson routed "$(scan_ip_is_routed "$ip" && echo true || echo false)" \
         --arg agent_enrolled "$agent_enrolled" \
         --arg mmodel "$mmodel" --arg aby "$aby" \
         --argjson isgw "$( [ -n "$SCAN_GATEWAY" ] && [ "$ip" = "$SCAN_GATEWAY" ] && echo 1 || echo 0 )" '
@@ -3753,14 +3910,22 @@ cmd_scan() {
                                     model:        ($mmodel | s),
                                     discovered_by: ($aby | s) } end),
           # 這個網段的閘道器。標出來是因為它每次都會出現，而且絕對不是測試機
-          is_gateway:       ($isgw == 1) }')"$'\n'
+          is_gateway:       ($isgw == 1),
+          # 跨網段逐台探埠找到的：沒有 MAC、只因為 5555 或 5599 有回應才列出來
+          routed:           $routed }')"$'\n'
     done <<< "$SCAN_HOSTS"
     printf '%s' "$objs" | jq -s \
       --argjson schema "$SCAN_SCHEMA" \
       --arg     subnet "$( [ -n "$SCAN_SUBNET" ] && printf '%s.0/24' "$SCAN_SUBNET" )" \
       --argjson errors "$errs" \
+      --arg     subnets "$SCAN_SUBNETS" \
+      --arg     routed  "$SCAN_ROUTED" \
       '{ schema: $schema,
          subnet: (if $subnet == "" then null else $subnet end),
+         # 全部掃了哪些 /24；subnet 是其中第一個（只有一個網段時兩者一樣）
+         subnets: [$subnets | split(" ")[] | select(length > 0)
+                   | { cidr: (. + ".0/24"),
+                       routed: (. as $s | $routed | split(" ") | any(.[]; . == $s)) }],
          hosts:  .,
          errors: $errors }'
     return 0
@@ -3778,7 +3943,8 @@ cmd_scan() {
   local total rnd_any=0 open_n=0 anon_n=0
   total="$(printf '%s' "$SCAN_HOSTS" | grep -c . || true)"
   if [ "${total:-0}" -eq 0 ]; then
-    warn "這個網段（${SCAN_SUBNET}.0/24）上沒看到其他裝置"
+    warn "這個網段（$(printf '%s' "$SCAN_SUBNETS" | sed -E 's/([0-9]+) /\1.0\/24 /g; s/ $//; s/ /、/g')）上沒看到其他裝置"
+    [ -n "$SCAN_ROUTED" ] && hint "跨網段只列得出 ${ADB_PORT} 或 ${AGENT_PORT_DEFAULT} 有回應的；兩個都沒開的手機在這裡看不到"
     [ "$do_sweep" -eq 1 ] || hint "加上 ping sweep 會看到更多：hangar scan"
     return 0
   fi
@@ -3795,7 +3961,10 @@ cmd_scan() {
   while IFS='|' read -r ip mac vendor rnd adb agent agent_enrolled; do
     [ -n "$ip" ] || continue
 
-    if [ "$rnd" -eq 1 ]; then
+    # 跨網段探到的沒有 MAC 可以給，MAC 那一欄改標它是怎麼來的
+    if scan_ip_is_routed "$ip"; then
+      mac="（跨網段）"; v_txt="-"; v_col="$C_DIM"
+    elif [ "$rnd" -eq 1 ]; then
       v_txt="隨機 MAC"; v_col="$C_YEL"; rnd_any=1
     elif [ -n "$vendor" ]; then
       v_txt="$vendor"; v_col=""
@@ -3897,6 +4066,36 @@ cmd_scan() {
   done <<< "$SCAN_STALE"
 }
 
+# --------------------------------------------------------- agent-tokens -----
+#
+# hub 驗 agent 主動回報（POST /api/checkin）用的那張表：序號 → token。
+#
+# 為什麼是一個獨立的指令、而不是塞進 list --json：list 那一份會被 hub 整包端到
+# 網頁上，token 不能在裡面。這一份只給同一台、同一個使用者的 hub 讀 —— 它能
+# 讀這份輸出，本來就能直接讀 profile 檔，沒有擴大誰看得到什麼。
+cmd_agent_tokens() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "agent-tokens 不認得參數：$1" ;;
+    esac
+  done
+  [ "$json" -eq 1 ] || die "agent-tokens 只給程式讀：hangar agent-tokens --json"
+  command -v jq >/dev/null 2>&1 || { err "找不到 jq（--json 需要它）"; exit 1; }
+  migrate_legacy
+  local n ser tok objs=""
+  while IFS= read -r n <&3; do
+    [ -n "$n" ] || continue
+    ser="$(profile_field "$n" DEVICE_SERIAL)" || ser=""
+    tok="$(profile_field "$n" AGENT_TOKEN)" || tok=""
+    [ -n "$ser" ] && [ -n "$tok" ] || continue
+    objs="${objs}$(jq -nc --arg p "$n" --arg s "$ser" --arg t "$tok" \
+      '{profile: $p, device_serial: $s, token: $t}')"$'\n'
+  done 3< <(list_profiles)
+  printf '%s' "$objs" | jq -s '{schema: 1, tokens: .}'
+}
+
 # ----------------------------------------------------------------- main -----
 
 main() {
@@ -3915,6 +4114,7 @@ main() {
     forget|rm)       shift; cmd_forget "${1:-}" ;;
     all)             shift; cmd_all "$@" ;;
     wall)            shift; cmd_wall "$@" ;;
+    agent-tokens)    shift; cmd_agent_tokens "$@" ;;
     help|-h|--help)  cmd_help ;;
     --version|-V)    printf 'hangar %s\n' "$VERSION" ;;
     ""|-*)           cmd_mirror "$@" ;;
