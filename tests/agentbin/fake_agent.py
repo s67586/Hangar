@@ -34,7 +34,7 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-SCHEMA = 3
+SCHEMA = 4
 VERSION = "0.1.0-fake"
 STARTED = time.time()
 

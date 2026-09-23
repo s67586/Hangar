@@ -30,6 +30,17 @@ object Status {
         put("enrolled", Enrollment.isEnrolled(ctx))
     }
 
+    /**
+     * 主動回報（POST <hub>/api/checkin）的 body：/status 那一份，再加上 hub 用得到的
+     * 「你現在在哪」。欄位名跟 /status 一樣，hub 那邊不用另一套翻譯。
+     */
+    fun checkin(ctx: Context, ips: List<String>): JSONObject = status(ctx).apply {
+        put("version", BuildConfig.VERSION_NAME)
+        put("name", Enrollment.name(ctx) ?: JSONObject.NULL)
+        put("agent_port", HttpServer.PORT)
+        put("ips", org.json.JSONArray(ips))
+    }
+
     fun status(ctx: Context): JSONObject {
         val o = JSONObject()
         o.put("schema", BuildConfig.PROTOCOL_SCHEMA)

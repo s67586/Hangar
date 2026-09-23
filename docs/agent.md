@@ -157,6 +157,24 @@ agent 現在叫不動** —— 現在可能還沒事（adb 還通），但下次
 `nc` 測埠、只對有回應的發 HTTP —— 一個 /24 上大多數東西沒有 agent，每台都等
 逾時的話掃描會從幾秒變成幾分鐘。
 
+## 主動回報給 hub（跨網段）
+
+平常是電腦端來問 agent。手機在另一個網段、hub 連不進去的時候，可以讓 agent 反過來
+定期往 hub 送：
+
+```bash
+hangar enroll -p work --hub http://10.0.1.5:8789   # 新入伍或已入伍都可以
+hangar enroll -p work --no-hub
+```
+
+- hub 那邊要帶 `--checkin`（見 [hub](hub.md#跨網段主動回報check-in)）。
+- 已入伍的手機只發一個 `com.hangar.agent.SET_HUB` 廣播，不重裝、不換 token；
+  廣播要帶 token，手機上其他 app 改不動它。舊版 agent 不認得這個廣播，先
+  `--reinstall`（`--reinstall --hub …` 會一起做）。
+- 回報是明文 HTTP，跟電腦端問 5599 一樣靠 token；所以 app 開了
+  `usesCleartextTraffic`。
+- 手機上打開 Hangar Agent 看得到回報對象、上次成功的時間與最近的錯誤。
+
 ## 限制
 
 - **需要 `curl`**（macOS 內建）。沒有的話只是問不到 agent，掃描與其他功能照常。

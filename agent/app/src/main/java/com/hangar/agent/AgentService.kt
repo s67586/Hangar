@@ -45,6 +45,7 @@ class AgentService : Service() {
 
     private var server: HttpServer? = null
     private var mdns: MdnsBroadcast? = null
+    private var checkin: CheckinReporter? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -52,6 +53,7 @@ class AgentService : Service() {
         startForeground(NOTIFICATION_ID, notification())
         server = HttpServer(this).also { it.start() }
         mdns = MdnsBroadcast(this).also { it.start() }
+        checkin = CheckinReporter(this).also { it.start() }
     }
 
     // 被系統殺掉之後要自己回來
@@ -64,6 +66,8 @@ class AgentService : Service() {
     }
 
     override fun onDestroy() {
+        checkin?.stop()
+        checkin = null
         mdns?.stop()
         mdns = null
         server?.stop()

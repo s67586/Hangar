@@ -28,7 +28,12 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Hangar Agent"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@android:style/Theme.Material.Light"
+        android:usesCleartextTraffic="true">
+        <!--
+          usesCleartextTraffic：主動回報是 http:// 打區網上的 hub（跟電腦端問 5599
+          一樣是明文、一樣靠 token）。Android 9+ 預設擋明文，不開的話回報一律失敗。
+        -->
 
         <activity
             android:name=".MainActivity"
@@ -60,6 +65,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="com.hangar.agent.ENROLL" />
+                <action android:name="com.hangar.agent.SET_HUB" />
             </intent-filter>
         </receiver>
 

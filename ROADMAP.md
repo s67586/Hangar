@@ -52,6 +52,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | hub 部署形態 | 一台常駐機器，接在測試機的同一個區網；兩者在同一台時用 `hangar wall` 一次起完 |
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 | 網頁投影 | **遠期目標**，不排進 M1–M5。投影目前維持走 CLI 的 scrcpy，網頁只負責切偵錯（見里程碑下面那段） |
+| 網段互相隔離時的跨網段 | **遠期目標**。網段之間兩個方向都不通時，只剩走網際網路；方案見「[遠期：網段完全隔離時怎麼跨](#遠期網段完全隔離時怎麼跨)」 |
 | 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 `helper/`，helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
 | 牆上的響鈴按鈕 | 已完成，跟投影同一條路：走 helper，不走 hub。**hub 維持唯讀**；M4 也沿用這個動作邊界 |
 | hub 內嵌 helper（`hangar wall`） | 整合的是 **process，不是 listener**：helper 照樣自己綁 127.0.0.1、照樣走 Origin ＋ token 那三道鎖，hub 這一邊仍然一個會動到手機的端點都沒有。多出來的只有 `GET /api/helper`，而它**只回答 loopback** —— 同事從區網開同一頁拿不到鑰匙，他那台還是得自己跑一支 helper |
@@ -94,6 +95,18 @@ adb），而那條路上有兩個還沒有解的地方。真的要動它之前�
 D1 若是「每次都要人按」，這件事就不是「遠端管得動」，只是「不用開偵錯的投影」
 —— 那時要重新判斷值不值得做。
 
+### 遠期：網段完全隔離時怎麼跨
+
+**不在目前的路線上。** 起因是實際碰到的網路：同一個公司 Wi-Fi（同一個 SSID）
+把裝置分到不同的 /24，同一段裡互通，**跨段兩個方向都不通**，但每一段都出得去
+網際網路。現有的 `--checkin` 與 `scan --subnet` 都需要至少一個方向通，用不上；
+兩邊唯一共同連得到的是網際網路。
+
+| 方案 | 看得到狀態 | 響鈴／切偵錯 | 投影 | 代價 |
+|---|---|---|---|---|
+| **R1. 回報端點公開到網際網路**（例如 Cloudflare Tunnel），agent 用 `--hub https://…` | ✓ | ✗ | ✗ | 幾乎不用改程式：`--checkin` 與 https 的 hub 網址都已支援 |
+| **R2. R1 ＋ 回報時順便領取指令** | ✓ | ✓ | ✗ | 新功能：hub 排指令，agent 回報時領走、執行，下次回報帶回結果 |
+
 ## 現況速查（改東西之前先看這張）
 
 號碼與端點只在這裡列一次。底下各節講的是「當時為什麼這樣決定」，不是現況 ——
@@ -102,12 +115,12 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.5.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2615` |
-| `scan --json` | schema **7** | `SCAN_SCHEMA`，`hangar:180` |
-| `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:181` |
-| hub `/api/devices` | schema **8** | `API_SCHEMA`，`hub/hangar_hub.py:63` |
-| agent 協定 | schema **3**，版本 `0.1.2` | `agent/app/build.gradle.kts` |
-| hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、**`POST /api/refresh`** | `Handler` |
+| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2722` |
+| `scan --json` | schema **8** | `SCAN_SCHEMA`，`hangar:181` |
+| `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:182` |
+| hub `/api/devices` | schema **9** | `API_SCHEMA`，`hub/hangar_hub.py:72` |
+| agent 協定 | schema **4**，版本 `0.2.0` | `agent/app/build.gradle.kts` |
+| hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、**`POST /api/refresh`**；另一個 listener（`--checkin`）只有 `POST /api/checkin` | `Handler`、`CheckinHandler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
 | helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
 
@@ -320,14 +333,32 @@ Wi-Fi、或 USB 插在別人電腦上的時候，它本來就該是匿名的。`
 自己重開 5555」—— 那做不到。做得到的是「重開機後自己把無線偵錯打開」，而且埠是
 隨機的、要另外找。上面的表格與里程碑都已經照這個改過，下面的設計也照後者寫。
 
-### 誰問誰：一律由電腦端拉，agent 不主動推
+### 誰問誰：預設由電腦端拉；跨網段時可選 agent 主動推
 
 ```
-hub ──讀 --json──> hangar ──HTTP──> agent（手機上）
+hub ──讀 --json──> hangar ──HTTP──> agent（手機上）          ← 預設，唯一會動到手機的路
+hub <──POST /api/checkin── agent                            ← 可選（hub --checkin + enroll --hub）
 ```
 
-agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價是 hub 與手機要能互通
-（跨網段就不行）—— 真的需要跨網段再加 push，現在不做。
+預設 agent 不需要知道 hub 在哪，也就不需要任何手機端設定。代價是 hub 與手機要能
+互通 —— 跨網段（路由、VLAN、防火牆只放單向）常常不行。
+
+所以加了**可選的主動回報**：入伍時用 `hangar enroll --hub http://<hub>:<埠>` 告訴
+agent 往哪裡送，hub 帶 `--checkin HOST:PORT` 另開一個埠收。幾條規矩：
+
+- **回報只是「讓 hub 知道」**：只放在 hub 的記憶體裡，不寫 profile；`agent.reachable`
+  也不因此變 true —— 響鈴、切偵錯、投影仍然只走上面那條拉的路。
+- **驗證沿用入伍時的 token**（Bearer）。hub 用 `hangar agent-tokens --json` 讀
+  序號 → token 表（這份不進 `list --json`，那一份會被端到網頁上）。序號不認得與
+  token 不對回同一個 401，不讓人拿這個端點試出 hub 認得哪些序號。
+- **另一個 listener**：裝置牆預設只綁 127.0.0.1，開放回報不等於把牆開出去。
+- 已入伍的手機改回報對象走 `com.hangar.agent.SET_HUB` 廣播，要帶 token —— 它跟
+  ENROLL 一樣是 exported 的，沒有這道門的話誰都能把回報（裡面帶著 token）導走。
+
+`POST /api/checkin` 的 body 是 `/status` 那一份，加上 `version`、`name`、
+`agent_port` 與 `ips`（手機所有 IPv4）；回 `200 {ok, next_s}`、`400`、`401`、
+`413`（> 4 KiB）或 `429`（同一支 10 秒內再來）。agent 照 `next_s`（預設 60 秒）
+回報，失敗指數退避到 5 分鐘，網路一換馬上送一次。
 
 **hub 不直接跟 agent 講話。** M2b 立的規矩要維持：hub 對手機的所有知識都來自
 `hangar --json`，所以「怎麼問 agent」這件事歸 `hangar`，hub 只是多讀幾個欄位。
@@ -416,7 +447,7 @@ hangar enroll [-p 手機] [--apk agent.apk]
 | 新裝上去的 agent 說自己沒入伍 → 直接補完整入伍 | 有人 `pm clear` 過，或 app 曾被解除安裝。那一刻 adb 就在手上，不要丟一個錯誤叫人再跑一個指令 |
 | 裝得上去、但新版不認這台電腦的 token → 停下來講清楚 | 手機上那支是別台電腦入伍的。解法有代價（見下一節的 `--takeover`），那個代價要由人決定，不是由指令順手做掉 |
 | 沒有 token 的 profile 不給用這條 | 「只換 APK」對還沒入伍過的手機沒有意義：裝上去也問不到話。那條路本來就叫 `enroll` |
-| 判斷「是不是舊版」看 agent 版號，不用能力欄位推測 | 裝置牆以 `0.1.2` 為目前標準，數字比較後只標出低於標準的版本；`can.ring` 只代表響鈴能力，`can.toggle_adb` 也不能拿來判斷版本 |
+| 判斷「是不是舊版」看 agent 版號，不用能力欄位推測 | 裝置牆以 `0.2.0` 為目前標準，數字比較後只標出低於標準的版本；`can.ring` 只代表響鈴能力，`can.toggle_adb` 也不能拿來判斷版本 |
 | helper 沿用 `POST /enroll`，只多一個 `reinstall` 布林 | 同一條 adb、同一套三道鎖、同一支 CLI。為了一個旗標開第二個端點只會多一份要一起維護的東西 |
 | hub 一行都不用改 | 「hub 維持唯讀」那條規矩不因為多一顆按鈕就破例 |
 

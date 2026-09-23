@@ -69,7 +69,18 @@ class MainActivity : Activity() {
             append("狀態：").append(if (enrolled) "已入伍" else "尚未入伍").append('\n')
             append("序號：").append(Enrollment.serial(this@MainActivity) ?: "（入伍時由電腦寫入）").append('\n')
             append("連接埠：").append(HttpServer.PORT).append('\n')
-            append("切偵錯的權限：").append(if (granted) "已授予" else "沒有").append("\n\n")
+            append("切偵錯的權限：").append(if (granted) "已授予" else "沒有").append('\n')
+            val hub = Enrollment.hub(this@MainActivity)
+            append("主動回報：").append(hub ?: "沒有設定（只等電腦端來問）").append('\n')
+            if (hub != null) {
+                val okAt = Enrollment.checkinOkAt(this@MainActivity)
+                val errMsg = Enrollment.checkinError(this@MainActivity)
+                append("上次回報：")
+                append(if (okAt > 0) android.text.format.DateFormat.format("MM-dd HH:mm:ss", okAt) else "還沒成功過")
+                append('\n')
+                if (errMsg != null) append("最近的錯誤：").append(errMsg).append('\n')
+            }
+            append('\n')
             if (!enrolled || !granted) {
                 append("在已設定這支手機的電腦上執行（USB 或網路 ADB）：\n\n")
                 append("  hangar enroll -p <profile>\n\n")

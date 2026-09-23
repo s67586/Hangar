@@ -278,7 +278,7 @@ assert "沒入伍的是 null"     "null" "$(q '.devices[0].agent' "$out")"
 echo "=== C6. scan 探得到 agent ==="
 env_one
 out="$("$PM" scan --json 2>/dev/null)"
-assert "schema 往上加了"     "7" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "8" "$(q '.schema' "$out")"
 assert "有 agent 的標出版本" "0.1.0-mock" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent.version' "$out")"
 : > "$MOCK_STATE/curl_log"        # 上一次掃描寫過了，要先清掉才問得出這一題
@@ -314,6 +314,49 @@ assert "只是問不到 agent"   "null" \
   "$(q '.hosts[] | select(.ip=="192.168.1.77") | .agent' "$out")"
 out="$(PATH="$NOCURL" "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" 2>&1)"
 check "但入伍要明講缺 curl" "找不到 curl" "$out"
+
+echo "=== C9. enroll --hub：讓 agent 主動回報 ==="
+env_one; : > "$MOCK_STATE/fake.apk"
+out="$("$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" --hub http://10.0.0.5:8789/ 2>&1)"
+check  "入伍廣播帶著 hub"         "--es hub http://10.0.0.5:8789$" "$(cat "$MOCK_STATE/adb_log")"
+assert "手機收到的是去掉尾巴斜線的" "http://10.0.0.5:8789" "$(cat "$MOCK_STATE/agent_hub" 2>/dev/null)"
+check  "profile 也記下來"         'AGENT_HUB="http://10.0.0.5:8789"' "$(cat "$XDG_CONFIG_HOME/hangar/profiles/work.conf")"
+
+# 已入伍：只改回報對象，不裝 APK、不換 token
+tok_before="$(cat "$MOCK_STATE/agent_token")"
+: > "$MOCK_STATE/adb_log"
+out="$("$PM" enroll -p work --hub http://10.0.0.6:8789/api/checkin 2>&1)"
+check   "說改好了"                "會往 http://10.0.0.6:8789 回報" "$out"
+nocheck "不重裝 APK"              "install" "$(cat "$MOCK_STATE/adb_log")"
+check   "走 SET_HUB"              "com.hangar.agent.SET_HUB" "$(cat "$MOCK_STATE/adb_log")"
+assert  "token 沒換"              "$tok_before" "$(cat "$MOCK_STATE/agent_token")"
+assert  "網址尾巴的 /api/checkin 去掉" "http://10.0.0.6:8789" "$(cat "$MOCK_STATE/agent_hub")"
+out="$("$PM" enroll -p work --no-hub 2>&1)"
+check   "--no-hub 關掉回報"       "不再主動回報" "$out"
+assert  "手機那邊清空"            "" "$(cat "$MOCK_STATE/agent_hub")"
+
+# 手機那組 token 不是這台的：SET_HUB 會被拒
+printf 'someone-else' > "$MOCK_STATE/agent_token"
+out="$("$PM" enroll -p work --hub http://10.0.0.7:8789 2>&1)"; rc=$?
+assert "被拒要失敗"               "1" "$rc"
+check  "並且指向 --takeover"      "--takeover" "$out"
+
+out="$("$PM" enroll -p work --hub 10.0.0.5:8789 2>&1)"
+check  "不是網址要擋下來"         "--hub 要像 http://" "$out"
+
+echo "=== C10. agent-tokens：只給 hub 讀的 token 表 ==="
+env_one
+printf 'PHONE_HOST=""\nPHONE_IP="192.168.1.77"\nTRANSPORT="lan"\nDEVICE_SERIAL="S1"\nAGENT_TOKEN="t1"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/work.conf"
+printf 'PHONE_HOST=""\nPHONE_IP="192.168.1.78"\nTRANSPORT="lan"\nDEVICE_SERIAL="S2"\n' \
+  > "$XDG_CONFIG_HOME/hangar/profiles/spare.conf"
+out="$("$PM" agent-tokens --json 2>/dev/null)"
+assert "只列有 token 的"          "work|S1|t1" "$(q '.tokens[] | "\(.profile)|\(.device_serial)|\(.token)"' "$out")"
+out="$("$PM" agent-tokens 2>&1)"
+check  "沒帶 --json 不印 token"   "只給程式讀" "$out"
+nocheck "真的沒印"                "t1" "$out"
+out="$("$PM" list --json 2>/dev/null)"
+nocheck "list --json 裡沒有 token" '"t1"' "$out"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

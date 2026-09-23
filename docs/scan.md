@@ -6,6 +6,7 @@
 ```bash
 hangar scan                        # 掃預設路由所在的那個 /24
 hangar scan --subnet 192.168.1     # 指定網段（也吃 192.168.1.0/24 或網段內任一 IP）
+hangar scan --subnet 192.168.1 --subnet 10.20.30   # 好幾個；不在這台網段上的逐台探埠
 hangar scan --no-ping              # 不做 ping sweep，只讀現有的 ARP 表（快很多）
 hangar scan --no-probe             # 不去測每台的 5555
 hangar scan --fix-ip               # 把「認得出、但 profile 指著舊 IP」的那幾支修好
@@ -40,6 +41,23 @@ AP 開了 client isolation 會擋掉多播，所以 mDNS 不能當唯一的路�
 > 閘道位址是問**掃描用的那張介面**拿到的（macOS 問 DHCP 給的 router，Linux 問
 > 那張介面的預設路由），不是問「預設路由的 gateway」—— 跑 Tailscale 的機器上
 > 預設路由是點對點通道，根本沒有閘道那一欄。問不到就不標，不會亂猜一台。
+
+## 跨網段
+
+ARP、ping sweep、mDNS 都過不了路由器：路由器後面的手機永遠不會出現在這台電腦的
+ARP 表裡。所以 `--subnet` 指到**不是這台電腦所在的 /24** 時，改成對 .1–.254 每個
+位址直接探 5555 與 5599，有回應的才列出來（JSON 裡 `routed: true`，
+`subnets[]` 也標出哪幾段是這樣掃的）。
+
+代價：
+
+- **拿不到 MAC**，只能靠 IP 對 profile；`--fix-ip` 對這些主機不做事（沒有 MAC 無法
+  確認 IP 背後還是同一支）。
+- **5555 沒開、也沒裝 agent 的手機跨網段看不到** —— 掃到的只有「有東西在聽」的。
+- **不會拿 profile 的 token 去問「你是誰」**：對面是誰還不知道，token 送出去就收不回來。
+  要認人，讓 agent 主動回報（[hub 的 `--checkin`](hub.md#跨網段主動回報check-in)）。
+- 要 hub 連得到手機。只有手機 → hub 通的網路，用主動回報。
+- 對方如果靜默丟棄 SYN，一個 /24 要 20 秒上下（64 台平行、每台兩個埠各等 3 秒）。
 
 ## `身分` 那欄怎麼認出是哪一支手機
 

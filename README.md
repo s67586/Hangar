@@ -9,6 +9,16 @@
 就照樣投得到 —— 那是**建議的加值選項，不是前提**。裝置牆的掃描（ARP）與 agent 的
 mDNS 廣播則本來就只在區網成立。
 
+**同一個公司區網、但手機在另一個網段**（Wi-Fi 與有線分在不同 VLAN、中間有路由）
+有兩條不用 Tailscale 的路，可以一起用：
+
+- `hangar scan --subnet 10.20.30`：不在這台網段上的 /24 會改成逐台探 5555／5599
+  （hub 要連得到手機；拿不到 MAC）
+- `hangar wall --checkin 0.0.0.0:8789` 加上 `hangar enroll --hub http://<hub>:8789`：
+  手機上的 agent 定期**主動回報**給 hub（只要手機連得到 hub 就行）
+
+見[區網掃描](docs/scan.md#跨網段)與 [hub](docs/hub.md#跨網段主動回報check-in)。
+
 | | |
 |---|---|
 | [`hangar`](hangar) | CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源 |

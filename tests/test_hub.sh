@@ -197,7 +197,7 @@ check  "agent 無回應且 adb ready 可補裝" \
   'd.agent.reachable === false && d.agent.enrolled === null' "$(get "$HUB_URL/")"
 page="$(get "$HUB_URL/")"
 check  "首頁含更新 agent handler" "async function updateAgent" "$page"
-check  "看板目標 agent 版號"       'const CURRENT_AGENT_VERSION = "0.1.2";' "$page"
+check  "看板目標 agent 版號"       'const CURRENT_AGENT_VERSION = "0.2.0";' "$page"
 check  "舊版改用版號比較"          'compareAgentVersions(d.agent.version, CURRENT_AGENT_VERSION) === -1' "$page"
 version_logic="$(printf '%s' "$page" | sed -n '/function agentNeedsUpdate/,/^}/p')"
 nocheck "舊版判斷不再看 can.ring"  "can.ring" "$version_logic"
@@ -208,9 +208,9 @@ $(printf '%s' "$page" | awk '/function agentVersionParts/{keep=1} /function ring
   if VERSION_SOURCE="$version_source" node - <<'NODE'
 const source = process.env.VERSION_SOURCE || "";
 eval(source);
-const old = { agent: { reachable: true, enrolled: true, version: "0.1.1" } };
-const current = { agent: { reachable: true, enrolled: true, version: "0.1.2" } };
-const newer = { agent: { reachable: true, enrolled: true, version: "0.1.3" } };
+const old = { agent: { reachable: true, enrolled: true, version: "0.1.2" } };
+const current = { agent: { reachable: true, enrolled: true, version: "0.2.0" } };
+const newer = { agent: { reachable: true, enrolled: true, version: "0.2.1" } };
 if (!agentNeedsUpdate(old) || agentNeedsUpdate(current) || agentNeedsUpdate(newer)) process.exit(1);
 if (compareAgentVersions("0.1.10", "0.1.2") !== 1) process.exit(1);
 NODE
@@ -228,7 +228,7 @@ check  "更新按鈕文字"            "更新agent" "$page"
 # 這一條是整條路的重點：hub 自己永遠不會動手機
 nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "8" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "9" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -787,6 +787,118 @@ WALL_URL="$(sed -nE 's|^hangar hub: (http://[^ ]+)/$|\1|p' "$WALL_OUT" | head -1
 out="$(req GET "$WALL_URL/api/helper")"
 assert "鑰匙也給得出來" "200" "${out%%|*}"
 kill "$WALL_PID" 2>/dev/null; wait "$WALL_PID" 2>/dev/null
+
+echo "=== H19. 主動回報（--checkin）==="
+# 手機在路由器後面：hub 連不進去（list 說 offline），但手機連得到 hub。
+checkin_env() {
+  hub_env
+  cat > "$MOCK_STATE/list_json" <<'JSON'
+{ "schema": 1, "devices": [
+  { "profile": "far", "default": false, "transport": "lan",
+    "host": "", "ip": "10.20.30.7", "adb_serial": "10.20.30.7:5555",
+    "device_serial": "FAR123", "reachability": "offline", "adb_state": "disconnected",
+    "path": null, "model": null, "android": null, "battery": null,
+    "scrcpy_pids": [], "errors": [] }
+] }
+JSON
+  echo '{ "schema": 8, "subnet": "192.168.1.0/24", "hosts": [], "errors": [] }' \
+    > "$MOCK_STATE/scan_json"
+  echo '{"schema":1,"tokens":[{"profile":"far","device_serial":"FAR123","token":"sekrit"}]}' \
+    > "$MOCK_STATE/tokens_json"
+}
+# post <url> <token> <body> → "狀態|回應"
+post() { python3 -c '
+import sys, urllib.request, urllib.error
+url, token, body = sys.argv[1:4]
+r = urllib.request.Request(url, data=body.encode(), method="POST",
+                           headers={"Content-Type": "application/json"})
+if token: r.add_header("Authorization", "Bearer " + token)
+try:
+    resp = urllib.request.urlopen(r, timeout=5)
+    print("%d|%s" % (resp.status, resp.read().decode()))
+except urllib.error.HTTPError as e:
+    print("%d|%s" % (e.code, e.read().decode()))
+except Exception as e:
+    print("0|%s" % e)' "$1" "$2" "$3"; }
+checkin_port() { sed -nE 's/^check-in 也開了：127\.0\.0\.1:([0-9]+).*/\1/p' "$HUB_OUT" | head -1; }
+
+checkin_env
+hub_start --no-helper --no-usb --checkin 127.0.0.1:0 || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+CI_PORT="$(checkin_port)"
+CI="http://127.0.0.1:${CI_PORT}/api/checkin"
+check "啟動訊息講得出 check-in 的埠" "check-in 也開了" "$(cat "$HUB_OUT")"
+check "並且教人怎麼告訴手機"          "enroll -p <名稱> --hub" "$(cat "$HUB_OUT")"
+body='{"device_serial":"FAR123","version":"0.2.0","model":"Pixel 8","ips":["10.20.30.99","127.0.0.1","nope"],"battery":{"level":55,"status":"charging"}}'
+bad="$(post "$CI" "wrong" "$body")"
+assert "token 不對是 401"          "401" "${bad%%|*}"
+out="$(post "$CI" "sekrit" '{"device_serial":"NOPE","ips":[]}')"
+assert "不認得的序號也是 401"      "401" "${out%%|*}"
+assert "兩種 401 長得一樣（不洩漏認得哪些序號）" "${bad#*|}" "${out#*|}"
+out="$(post "$CI" "sekrit" '[1,2]')"
+assert "body 不是物件是 400"       "400" "${out%%|*}"
+out="$(post "$CI" "sekrit" "$(python3 -c 'print("{\"x\":\"" + "a"*5000 + "\"}")')")"
+assert "太大是 413"                "413" "${out%%|*}"
+out="$(post "$CI" "sekrit" "$body")"
+assert "對的 token 是 200"         "200" "${out%%|*}"
+assert "告訴手機下次什麼時候來"    "60" "$(q 'd["next_s"]' "${out#*|}")"
+out="$(post "$CI" "sekrit" "$body")"
+assert "太快再來是 429"            "429" "${out%%|*}"
+out="$(req GET "$HUB_URL/api/checkin")"
+assert "牆那個埠上沒有這個端點"    "404" "${out%%|*}"
+out="$(req GET "http://127.0.0.1:${CI_PORT}/api/devices")"
+assert "check-in 那個埠看不到牆"   "404" "${out%%|*}"
+
+out="$(get_devices)"
+far='[x for x in d["devices"] if x["name"]=="far"][0]'
+assert "還是同一張卡"              "1" "$(q 'len(d["devices"])' "$out")"
+assert "來源多了 checkin"          "True" "$(q "'checkin' in ${far}['sources']" "$out")"
+assert "hub 連不進去但有回報 → agent_only" "agent_only" "$(q "${far}['state']" "$out")"
+assert "reachable 不因為回報變 true" "False" "$(q "${far}['agent']['reachable']" "$out")"
+assert "電量用回報的補"            "55" "$(q "${far}['battery']['level']" "$out")"
+assert "機型用回報的補"            "Pixel 8" "$(q "${far}['model']" "$out")"
+assert "位址只收合法的 IPv4、不含 loopback" "['10.20.30.99']" "$(q "${far}['checkin']['ips']" "$out")"
+assert "profile 的 IP 不在手機的位址裡 → 標舊" "True" "$(q "${far}['profile_ip_stale']" "$out")"
+assert "記下 TCP 來源位址"         "127.0.0.1" "$(q "${far}['checkin']['peer_ip']" "$out")"
+check  "polled_at 有 checkin"      "checkin" "$(q 'list(d["polled_at"])' "$out")"
+check  "hub 有去讀 token 表"       "agent-tokens --json" "$(cat "$MOCK_STATE/argv_log")"
+hub_stop
+
+# 剛入伍的手機：token 表是之前讀的，第一次回報要能自己補讀（有 10 秒節流）
+checkin_env
+echo '{"schema":1,"tokens":[]}' > "$MOCK_STATE/tokens_json"
+hub_start --no-helper --no-usb --checkin 127.0.0.1:0 || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+CI_PORT="$(checkin_port)"
+sleep 0.5
+echo '{"schema":1,"tokens":[{"profile":"far","device_serial":"FAR123","token":"sekrit"}]}' \
+  > "$MOCK_STATE/tokens_json"
+sleep 10.2
+out="$(post "http://127.0.0.1:${CI_PORT}/api/checkin" "sekrit" '{"device_serial":"FAR123","ips":[]}')"
+assert "新入伍的手機補讀 token 表後收得到" "200" "${out%%|*}"
+hub_stop
+
+echo "=== H20. --checkin 沒給就不開，給錯要講 ==="
+checkin_env
+hub_start --no-helper --no-usb || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+get_devices >/dev/null
+nocheck "沒給就沒有 check-in"     "check-in" "$(cat "$HUB_OUT")"
+nocheck "也不去讀 token 表"        "agent-tokens" "$(cat "$MOCK_STATE/argv_log")"
+hub_stop
+out="$(python3 "$HUB" --hangar "$FAKE" --no-helper --port 0 --checkin 不是埠 2>&1)"
+check "看不懂的 --checkin 要說"    "看不懂的 --checkin" "$out"
+
+echo "=== H21. 多個 --subnet 都轉給 hangar scan；routed 與過期回報 ==="
+checkin_env
+hub_start --no-helper --no-usb --subnet 192.168.1 --subnet 10.20.30 || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+get_devices >/dev/null
+check "兩個網段都帶到" "scan --json --subnet 192.168.1 --subnet 10.20.30" "$(cat "$MOCK_STATE/argv_log")"
+hub_stop
+routed='merge(None, {"hosts":[{"ip":"10.20.30.7","mac":None,"adb_port":"open","routed":True}]})'
+assert "跨網段的卡標 routed"       "True"  "$(m "${routed}[0]['routed']")"
+assert "其他卡預設不是 routed"     "False" "$(m 'merge(None, {"hosts":[{"ip":"192.168.1.5","mac":"aa:bb:cc:dd:ee:ff"}]})[0]["routed"]')"
+stale='merge({"devices":[{"profile":"far","device_serial":"S9","adb_state":"disconnected","reachability":"offline"}]}, None,
+  checkins={"S9":{"at":0,"profile":"far","peer_ip":"1.2.3.4","ips":[],"payload":{}}}, now=10000)'
+assert "回報太久以前 → 不算新鮮"  "False"   "$(m "${stale}[0]['checkin']['fresh']")"
+assert "不新鮮就不改狀態"          "offline" "$(m "${stale}[0]['state']")"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
