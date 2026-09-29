@@ -321,6 +321,9 @@ curl -s localhost:8787/api/devices | jq '.errors'   # 有沒有藏著的錯誤
 
 ## 讓它開機就自己跑
 
+常駐的 hub 幾乎都是要給別台開的，所以下面兩份都帶 `--bind 0.0.0.0`。**漏了它
+hub 只綁 `127.0.0.1`**：常駐機器自己開得到，別台整頁連不上 —— 這是最常見的坑。
+
 macOS（launchd，存成 `~/Library/LaunchAgents/com.hangar.hub.plist`）：
 
 ```xml
@@ -332,15 +335,36 @@ macOS（launchd，存成 `~/Library/LaunchAgents/com.hangar.hub.plist`）：
   <array>
     <string>/usr/bin/python3</string>
     <string>/Users/你/Hangar/hub/hangar_hub.py</string>
-    <string>--hangar</string><string>/usr/local/bin/hangar</string>
+    <string>--hangar</string><string>/Users/你/Hangar/hangar</string>
+    <string>--bind</string><string>0.0.0.0</string>
+    <string>--port</string><string>8787</string>
   </array>
+  <!-- launchd 的 PATH 沒有 Homebrew：少了這段，hangar 找不到 adb 與 jq -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key><string>/Users/你/Library/Logs/hangar/hub.log</string>
+  <key>StandardErrorPath</key><string>/Users/你/Library/Logs/hangar/hub.err.log</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
 ```
 ```bash
+mkdir -p ~/Library/Logs/hangar
+```
+```bash
 launchctl load ~/Library/LaunchAgents/com.hangar.hub.plist
 ```
+
+之後的日常：
+
+| 要做的事 | 指令 |
+|---|---|
+| `git pull` 之後重開 hub | `launchctl kickstart -k gui/$(id -u)/com.hangar.hub` |
+| 改了 plist | `launchctl unload` 再 `launchctl load` 同一個檔 —— `kickstart` 不會重讀 plist |
+| 確認綁在哪 | `lsof -nP -iTCP:8787 -sTCP:LISTEN`，要看到 `*:8787`，看到 `127.0.0.1:8787` 就是漏了 `--bind` |
+| 起不來的原因 | `tail ~/Library/Logs/hangar/hub.err.log` |
 
 Linux（systemd user unit，存成 `~/.config/systemd/user/hangar-hub.service`）：
 
@@ -348,7 +372,7 @@ Linux（systemd user unit，存成 `~/.config/systemd/user/hangar-hub.service`�
 [Unit]
 Description=Hangar hub
 [Service]
-ExecStart=/usr/bin/python3 %h/Hangar/hub/hangar_hub.py --hangar /usr/local/bin/hangar
+ExecStart=/usr/bin/python3 %h/Hangar/hub/hangar_hub.py --hangar %h/Hangar/hangar --bind 0.0.0.0 --port 8787
 Restart=always
 [Install]
 WantedBy=default.target
@@ -356,6 +380,9 @@ WantedBy=default.target
 ```bash
 systemctl --user enable --now hangar-hub
 ```
+
+`git pull` 之後重開用 `systemctl --user restart hangar-hub`；改了 unit 檔要先
+`systemctl --user daemon-reload`。
 
 > 常駐機器上的 `hangar` 要先自己跑得起來（`hangar list` / `hangar scan` 有東西），
 > hub 只是把它們的 `--json` 接起來。掃描需要 `ping` 與 `arp`／`ip`，`--probe`

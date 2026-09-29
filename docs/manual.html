@@ -132,7 +132,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 fe035fccb39e</span><span class="fact">hangar v1.5.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 acc014f5fab3</span><span class="fact">hangar v1.5.0</span></div>
 </header>
 
 <div class="cols">
@@ -482,6 +482,7 @@ curl -s localhost:8787/api/devices | jq &#x27;.errors&#x27;   <span class="c"># 
 <p>還有三件容易忘的：</p>
 <ul><li><strong>Tailscale</strong>：新機器要加進 tailnet，而且 ACL 的 <code>src</code> 要有它（打 <code>tag:devbox</code> 的話就不用改 ACL）。</li><li><strong>網址變了</strong>：有人把舊 hub 的位址加了書籤的話要通知。</li><li><strong><code>~/.config/hangar/</code> 現在可能有祕密</strong>：入伍過的手機 profile 裡有 <code>AGENT_TOKEN</code>。 用 <code>scp</code>／<code>rsync</code> 搬沒問題（走加密通道），但別丟進共用雲端硬碟。</li></ul>
 <h3 id="讓它開機就自己跑">讓它開機就自己跑</h3>
+<p>常駐的 hub 幾乎都是要給別台開的，所以下面兩份都帶 <code>--bind 0.0.0.0</code>。<strong>漏了它 hub 只綁 <code>127.0.0.1</code></strong>：常駐機器自己開得到，別台整頁連不上 —— 這是最常見的坑。</p>
 <p>macOS（launchd，存成 <code>~/Library/LaunchAgents/com.hangar.hub.plist</code>）：</p>
 <div class="term"><div class="bar">xml</div><pre>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
 &lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
@@ -491,21 +492,34 @@ curl -s localhost:8787/api/devices | jq &#x27;.errors&#x27;   <span class="c"># 
   &lt;array&gt;
     &lt;string&gt;/usr/bin/python3&lt;/string&gt;
     &lt;string&gt;/Users/你/Hangar/hub/hangar_hub.py&lt;/string&gt;
-    &lt;string&gt;--hangar&lt;/string&gt;&lt;string&gt;/usr/local/bin/hangar&lt;/string&gt;
+    &lt;string&gt;--hangar&lt;/string&gt;&lt;string&gt;/Users/你/Hangar/hangar&lt;/string&gt;
+    &lt;string&gt;--bind&lt;/string&gt;&lt;string&gt;0.0.0.0&lt;/string&gt;
+    &lt;string&gt;--port&lt;/string&gt;&lt;string&gt;8787&lt;/string&gt;
   &lt;/array&gt;
+  &lt;!-- launchd 的 PATH 沒有 Homebrew：少了這段，hangar 找不到 adb 與 jq --&gt;
+  &lt;key&gt;EnvironmentVariables&lt;/key&gt;
+  &lt;dict&gt;
+    &lt;key&gt;PATH&lt;/key&gt;&lt;string&gt;/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin&lt;/string&gt;
+  &lt;/dict&gt;
+  &lt;key&gt;StandardOutPath&lt;/key&gt;&lt;string&gt;/Users/你/Library/Logs/hangar/hub.log&lt;/string&gt;
+  &lt;key&gt;StandardErrorPath&lt;/key&gt;&lt;string&gt;/Users/你/Library/Logs/hangar/hub.err.log&lt;/string&gt;
   &lt;key&gt;RunAtLoad&lt;/key&gt;&lt;true/&gt;
   &lt;key&gt;KeepAlive&lt;/key&gt;&lt;true/&gt;
 &lt;/dict&gt;&lt;/plist&gt;</pre></div>
+<div class="term"><div class="bar">bash</div><pre>mkdir -p ~/Library/Logs/hangar</pre></div>
 <div class="term"><div class="bar">bash</div><pre>launchctl load ~/Library/LaunchAgents/com.hangar.hub.plist</pre></div>
+<p>之後的日常：</p>
+<div class="tw"><table><tr><th>要做的事</th><th>指令</th></tr><tr><td class="wrap"><code>git pull</code> 之後重開 hub</td><td class="wrap"><code>launchctl kickstart -k gui/$(id -u)/com.hangar.hub</code></td></tr><tr><td class="wrap">改了 plist</td><td class="wrap"><code>launchctl unload</code> 再 <code>launchctl load</code> 同一個檔 —— <code>kickstart</code> 不會重讀 plist</td></tr><tr><td class="wrap">確認綁在哪</td><td class="wrap"><code>lsof -nP -iTCP:8787 -sTCP:LISTEN</code>，要看到 <code>*:8787</code>，看到 <code>127.0.0.1:8787</code> 就是漏了 <code>--bind</code></td></tr><tr><td class="wrap">起不來的原因</td><td class="wrap"><code>tail ~/Library/Logs/hangar/hub.err.log</code></td></tr></table></div>
 <p>Linux（systemd user unit，存成 <code>~/.config/systemd/user/hangar-hub.service</code>）：</p>
 <div class="term"><div class="bar">ini</div><pre>[Unit]
 Description=Hangar hub
 [Service]
-ExecStart=/usr/bin/python3 %h/Hangar/hub/hangar_hub.py --hangar /usr/local/bin/hangar
+ExecStart=/usr/bin/python3 %h/Hangar/hub/hangar_hub.py --hangar %h/Hangar/hangar --bind 0.0.0.0 --port 8787
 Restart=always
 [Install]
 WantedBy=default.target</pre></div>
 <div class="term"><div class="bar">bash</div><pre>systemctl --user enable --now hangar-hub</pre></div>
+<p><code>git pull</code> 之後重開用 <code>systemctl --user restart hangar-hub</code>；改了 unit 檔要先 <code>systemctl --user daemon-reload</code>。</p>
 <div class="note"><p>常駐機器上的 <code>hangar</code> 要先自己跑得起來（<code>hangar list</code> / <code>hangar scan</code> 有東西）， hub 只是把它們的 <code>--json</code> 接起來。掃描需要 <code>ping</code> 與 <code>arp</code>／<code>ip</code>，<code>--probe</code> 要電量則需要 adb —— 但 hub 本身不需要 scrcpy。</p></div>
 </section>
 <section id="機器可讀的輸出--json">
@@ -932,7 +946,7 @@ adb logcat</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 fe035fccb39e</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 acc014f5fab3</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
