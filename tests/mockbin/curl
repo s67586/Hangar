@@ -63,6 +63,9 @@ case "$path" in
     # schema 3 的 agent 不收 revert_after_s；舊呼叫端送了就是 400。
     if printf '%s' "$data" | grep -q '"revert_after_s"'; then
       printf '{"schema":3,"error":{"code":"bad_request","message":"revert_after_s 已移除"}}\n'
+    elif [ -f "$MOCK_STATE/adb_readback_stuck_off" ]; then
+      # Android 17 實測：寫得進去，但 app 讀回來永遠是 0
+      printf '{"schema":3,"enabled":%s,"adb":{"enabled":false}}\n' "$enabled"
     elif [ "$enabled" = "true" ]; then
       printf '{"schema":3,"enabled":true,"adb":{"enabled":true}}\n'
     else

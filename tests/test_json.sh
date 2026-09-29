@@ -288,16 +288,19 @@ check  "PHONE_HOST 是空的"         'PHONE_HOST=""'            "$conf"
 nocheck "訊息裡不提 tailnet"       'tailnet'                  "$out"
 
 # 直接給 IP 就不用問手機（--existing 之外的第二條路）
+rm -f "$XDG_CONFIG_HOME/hangar/profiles/"*.conf   # 同一支假手機（同一個序號）：上一個子測試那份要先清掉，不然會被當成重複
 out="$("$PM" setup 192.168.1.77 --name given < /dev/null 2>&1)"
 conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/given.conf" 2>/dev/null)"
 check "指定的 IP 直接寫進去" 'PHONE_IP="192.168.1.77"' "$conf"
 
 # 區網的 setup 收的是 IP，不是節點名 —— 拿節點名進來要講清楚，不要默默去掃描
+rm -f "$XDG_CONFIG_HOME/hangar/profiles/"*.conf   # 同一支假手機（同一個序號）：上一個子測試那份要先清掉，不然會被當成重複
 out="$("$PM" setup zenfone --name bad < /dev/null 2>&1)"; rc=$?
 assert "節點名進區網 setup 會擋下來" "1" "$rc"
 check  "而且說得出要的是什麼"        "要的是手機的 IP"  "$out"
 
 # 不加 --name 時用位址最後一段當名字（區網沒有節點名可以借）
+rm -f "$XDG_CONFIG_HOME/hangar/profiles/"*.conf   # 同一支假手機（同一個序號）：上一個子測試那份要先清掉，不然會被當成重複
 "$PM" setup 192.168.1.88 < /dev/null >/dev/null 2>&1
 [ -f "$XDG_CONFIG_HOME/hangar/profiles/phone-88.conf" ] \
   && { echo "  PASS  預設名稱取自位址最後一段"; PASS=$((PASS+1)); } \
@@ -319,6 +322,7 @@ check "順手把節點名補起來"      'PHONE_HOST="pixel"'      "$conf"
 check "而且有講為什麼改判"      "Tailscale 網段"          "$out"
 
 # 使用者明講 --lan 就照做，但要提醒他代價
+rm -f "$XDG_CONFIG_HOME/hangar/profiles/"*.conf   # 同一支假手機（同一個序號）：上一個子測試那份要先清掉，不然會被當成重複
 out="$("$PM" setup "$P1" --lan --name gpa2 < /dev/null 2>&1)"
 conf="$(cat "$XDG_CONFIG_HOME/hangar/profiles/gpa2.conf" 2>/dev/null)"
 check "明講 lan 就維持 lan"     'TRANSPORT="lan"'         "$conf"

@@ -247,6 +247,15 @@ out="$("$PM" adb -p work --off --revert-after-s 1800 2>&1 || true)"
 check "舊的 --revert-after-s 直接擋下" "已移除" "$out"
 out="$("$PM" adb -p work --on 2>&1)"
 check "adb 可以再開"             "偵錯已開啟" "$out"
+# agent 回應裡的 enabled 只是照抄請求；讀回來的在 adb.enabled。對不上就不能
+# 說「已開啟」（Android 17 上 app 讀 adb_enabled 永遠是 0）
+touch "$MOCK_STATE/adb_readback_stuck_off"
+out="$("$PM" adb -p work --on 2>&1)"; rc=$?
+rm -f "$MOCK_STATE/adb_readback_stuck_off"
+nocheck "讀回來對不上就不說已開啟" "偵錯已開啟" "$out"
+check  "老實說讀不到結果"         "agent 讀不到結果" "$out"
+check  "指出哪裡看得到真的值"     "settings get global adb_enabled" "$out"
+check  "不當成失敗"               "^0$" "$rc"
 
 echo "=== C4. adb 碰不到時，改問 agent —— 這就是 agent 存在的理由 ==="
 env_one; : > "$MOCK_STATE/fake.apk"

@@ -228,7 +228,7 @@ check  "更新按鈕文字"            "更新agent" "$page"
 # 這一條是整條路的重點：hub 自己永遠不會動手機
 nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "10" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "11" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -1078,6 +1078,25 @@ else
   assert "別台帶鑰匙按得動"      "200" "${out%%|*}"
   hub_stop
 fi
+
+echo "=== H24. 同一支手機兩份 profile、偵錯讀值不準 ==="
+# 實際踩過：pixel-8（區網、沒入伍）與 pixel-8a（Tailscale、入伍過）是同一支。
+# 兩張卡都留著（連線方式、token 各自不同，合起來按下去不知道走哪份），但要互相指認
+two_p='{"devices":[{"profile":"pixel-8","device_serial":"S8","adb_state":"device"},{"profile":"pixel-8a","device_serial":"S8","adb_state":"device"},{"profile":"other","device_serial":"S9","adb_state":"device"}]}'
+assert "兩份 profile 還是兩張卡"   "3" "$(m "len(merge(${two_p}, None))")"
+assert "互相指認"                  "['pixel-8a']" "$(m "[x for x in merge(${two_p}, None) if x['name']=='pixel-8'][0]['same_device']")"
+assert "別支手機不算"              "[]" "$(m "[x for x in merge(${two_p}, None) if x['name']=='other'][0]['same_device']")"
+# Android 17 實測：app 讀 adb_enabled 永遠是 0，adb 卻連得上
+lie='{"devices":[{"profile":"p8","device_serial":"S8","adb_state":"device","agent":{"reachable":True,"adb":{"enabled":False}}}]}'
+honest='{"devices":[{"profile":"p8","device_serial":"S8","adb_state":"disconnected","agent":{"reachable":True,"adb":{"enabled":False}}}]}'
+assert "agent 說關、adb 連得上 → 矛盾" "True"  "$(m "merge(${lie}, None)[0]['adb_conflict']")"
+assert "adb 連不上就不算矛盾"        "False" "$(m "merge(${honest}, None)[0]['adb_conflict']")"
+assert "記下的是 adb 那份（硬證據）"  "True" \
+  "$(m "(lambda s: [hub.record_adb_seen(s, ${lie}, 1), s['S8']['enabled']][-1])({})")"
+page="$(cat "$SP/../hub/static/index.html")"
+check  "牆上講得出同一支手機" "同一支手機另外還有 profile" "$page"
+check  "矛盾時按鈕以 adb 為準" "d.adb_conflict ? true : adb.enabled" "$page"
+check  "沒 token 不再說是舊版" "這份 profile 沒有 agent 的 token" "$page"
 
 page="$(cat "$SP/../hub/static/index.html")"
 check  "牆上有 hub 鑰匙那一條路"  "async function whoami" "$page"
