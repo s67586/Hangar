@@ -92,7 +92,9 @@ STATIC_DIR = os.path.join(HERE, "static")
 # 11：same_device（同一個序號的其他 profile 名字）與 adb_conflict。
 # 12：debug_enabled（adb 直接讀的偵錯開關，問不到是 null）；adb_conflict 改成
 #     「agent 讀到的跟 adb 讀到的不一樣」，不再從「adb 連得上」推論。
-API_SCHEMA = 12
+# 13：agent.adb.source（settings / agent_write / unknown），牆上用來講「這是 agent
+#     最後寫的值」或「有人在手機上切過，不知道」。
+API_SCHEMA = 13
 
 # agent 主動回報（check-in）。
 #

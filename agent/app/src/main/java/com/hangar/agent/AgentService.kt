@@ -7,7 +7,11 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.database.ContentObserver
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 
 /**
@@ -46,6 +50,9 @@ class AgentService : Service() {
     private var server: HttpServer? = null
     private var mdns: MdnsBroadcast? = null
     private var checkin: CheckinReporter? = null
+    // 偵錯開關的變更通知：讀不到真實值的機器上，這是知道「有人在手機上切過」的
+    // 唯一辦法（見 AdbState）
+    private var adbObserver: ContentObserver? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -54,6 +61,12 @@ class AgentService : Service() {
         server = HttpServer(this).also { it.start() }
         mdns = MdnsBroadcast(this).also { it.start() }
         checkin = CheckinReporter(this).also { it.start() }
+        adbObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) = AdbState.noteChange(applicationContext)
+        }.also {
+            contentResolver.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.ADB_ENABLED), false, it)
+        }
     }
 
     // 被系統殺掉之後要自己回來
@@ -66,6 +79,8 @@ class AgentService : Service() {
     }
 
     override fun onDestroy() {
+        adbObserver?.let { contentResolver.unregisterContentObserver(it) }
+        adbObserver = null
         checkin?.stop()
         checkin = null
         mdns?.stop()

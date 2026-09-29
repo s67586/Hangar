@@ -225,13 +225,28 @@ echo "=== C3. list --json：adb 通的時候，agent 只是附帶資訊 ==="
 env_one; : > "$MOCK_STATE/fake.apk"
 "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
 out="$("$PM" list --json --probe 2>/dev/null)"
-assert "schema 往上加了"     "5" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "6" "$(q '.schema' "$out")"
 assert "adb 通就用 adb 的資料" "adb" "$(q '.devices[0].battery.source' "$out")"
 assert "電量是 adb 那份"      "78" "$(q '.devices[0].battery.level' "$out")"
 assert "agent 也看得到"       "true" "$(q '.devices[0].agent.reachable' "$out")"
 assert "說得出 agent 版本"    "0.1.0-mock" "$(q '.devices[0].agent.version' "$out")"
 assert "能力宣告帶上牆"        "true" "$(q '.devices[0].agent.can.ring' "$out")"
 assert "問不到偵錯開關就是 null" "null" "$(q '.devices[0].debug_enabled' "$out")"
+# 協定 5 的 agent 會說這份偵錯開關怎麼來的；舊版沒有就是 null
+assert "舊版 agent 沒有 source" "null" "$(q '.devices[0].agent.adb.source' "$out")"
+# 讀不準的機器（Android 17）：有人在手機上切過之後，agent 說不知道 —— enabled 是
+# null，但 adb 物件還是要在（不然牆上分不出「舊版」與「不知道」）
+python3 - "$MOCK_STATE/agent_192.168.1.77_5599.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["schema"] = 5
+d["adb"] = {"enabled": None, "source": "unknown", "readable": False,
+            "wifi_enabled": True, "wifi_port": None}
+json.dump(d, open(p, "w"))
+PY
+out="$("$PM" list --json --probe 2>/dev/null)"
+assert "source 帶上來"          "unknown" "$(q '.devices[0].agent.adb.source' "$out")"
+assert "不知道就是 null"        "null"    "$(q '.devices[0].agent.adb.enabled' "$out")"
 # 偵錯開關的硬證據是 adb 直接讀的那一份：agent 在 Android 17 上讀不準，而
 # 「adb 連得上」也不代表開著（關掉只停 USB 那頭，5555 照樣連得上）
 echo 0 > "$MOCK_STATE/adb_enabled_value"
@@ -278,6 +293,12 @@ echo 0 > "$MOCK_STATE/adb_enabled_value"
 out="$("$PM" adb -p work --off 2>&1)"; rc=$?
 assert "adb 讀到真的關了 → 成功"    "0" "$rc"
 check  "照常說已關閉"               "偵錯已關閉" "$out"
+# 舊版 agent 只關 USB 偵錯：無線偵錯還開著的話 adbd 沒停，5555 還連得進來
+touch "$MOCK_STATE/adb_off_keeps_wifi"
+out="$("$PM" adb -p work --off 2>&1)"
+rm -f "$MOCK_STATE/adb_off_keeps_wifi"
+check  "無線偵錯還開著要講"         "無線偵錯還開著" "$out"
+check  "並且說要更新 agent"         "enroll -p work --reinstall" "$out"
 rm -f "$MOCK_STATE/adb_enabled_value"
 
 # 偵錯開回來之後 adb 不會自己連回去：hub 輪詢不主動連線，牆上會一直停在

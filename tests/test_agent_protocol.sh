@@ -69,7 +69,7 @@ echo "=== A1. /hello：不需要 token，掃描靠它認人 ==="
 r="$(req "$URL/hangar/v1/hello")"
 assert "沒帶 token 也要回 200" "200" "$(code "$r")"
 assert "說得出自己是誰"        "hangar-agent" "$(q 'd["agent"]' "$(body "$r")")"
-assert "有協定版本"            "4"            "$(q 'd["schema"]' "$(body "$r")")"
+assert "有協定版本"            "5"            "$(q 'd["schema"]' "$(body "$r")")"
 assert "說得出入伍了沒"        "True"         "$(q 'str(d["enrolled"])' "$(body "$r")")"
 # /hello 是給還沒建立信任的對象看的，不該吐序號
 assert "不吐序號"              "False"        "$(q 'str("device_serial" in d)' "$(body "$r")")"
@@ -85,7 +85,7 @@ echo "=== A3. /status 的形狀（hub 就是照這個合併的）==="
 r="$(req "$URL/hangar/v1/status" "$TOKEN")"
 assert "帶對 token 回 200"     "200" "$(code "$r")"
 b="$(body "$r")"
-assert "有協定版本"            "4"    "$(q 'd["schema"]' "$b")"
+assert "有協定版本"            "5"    "$(q 'd["schema"]' "$b")"
 # 這一欄是 hub 把 agent / list / scan 三份資料合成同一張卡的主鍵
 assert "序號不可以是空的"      "True" "$(q 'str(bool(d["device_serial"]))' "$b")"
 assert "有機型"                "True" "$(q 'str(bool(d["model"]))' "$b")"
@@ -95,7 +95,10 @@ assert "電量是 0-100 的整數"   "True" \
   "$(q 'str(isinstance(d["battery"]["level"], int) and 0 <= d["battery"]["level"] <= 100)' "$b")"
 assert "充電狀態用小寫那一套"  "True" \
   "$(q 'str(d["battery"]["status"] in ("charging","discharging","full","not_charging",None))' "$b")"
-assert "adb.enabled 是布林"    "True" "$(q 'str(isinstance(d["adb"]["enabled"], bool))' "$b")"
+# 讀不準的機器（Android 17）上不知道就是 null，不可以猜；來源要講
+assert "adb.enabled 是布林或 null" "True" "$(q 'str(d["adb"]["enabled"] is None or isinstance(d["adb"]["enabled"], bool))' "$b")"
+assert "adb.source 是三種之一"  "True" "$(q 'str(d["adb"]["source"] in ("settings","agent_write","unknown"))' "$b")"
+assert "adb.readable 是布林或 null" "True" "$(q 'str(d["adb"]["readable"] is None or isinstance(d["adb"]["readable"], bool))' "$b")"
 # 「關著」跟「這台機器沒有無線偵錯」是兩件事：後者是 null，不是 false
 assert "wifi_enabled 是布林或 null" "True" \
   "$(q 'str(d["adb"]["wifi_enabled"] is None or isinstance(d["adb"]["wifi_enabled"], bool))' "$b")"
@@ -123,6 +126,8 @@ else
   # 全手動之後，關掉就是關掉：再問一次狀態不該看到它自己變回 true。
   r="$(req "$URL/hangar/v1/status" "$TOKEN" GET '')"
   assert "關掉之後不會自己開回"    "False" "$(q 'str(d["adb"]["enabled"])' "$(body "$r")")"
+  # 無線偵錯開著的話 adbd 不會停、5555 還連得進來 —— 關閉要兩個一起關
+  assert "無線偵錯也一起關了"      "True" "$(q 'str(d["adb"]["wifi_enabled"] in (False, None))' "$(body "$r")")"
   r="$(req "$URL/hangar/v1/adb" "$TOKEN" POST '{"enabled":false,"revert_after_s":1800}')"
   assert "舊的 revert_after_s 回 400" "400" "$(code "$r")"
   r="$(req "$URL/hangar/v1/adb" "$TOKEN" POST '{"enabled":true}')"
@@ -135,7 +140,7 @@ r="$(req "$URL/hangar/v1/adb" "wrong-token" POST '{"enabled":true}')"
 assert "寫入端點 token 錯回 401"  "401" "$(code "$r")"
 r="$(req "$URL/hangar/v1/nonesuch" "$TOKEN")"
 assert "不存在的端點才是 404"    "404" "$(code "$r")"
-assert "錯誤也有 schema"         "4"   "$(q 'd["schema"]' "$(body "$r")")"
+assert "錯誤也有 schema"         "5"   "$(q 'd["schema"]' "$(body "$r")")"
 
 echo "=== A5. 沒入伍的手機 ==="
 if [ "$REAL" -eq 1 ]; then

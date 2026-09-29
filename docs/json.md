@@ -10,7 +10,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 5,
+  "schema": 6,
   "devices": [
     {
       "profile": "work",
@@ -33,7 +33,8 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "agent": {
         "reachable": true, "version": "0.1.2", "enrolled": true,
         "can": { "ring": true, "toggle_adb": true, "toggle_wifi_adb": false },
-        "adb": { "enabled": true, "wifi_enabled": null, "wifi_port": null }
+        "adb": { "enabled": true, "source": "settings",
+                 "wifi_enabled": null, "wifi_port": null }
       },
       "scrcpy_pids": [12345],
       "errors": []
@@ -48,6 +49,9 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
   連著時直接讀手機 `adb_enabled` 的結果（`--probe` 才有，問不到是 `null`）。agent
   讀的那份在某些 Android 版本上不準（Pixel 8a / Android 17 永遠讀到關閉）；而
   `adb_state: "device"` 也**不代表**偵錯開著 —— 關掉之後 5555 可能照樣連得上。
+  adb 斷掉時只剩 agent 那份；看 `agent.adb.source`：`settings` 是照讀的，
+  `agent_write` 是讀不準的機器上 agent 最後寫的，`unknown`（`enabled` 為 `null`）
+  是有人在手機上切過、agent 不知道。舊版 agent 沒有這一欄（`null`）。
 
 - **`errors` 帶 code，不只帶訊息。** 「手機重開機了」這種判斷不能只活在印給人看的
   中文句子裡，不然程式沒辦法據以決策。目前的 code：
