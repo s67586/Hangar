@@ -54,8 +54,8 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | 網頁投影 | **遠期目標**，不排進 M1–M5。投影目前維持走 CLI 的 scrcpy，網頁只負責切偵錯（見里程碑下面那段） |
 | 網段互相隔離時的跨網段 | **遠期目標**。網段之間兩個方向都不通時，只剩走網際網路；方案見「[遠期：網段完全隔離時怎麼跨](#遠期網段完全隔離時怎麼跨)」 |
 | 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 `helper/`，helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
-| 牆上的響鈴按鈕 | 已完成，跟投影同一條路：走 helper，不走 hub。**hub 維持唯讀**；M4 也沿用這個動作邊界 |
-| hub 內嵌 helper（`hangar wall`） | 整合的是 **process，不是 listener**：helper 照樣自己綁 127.0.0.1、照樣走 Origin ＋ token 那三道鎖，hub 這一邊仍然一個會動到手機的端點都沒有。多出來的只有 `GET /api/helper`，而它**只回答 loopback** —— 同事從區網開同一頁拿不到鑰匙，他那台還是得自己跑一支 helper |
+| 牆上的響鈴與切偵錯 | **改由 hub 執行**（原本走 helper，「hub 維持唯讀」那條已翻案）：每人一把 `hangar wall --grant` 發的鑰匙、每次都記進操作紀錄，裝置牆只開在 hub 那一台，別台開瀏覽器就按得動。沒有 hub 鑰匙時退回 helper。見「[動作搬到 hub](#動作搬到-hub每人一把鑰匙每次都記下來)」 |
+| hub 內嵌 helper（`hangar wall`） | 整合的是 **process，不是 listener**：helper 照樣自己綁 127.0.0.1、照樣走 Origin ＋ token 那三道鎖（hub 自己的響鈴／切偵錯端點是另一回事，走鑰匙，不經過 helper）。多出來的只有 `GET /api/helper`，而它**只回答 loopback** —— 同事從區網開同一頁拿不到鑰匙，他那台還是得自己跑一支 helper |
 
 ## 里程碑
 
@@ -118,15 +118,16 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2722` |
 | `scan --json` | schema **8** | `SCAN_SCHEMA`，`hangar:181` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:182` |
-| hub `/api/devices` | schema **9** | `API_SCHEMA`，`hub/hangar_hub.py:72` |
+| hub `/api/devices` | schema **10** | `API_SCHEMA`，`hub/hangar_hub.py:92` |
 | agent 協定 | schema **4**，版本 `0.2.0` | `agent/app/build.gradle.kts` |
-| hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、**`POST /api/refresh`**；另一個 listener（`--checkin`）只有 `POST /api/checkin` | `Handler`、`CheckinHandler` |
+| hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、`GET /api/whoami`、**`POST /api/refresh`**、**`POST /api/ring`**、**`POST /api/adb`**（後兩個要鑰匙）；另一個 listener（`--checkin`）只有 `POST /api/checkin` | `Handler`、`CheckinHandler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
 | helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
 
-`POST /api/refresh` 是 hub 目前唯一的非 GET 端點。它**不會動手機**，只是把輪詢
-提早叫醒，跑的還是同樣那兩個唯讀的 `hangar` 指令 —— 「唯讀」在這份文件裡一律
-指這個意思，不是指「只有 GET」。
+`POST /api/refresh` **不會動手機**，只是把輪詢提早叫醒，跑的還是同樣那兩個唯讀
+的 `hangar` 指令 —— 「輪詢是唯讀的」在這份文件裡一律指這個意思，不是指「只有
+GET」。會動手機的只有 `POST /api/ring` 與 `POST /api/adb`：有人按了才跑、要鑰匙、
+每次都記進 `~/.config/hangar/hub-actions.log`。
 
 ## 幾個要記住的現實限制
 
@@ -530,6 +531,9 @@ M4 要關偵錯時還有一個更實際的風險：**偵錯關掉之後，agent 
 
 ### M4 實作邊界：helper 寫入，hub 仍唯讀
 
+> **已翻案**：切偵錯與響鈴後來搬到 hub 了，見「[動作搬到 hub](#動作搬到-hub每人一把鑰匙每次都記下來)」。
+> 這一節留著，講的是當時為什麼先走 helper。
+
 M4 已按原本的安全邊界落地：`hub` 只輪詢與呈現資料，瀏覽器上的偵錯按鈕透過
 本機 `helper` 的三道鎖呼叫 `hangar adb`，再由 agent 執行真正的設定變更。這樣
 不需要在 hub 增加一個新的遠端寫入認證面，也不會讓固定輪詢程序意外改手機。
@@ -698,6 +702,38 @@ POST /hangar/v1/ring   要 token   { "seconds": 30 }
 不改任何持久狀態、會自己停、按錯了最糟就是某支手機響 30 秒。哪天真的要試
 「hub 的寫入端點與認證長什麼樣」，它是比 M4 的切偵錯好得多的白老鼠。那時候把它
 從 helper 搬到 hub 是個小改動：`hangar ring` 那一層不用動，換的只是誰去呼叫它。
+
+> **後來真的翻案了**，而且響鈴與切偵錯一起搬，見下一節。
+
+### 動作搬到 hub：每人一把鑰匙、每次都記下來
+
+起因是使用方式變了：裝置牆只跑在 hub 那一台，其他人（包括拿手機、平板的人）
+開瀏覽器就要按得動響鈴與關偵錯。走 helper 的話每一台都得裝 `hangar`、跑 helper、
+各自 `setup` 每一支手機 —— 對「按一下讓它響」來說代價完全不成比例。
+
+上面 A 案擋著的那個問題（「誰在看這一頁」）這次正面回答了，答案刻意做得很小：
+
+| | 決定 | 為什麼 |
+|---|---|---|
+| 認人 | 每人一把鑰匙：`hangar wall --grant 名字` 印出 `http://hub:8787/#key=…`，開一次就存在那個瀏覽器 | 共用密碼的話紀錄上只會寫「有人」，人走了也收不回來。`#` 後面不送到伺服器、不進瀏覽記錄 —— 跟 helper 的鑰匙同一條路 |
+| 存放 | `~/.config/hangar/hub-keys.json`（0600），**只存 sha256** | 檔案被讀走不等於鑰匙被拿走。鑰匙只在 `--grant` 那一刻印一次 |
+| 收回 | `--revoke 名字`，每個請求都重讀鑰匙檔 | 不用重開 hub |
+| 權限 | 三格：`ring`、`adb_off`、`adb_on`，預設全給，`--can` 收窄 | 三個動作風險不同：響鈴會自己停；關偵錯之後 agent 是唯一回得去的路；開偵錯等於遠端把 adb 打開。QA 常見的是只給前兩格 |
+| 紀錄 | 每次都寫一行 JSON 進 `~/.config/hangar/hub-actions.log`（誰、IP、動作、哪支、成不成）；`/api/devices` 每張卡帶 `last_action`（每種動作留最後一次） | 偵錯是長期狀態、不會自己改回去，「誰、什麼時候關的」要跟著卡片走 |
+| hub 本機 | loopback 來的不用鑰匙，記成「<主機名>（本機）」；`--no-auto-pair` 一起關掉 | 跟 `GET /api/helper` 同一個信任、同一個開關。反向代理或多人共用帳號的機器要帶 `--no-auto-pair` |
+| CSRF | 只收 `application/json`（跨來源一定會 preflight，而 hub 不回 OPTIONS）；有 Origin 的話要等於這面牆自己 | 別的網站上的 JS 送不進來 |
+| 參數 | `profile` 只收 hub 上一輪 `list` 真的有的名字；帶了序號就要對得上 | 它要被接到 `hangar` 指令列上；牆上的卡也可能是換手機之前的舊樣子 |
+| 做事的 | 仍然是 CLI：`hangar ring` / `hangar adb`，用 hub 自己的 profile 與 agent token | 跟 helper 代跑的是同一行，協定一個字都沒動 |
+| 同時按 | 同一支手機一次一個動作，第二個回 409 | |
+| 切偵錯之前 | 網頁先 `confirm()` 一次，兩個方向講不同的後果 | 沒有自動復原，按錯了不會自己好 |
+
+**沒搬的**：投影、入伍、更新 agent 仍然走 helper。投影視窗得開在看的人面前；
+入伍與更新要 adb 通到手機，那是「那台電腦」的事。沒有 hub 鑰匙（或鑰匙沒有那一格
+權限）時，響鈴與切偵錯也會退回走 helper，再不行就給複製指令的按鈕。
+
+**代價**：區網上是明文 HTTP，同網段聽得到鑰匙。測試機房大多可以接受；不能接受
+的話就把 hub 放在 Tailscale 上、或前面加一層 TLS 反向代理（`--hub https://…` 讓
+Origin 對得上，並帶 `--no-auto-pair`）。
 
 ### 牆上長什麼樣
 
@@ -1108,10 +1144,10 @@ hangar status -p <手機>          # 期望：還是 device
 web 版出來之後 CLI 是保留還是收掉、要不要支援多使用者與權限、
 RD 的電腦要直連手機還是走上面那條「hub 當 adb server」——這些都還開放。
 
-hub 目前沒有任何會動手機的端點（`POST /api/refresh` 只叫醒自己的輪詢）。M3d
-與 M4 的網頁動作都走 helper，因此不需要替 hub 增加寫入端點；helper 已沿用
-localhost、Origin、token 三道鎖。未來若要支援多使用者或把寫入權限移進 hub，仍要
-另行設計認證與授權，不把這次實作當成多使用者方案。
+hub 現在有兩個會動手機的端點（響鈴、切偵錯），認人靠每人一把鑰匙、權限只有三格
+（見「[動作搬到 hub](#動作搬到-hub每人一把鑰匙每次都記下來)」）。這**不是**完整的
+多使用者方案：沒有登入、沒有角色、沒有「誰在用哪一支」。投影與入伍要不要也搬進
+hub（例如走網頁投影，或 hub 當 adb server）還開放。
 
 agent 的端點目前定為明文 HTTP + token。要不要上 TLS、還是乾脆只在 tailnet 上
 開放，等 M3a 跑起來、知道實際的延遲與麻煩程度再決定。
@@ -1160,7 +1196,7 @@ hangar/
     ├── test_multihost.sh # 第二台電腦（--existing）
     ├── test_json.sh      # --json 輸出、錯誤 code、transport 抽象層、電量
     ├── test_scan.sh      # 區網掃描：網段、MAC、廠商、5555 探測、識別合併、--fix-ip
-    ├── test_hub.sh       # hub：合併邏輯、HTTP 端點、唯讀保證
+    ├── test_hub.sh       # hub：合併邏輯、HTTP 端點、輪詢唯讀、鑰匙與動作
     ├── test_helper.sh    # helper：三道鎖、投影起得來／起不來的回報、序號對名字
     ├── test_agent_protocol.sh  # M3 協定的一致性測試（也打得到真的手機）
     ├── test_agent_client.sh     # 電腦這一側：enroll、改問 agent、掃描探 5599

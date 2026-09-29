@@ -147,6 +147,7 @@
     <button class="refresh" id="refresh" type="button">立即更新</button>
     <span class="said" id="said"></span>
   </div>
+  <div class="helper" id="me"></div>
   <div class="helper" id="helper"></div>
   <div id="errors"></div>
   <section class="zone" id="zone-mine">
@@ -199,21 +200,21 @@
 
       <div class="help-boundary">
         <div>
-          <b>hub 只負責看</b>
-          <p>hub 不會動手機或改設定檔，也沒有這類端點。「立即更新」只是提早喚醒輪詢，仍然只跑原本兩個唯讀指令。</p>
+          <b>hub：響鈴與切偵錯</b>
+          <p>這兩顆按鈕直接由 hub 執行，用的是 hub 自己的設定，所以你這台什麼都不用裝 —— 手機或平板開這一頁也按得動。hub 要知道是誰按的：每人一把鑰匙（<code>hangar wall --grant 名字</code>），每一次都記進 hub 的操作紀錄。輪詢本身仍然只讀不寫。</p>
         </div>
         <div>
-          <b>helper 才負責操作</b>
-          <p>投影、響鈴、註冊、更新 agent 與切換偵錯，都由按按鈕這台電腦上的 helper 執行。<code>hangar wall</code> 會把 hub 與這台電腦的 helper 一起帶起來，但 helper 仍是另一個只綁 127.0.0.1 的服務。</p>
+          <b>helper：投影、註冊與更新 agent</b>
+          <p>投影視窗得開在你面前，所以這幾顆按鈕由你這台電腦上的 helper 執行。<code>hangar wall</code> 會把這台的 helper 一起帶起來，但它仍是另一個只綁 127.0.0.1 的服務。沒有 hub 鑰匙時，響鈴與切偵錯也會退回走 helper。</p>
         </div>
       </div>
 
       <div class="help-setup">
         <h3>先讓這台電腦能操作</h3>
         <ol>
-          <li>這一頁就是從這台電腦的 <code>hangar wall</code> 開出來的話，按鈕本來就是活的 —— 鑰匙由 hub 直接交給這一頁（它只回答本機）。</li>
-          <li>hub 在別台機器上時，這台要自己跑 <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次。</li>
-          <li>第一次投影某支手機前，在這台電腦跑一次 <code>hangar setup</code>；adb 授權綁定的是每台電腦自己的金鑰。</li>
+          <li>這一頁就是從這台電腦的 <code>hangar wall</code> 開出來的話，按鈕本來就是活的 —— hub 認得本機，helper 的鑰匙也由 hub 直接交給這一頁（它只回答本機）。</li>
+          <li>從別台開這一頁、只要響鈴與切偵錯：請管 hub 的人跑 <code>hangar wall --grant 你的名字</code>，用它印出的連結開一次，這個瀏覽器就記住了。</li>
+          <li>還要從別台投影：那台要自己跑 <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次；第一次投影某支手機前，也要在那台跑一次 <code>hangar setup</code>（adb 授權綁定的是每台電腦自己的金鑰）。</li>
         </ol>
       </div>
 
@@ -232,12 +233,13 @@
 
         <section class="help-card">
           <h3>響鈴</h3>
-          <p>只用來識別仍能回應的手機。agent 沒回應、尚未入伍，或舊版沒有 <code>can.ring</code> 能力時，卡片會直接說明原因，不會留下按不動的按鈕。</p>
+          <p>只用來識別仍能回應的手機。agent 沒回應、尚未入伍，或舊版沒有 <code>can.ring</code> 能力時，卡片會直接說明原因，不會留下按不動的按鈕。有 hub 鑰匙就由 hub 執行，沒有就走這台的 helper。</p>
         </section>
 
         <section class="help-card">
           <h3>偵錯</h3>
-          <p>這是全手動狀態：按了才改變，不會定時自動恢復，避免在 QA 長測途中偷改測試條件。</p>
+          <p>這是全手動狀態：按了才改變，不會定時自動恢復，避免在 QA 長測途中偷改測試條件。按下去會先問一次，卡片上會記著最後是誰、什麼時候切的。</p>
+          <p>鑰匙可以只給部分權限（例如 QA 只能關、不能開）：<code>hangar wall --grant qa --can ring,adb_off</code>。</p>
           <p>偵錯關閉時，手機裡的 agent 是唯一能遠端重新開啟的路；agent 若失效，就必須有人拿著手機處理。</p>
         </section>
       </div>
@@ -369,10 +371,11 @@ function adoptKeyFromHash() {
   history.replaceState(null, "", location.pathname + location.search);
   return true;
 }
-adoptKeyFromHash();
+// 網址 # 後面的鑰匙（hub 的與 helper 的）在最底下、所有宣告都跑完之後才收：
+// HUB_KEY 是後面才宣告的 const，太早叫會撞上 TDZ，而那個例外會被 try 吞掉
 // 牆已經開著的時候才貼上那個連結，是不會重新載入的（只換 # 的導覽不會跑 script）
 // —— 那是最容易發生的用法，所以這裡要接住
-window.addEventListener("hashchange", () => { if (adoptKeyFromHash()) helperTick(); });
+window.addEventListener("hashchange", () => { if (adoptHash()) helperTick(); });
 
 // status: none（沒設定過）/ ok / nokey（鑰匙不對）/ down（叫不動）
 let helper = { status: "none" };
@@ -414,8 +417,9 @@ function helperLine() {
   const el = document.getElementById("helper");
   if (helper.status === "ok") {
     el.className = "helper";
+    const what = hubMe.status === "ok" ? "投影與註冊" : "投影、響鈴與偵錯按鈕";
     el.innerHTML = `這台電腦：<b>${esc(helper.host || "?")}</b>` +
-      `　投影、響鈴與偵錯按鈕會在這台執行（它看得到 ${helper.profiles.length} 支設定過的手機）`;
+      `　${what}會在這台執行（它看得到 ${helper.profiles.length} 支設定過的手機）`;
   } else if (helper.status === "nokey") {
     el.className = "helper off";
     el.innerHTML = "這台電腦的 helper 在跑，但這一頁沒有它的鑰匙 —— " +
@@ -431,13 +435,113 @@ function helperLine() {
       (autoHint ? `　—— ${esc(autoHint)}` : "");
   } else {
     el.className = "helper";
-    el.innerHTML = "要按投影、響鈴或偵錯按鈕，這台電腦得先跑一支 helper：" +
+    el.innerHTML = (hubMe.status === "ok" ? "要從這裡投影" : "要按投影、響鈴或偵錯按鈕") +
+      "，這台電腦得先跑一支 helper：" +
       `<code>./helper/hangar_helper.py --hub ${esc(location.origin)}</code>` +
       "，然後照它印出來的連結進來一次。" +
       (autoWhy === "remote" ? "" :
         "　（hub 跟你在同一台的話，改用 <code>hangar wall</code> 開，" +
         "鑰匙會自動給這一頁。）");
   }
+}
+
+// ---- 你在這面牆上是誰（hub 的鑰匙）-----------------------------------------
+//
+// 響鈴與切偵錯可以直接叫 hub：用的是 hub 自己的 profile 與 agent token，按的人
+// 那台電腦上什麼都不用有（不用 setup、不用 helper、甚至不用是電腦）。hub 要
+// 知道「誰按的」，所以要一把 `hangar wall --grant` 發的鑰匙。它跟 helper 的鑰匙
+// 一樣從 # 進來（# 後面不會送到伺服器、也不進瀏覽記錄），存在這台瀏覽器。
+// 在 hub 那台自己開的話不用鑰匙：hub 認得 loopback。
+//
+// 有 hub 鑰匙就走 hub，沒有才退回 helper —— 走 hub 的每一次都有紀錄。
+const HUB_KEY = "hangar.hubkey";
+// status: none（沒鑰匙）/ ok / bad（鑰匙 hub 不認得了）/ old（舊版 hub）
+let hubMe = { status: "none" };
+
+function hubKey() {
+  try { return localStorage.getItem(HUB_KEY) || ""; } catch (e) { return ""; }
+}
+
+function hubHeaders() {
+  const k = hubKey();
+  return k ? { "Content-Type": "application/json", Authorization: "Bearer " + k }
+           : { "Content-Type": "application/json" };
+}
+
+function adoptHubKeyFromHash() {
+  const k = new URLSearchParams(location.hash.slice(1)).get("key");
+  if (!k) return false;
+  try { localStorage.setItem(HUB_KEY, k); } catch (e) { /* 記不住就記不住 */ }
+  return true;
+}
+
+async function whoami() {
+  try {
+    const r = await fetch("/api/whoami", { headers: hubHeaders(), cache: "no-store" });
+    if (r.status === 404) { hubMe = { status: "old" }; return; }
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { hubMe = { status: "ok", name: j.name, can: j.can || [], via: j.via }; return; }
+    hubMe = { status: hubKey() ? "bad" : "none", reason: j.reason || "", hint: j.hint || "" };
+  } catch (e) {
+    // hub 叫不動是整面牆的事，底下的輪詢會顯示；這裡維持上一次知道的樣子
+  }
+}
+
+function hubCan(cap) {
+  return hubMe.status === "ok" && (hubMe.can || []).includes(cap);
+}
+
+const CAP_ZH = { ring: "響鈴", adb_off: "關偵錯", adb_on: "開偵錯" };
+
+function meLine() {
+  const el = document.getElementById("me");
+  if (hubMe.status === "ok") {
+    el.className = "helper";
+    const can = (hubMe.can || []).map(c => CAP_ZH[c] || c).join("、") || "（沒有）";
+    el.innerHTML = hubMe.via === "loopback"
+      ? `這一頁開在 hub 本機：響鈴與偵錯按鈕直接由 hub 執行`
+      : `你在這面牆上是 <b>${esc(hubMe.name)}</b>　響鈴與偵錯按鈕直接由 hub 執行（能按：${esc(can)}）`;
+  } else if (hubMe.status === "bad") {
+    el.className = "helper off";
+    el.innerHTML = `hub 不認得這個瀏覽器存的鑰匙了（可能被收回）—— 請管 hub 的人重發：` +
+      `<code>hangar wall --grant 你的名字</code>`;
+  } else if (hubMe.status === "none" && helper.status !== "ok") {
+    el.className = "helper";
+    el.innerHTML = "響鈴與切偵錯可以直接由 hub 執行，不必在這台裝任何東西：請管 hub 的人跑 " +
+      "<code>hangar wall --grant 你的名字</code>，用它印出來的連結進來一次。";
+  } else {
+    el.className = "helper"; el.innerHTML = "";
+  }
+}
+
+// 這個動作走哪一條路："hub" / "helper" / null（都沒有）
+function route(cap) {
+  if (hubCan(cap)) return "hub";
+  return helperCfg() ? "helper" : null;
+}
+
+// 走 hub 或 helper 送出一個動作 → 回應的 JSON。叫不動會丟例外
+async function act(via, kind, d, extra) {
+  const body = JSON.stringify({ profile: d.name, serial: d.device_serial || "", ...extra });
+  let r;
+  if (via === "hub") {
+    r = await fetch(`/api/${kind}`, { method: "POST", headers: hubHeaders(), body });
+    // 鑰匙剛被收回：下一輪按鈕就該退回 helper 或複製指令，不要等 15 秒
+    if (r.status === 401) whoami().then(() => { meLine(); paint(); });
+  } else {
+    const cfg = helperCfg();
+    r = await fetch(`http://127.0.0.1:${cfg.port}/${kind}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + cfg.token },
+      body,
+    });
+  }
+  return r.json().catch(() => ({}));
+}
+
+function unreachable(via) {
+  return via === "hub" ? "叫不動 hub（網路斷了，或 hub 沒在跑）"
+                       : "叫不動這台電腦的 helper（它還在跑嗎？）";
 }
 
 // 每張卡按鈕底下那句話。key → { busy, action, msg, bad }
@@ -547,9 +651,11 @@ function ringRow(d) {
   const reason = agentReason(d, "ring");
   const st = says.get(d.key) || {};
   if (reason) return `<span class="action-note bad">響鈴：${esc(reason)}</span>`;
-  if (helper.status !== "ok") {
+  if (!hubCan("ring") && helper.status !== "ok") {
     return `<button class="ring" type="button" data-copy-ring="${esc(d.key)}">複製響鈴指令</button>
-      <span class="action-note">響鈴需要這台電腦的 helper（目前沒有連上）</span>`;
+      <span class="action-note">${hubMe.status === "ok"
+        ? "你的鑰匙沒有響鈴的權限，這台電腦的 helper 也沒有連上"
+        : "響鈴需要 hub 的鑰匙或這台電腦的 helper（目前都沒有）"}</span>`;
   }
   const until = ringings.get(d.key);
   if (until && secondsLeft(until) > 0) {
@@ -568,9 +674,12 @@ function adbRow(d) {
   if (!adb || typeof adb.enabled !== "boolean")
     return `<span class="action-note bad">偵錯：拿不到目前狀態，請先按「立即更新」</span>`;
   const enabled = adb.enabled;
-  if (helper.status !== "ok") {
+  const cap = enabled ? "adb_off" : "adb_on";
+  if (!hubCan(cap) && helper.status !== "ok") {
     return `<button class="adb" type="button" data-copy-adb="${esc(d.key)}">複製偵錯指令</button>
-      <span class="action-note">偵錯操作需要這台電腦的 helper（目前沒有連上）</span>`;
+      <span class="action-note">${hubMe.status === "ok"
+        ? `你的鑰匙沒有「${CAP_ZH[cap]}」的權限，這台電腦的 helper 也沒有連上`
+        : "偵錯操作需要 hub 的鑰匙或這台電腦的 helper（目前都沒有）"}</span>`;
   }
   if (enabled) {
     return `<button class="adb" type="button" data-adb="off" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>關閉偵錯</button>`;
@@ -747,8 +856,8 @@ async function cast(key) {
 
 async function ring(key, seconds = 30) {
   const d = byKey.get(key);
-  const cfg = helperCfg();
-  if (!d || !cfg) return;
+  const via = route("ring");
+  if (!d || !via) return;
   const capability = agentReason(d, "ring");
   if (capability) {
     says.set(key, { bad: true, msg: `不能響鈴：${capability}` });
@@ -760,13 +869,7 @@ async function ring(key, seconds = 30) {
   paint();
   let st;
   try {
-    const r = await fetch(`http://127.0.0.1:${cfg.port}/ring`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json",
-                 Authorization: "Bearer " + cfg.token },
-      body: JSON.stringify({ profile: d.name, serial: d.device_serial || "", seconds }),
-    });
-    const j = await r.json().catch(() => ({}));
+    const j = await act(via, "ring", d, { seconds });
     if (j.ok) {
       const actual = Number.isInteger(j.seconds) ? j.seconds : seconds;
       if (actual > 0) ringings.set(key, Date.now() + actual * 1000);
@@ -777,7 +880,7 @@ async function ring(key, seconds = 30) {
                               .filter(Boolean).join(" —— ") };
     }
   } catch (e) {
-    st = { bad: true, msg: "叫不動這台電腦的 helper（它還在跑嗎？）" };
+    st = { bad: true, msg: unreachable(via) };
   }
   says.set(key, st);
   paint();
@@ -786,36 +889,37 @@ async function ring(key, seconds = 30) {
 
 async function toggleAdb(key, enabled) {
   const d = byKey.get(key);
-  const cfg = helperCfg();
-  if (!d || !cfg) return;
+  const via = route(enabled ? "adb_on" : "adb_off");
+  if (!d || !via) return;
   const capability = agentReason(d, "toggle_adb");
   if (capability || !d.agent.adb || typeof d.agent.adb.enabled !== "boolean") {
     says.set(key, { bad: true, msg: `不能切偵錯：${capability || "拿不到目前狀態"}` });
     paint();
     return;
   }
+  // 偵錯是長期狀態，而且沒有任何東西會把它改回去 —— 按下去之前問一次。
+  // 兩個方向要提醒的事不一樣，所以話分開講。
+  const warn = enabled
+    ? "開啟後，授權過的電腦就能用 adb 碰這支手機（build、安裝、投影）。"
+    : "關閉後不會自己開回來。之後只能靠手機上的 agent 開回來 —— agent 若失聯，就要有人到手機旁邊處理。";
+  if (!window.confirm(`${enabled ? "開啟" : "關閉"} ${d.name} 的偵錯？\n\n${warn}`)) return;
   const mine = { busy: true, action: "adb" };
   says.set(key, mine);
   paint();
   let st;
   try {
-    const body = { profile: d.name, serial: d.device_serial || "", enabled };
-    const r = await fetch(`http://127.0.0.1:${cfg.port}/adb`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json",
-                 Authorization: "Bearer " + cfg.token },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json().catch(() => ({}));
+    const j = await act(via, "adb", d, { enabled });
     if (j.ok) {
       d.agent.adb = { ...(d.agent.adb || {}), enabled: j.enabled === true };
       st = { msg: j.enabled === false ? "偵錯已關閉（不會自己開回來）" : "偵錯已開啟" };
+      // 走 hub 的話 hub 已經記下是誰切的，重問一次卡片上就有
+      if (via === "hub") setTimeout(tick, 500);
     } else {
       st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
                               .filter(Boolean).join(" —— ") };
     }
   } catch (e) {
-    st = { bad: true, msg: "叫不動這台電腦的 helper（它還在跑嗎？）" };
+    st = { bad: true, msg: unreachable(via) };
   }
   says.set(key, st);
   paint();
@@ -1006,11 +1110,17 @@ function card(d) {
     const enrollmentText = d.agent.enrolled === true ? "（已入伍）"
       : d.agent.enrolled === false ? "（尚未入伍）" : "（入伍狀態未知）";
     rows += row("agent", agentText + enrollmentText);
+    // 偵錯不會自己改回去，所以「是誰、什麼時候切的」跟著狀態一起講。
+    // 只在 hub 記得的那一次跟現在的狀態一致時才講 —— 之後有人用 CLI 或 helper
+    // 切回去的話，那一筆就不是現在這個狀態的來由了
+    const la = d.last_action && d.last_action.adb;
+    const by = (on) => la && la.ok && la.enabled === on ? `（${la.who}，${ago(la.at)}）` : "";
     if (d.agent.adb && typeof d.agent.adb.enabled === "boolean") {
-      rows += row("偵錯", d.agent.adb.enabled ? "開啟" : "關閉");
+      rows += row("偵錯", (d.agent.adb.enabled ? "開啟" : "關閉") + by(d.agent.adb.enabled));
     } else if (d.stranded) {
       // agent 叫不動的那一輪問不到，這是 hub 記著的最後一次
-      rows += row("偵錯", `關閉（最後一次看到是 ${ago(d.stranded.adb_seen_off_at)}）`);
+      rows += row("偵錯", `關閉（最後一次看到是 ${ago(d.stranded.adb_seen_off_at)}）` +
+        (la && la.ok && la.enabled === false ? `　由 ${la.who} 關的` : ""));
     }
   }
 
@@ -1162,6 +1272,7 @@ function paint() {
   const mine = ds.filter(d => d.name);
   const others = ds.filter(d => !d.name);
   byKey = new Map(ds.map(d => [d.key, d]));
+  meLine();
   helperLine();
 
   document.getElementById("h-mine").innerHTML =
@@ -1224,10 +1335,20 @@ async function helperTick() {
   // 還沒問過，或現在沒有可用的 helper 時，去問一次自動配對。同源的一個 GET，
   // 便宜到可以每一輪都問 —— 換來的是「後來才開 hangar wall」不必重新整理頁面。
   if (autoWhy === null || helper.status !== "ok") await autoPair();
-  await helperPing();
+  await Promise.all([helperPing(), whoami()]);
+  meLine();
   helperLine();
   paint();
 }
+
+function adoptHash() {
+  // hub 的鑰匙先收（它不清網址列），helper 那一份再收（它會清）
+  const hub = adoptHubKeyFromHash();
+  const helperKey = adoptKeyFromHash();
+  if (hub && !helperKey) history.replaceState(null, "", location.pathname + location.search);
+  return hub || helperKey;
+}
+adoptHash();
 
 tick();
 helperTick();

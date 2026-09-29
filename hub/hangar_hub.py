@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Hangar hub —— 常駐服務 + 唯讀裝置牆。
+"""Hangar hub —— 常駐服務 + 裝置牆。
 
 跑在一台跟測試機同一個區網的常駐機器上，定期問 hangar 兩件事：
 
     hangar list --json --probe   已經設定過的手機：adb 狀態、機型、電量
     hangar scan --json           區網上看得到的所有東西：IP、MAC、廠商、5555
 
-然後把兩份資料合成一張裝置牆。**這一版是唯讀的**：沒有任何會改到手機或設定檔
-的端點，輪詢也不會帶 --fix-ip（那會寫 profile，固定輪詢的程式不該無條件做）。
+然後把兩份資料合成一張裝置牆。**輪詢是唯讀的**：不帶 --fix-ip（那會寫 profile，
+固定輪詢的程式不該無條件做），也不會自己去動手機。
+
+會動手機的只有兩個**有人按了才跑**的動作：響鈴與切偵錯（`POST /api/ring`、
+`POST /api/adb`）。它們要一把**每人一把**的鑰匙（`--grant <名字>` 發），每一次
+都記進操作紀錄 —— 這樣裝置牆只開在 hub 這一台，別台電腦、手機、平板開瀏覽器
+就按得動，不必各自跑 helper、各自 setup。投影不在這裡：視窗得開在看的人面前，
+那仍然是 helper 的事。
 
 只用標準函式庫，理由跟 hangar 自己是一支無相依 bash script 一樣：常駐機器上
 不該為了看一頁網頁而先裝一套生態系。
@@ -20,7 +26,10 @@
     GET  /                裝置牆（HTML）
     GET  /api/devices     合併後的裝置清單（JSON）
     GET  /api/helper      內嵌的 helper 在哪、鑰匙是什麼（**只回答 loopback**）
+    GET  /api/whoami      這把鑰匙是誰、能按哪些動作
     POST /api/refresh     現在就去問一次（?what=list|scan|all）
+    POST /api/ring        讓一支手機響鈴（要鑰匙）
+    POST /api/adb         開／關偵錯（要鑰匙；全手動，不會自己改回去）
     GET  /healthz         還活著嗎
 
 另外一個**選擇性**的 listener（`--checkin HOST:PORT`，預設不開）：
@@ -32,18 +41,27 @@
 而且是另一個埠 —— 讓手機回報不等於把整面牆開給同網段的人看。
 
 預設會把 helper 一起帶起來（`--no-helper` 關掉），但那是**另一個 listener**，
-而且照樣只綁 127.0.0.1：hub 這一邊仍然一個會動到手機的端點都沒有。
+而且照樣只綁 127.0.0.1：投影與入伍仍然走它。
+
+    ./hub/hangar_hub.py --grant alice               # 發一把鑰匙，印出帶鑰匙的連結
+    ./hub/hangar_hub.py --grant qa --can ring,adb_off
+    ./hub/hangar_hub.py --keys                      # 誰有鑰匙
+    ./hub/hangar_hub.py --revoke alice              # 收回（不用重開 hub）
 """
 
 import argparse
 import errno
+import hashlib
 import hmac
 import importlib.util
 import ipaddress
 import json
 import os
+import re
+import secrets
 import socket
 import socketserver
+import stat
 import subprocess
 import sys
 import threading
@@ -69,7 +87,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
-API_SCHEMA = 9
+# 10：每張卡多一個 last_action（從牆上按的動作，每種留最後一次：
+#     {"adb": {at, who, ok, message, enabled}, "ring": {…, seconds}}，沒按過是 null）。
+API_SCHEMA = 10
 
 # agent 主動回報（check-in）。
 #
@@ -86,18 +106,35 @@ TOKENS_REFRESH_S = 10.0
 # 會給出不同的答案。
 BATTERY_LOW = 20
 
+# 牆上的動作（響鈴、切偵錯）。
+#
+# 鑰匙檔跟 profile 放在同一個設定目錄：它跟 profile 一樣是「這台 hub 的東西」。
+# 檔案裡只存 sha256，不存鑰匙本身 —— 鑰匙只在 --grant 的那一刻印一次。
+CONFIG_DIR = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "hangar")
+KEYS_FILE = os.path.join(CONFIG_DIR, "hub-keys.json")
+ACTION_LOG = os.path.join(CONFIG_DIR, "hub-actions.log")
+# 能力分三格，因為三個動作的風險不一樣：響鈴會自己停；關偵錯之後 agent 是唯一
+# 回得去的路；開偵錯等於遠端把 adb 打開。預設三格都給，要收窄用 --can。
+CAPS = ("ring", "adb_off", "adb_on")
+# 名字會印在牆上、寫進紀錄，也會出現在 --revoke 的指令列上
+KEY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+# 按鈕是有人在等的：一次響鈴／切偵錯跑超過這麼久就當失敗
+ACTION_TIMEOUT = 20.0
+ACTION_MAX_BODY = 4096
+
 
 # ----------------------------------------------------------- 內嵌 helper ----
 #
-# 裝置牆上的動作按鈕（投影、響鈴、切偵錯、入伍）從來不是 hub 在做 —— 那些事得
-# 發生在**按按鈕的那台電腦**上，所以做事的一直是 helper。但最常見的情形是 hub
-# 跟 helper 在同一台（自己的筆電），那時候「兩個 process」只剩成本：兩個終端機、
+# 裝置牆上的投影與入伍按鈕不是 hub 在做 —— 那些事得發生在**按按鈕的那台電腦**
+# 上，所以做事的是 helper（響鈴與切偵錯後來搬到 hub 了，見「動作」那一段）。
+# 但最常見的情形是 hub 跟 helper 在同一台（自己的筆電），那時候「兩個 process」只剩成本：兩個終端機、
 # --hub 要跟網址列一字不差、還要去開那個帶 token 的連結。
 #
 # 所以這裡把 helper 帶進同一個 process —— 但**只是同一個 process，不是同一個
-# listener**。helper 照樣自己綁 127.0.0.1，照樣走它那三道鎖，hub 這一邊還是一個
-# 會動到手機的端點都沒有。要拆開跑（hub 在角落常駐機、每人一支 helper）也完全
-# 沒變：helper/hangar_helper.py 一行都沒動。
+# listener**。helper 照樣自己綁 127.0.0.1，照樣走它那三道鎖；helper 的端點不會
+# 出現在 hub 上（hub 自己的響鈴／切偵錯走鑰匙，見 Handler._action）。要拆開跑
+# （hub 在角落常駐機、每人一支 helper）也完全沒變：helper/hangar_helper.py 一行都沒動。
 
 HELPER_PATH = os.path.join(HERE, "..", "helper", "hangar_helper.py")
 
@@ -278,6 +315,188 @@ def run_hangar(hangar, args, timeout):
         return None, "hangar %s 的輸出不是 JSON：%s" % (" ".join(args), e)
 
 
+# ------------------------------------------------------------------ 鑰匙 ----
+#
+# 裝置牆開給同事之後，「誰在按」這題就躲不掉了。答案刻意做得很小：
+#
+#   每人一把    共用一把密碼的話，紀錄上只會寫「有人」，人走了也收不回來
+#   只存雜湊    鑰匙檔被讀走不等於鑰匙被拿走
+#   每次都重讀  --revoke 之後不用重開 hub 就生效
+#
+# 鑰匙走 Authorization 標頭，瀏覽器那邊存在 localStorage。區網上是明文 HTTP，
+# 同網段聽得到 —— 這是選的代價，文件裡要講。
+
+def _key_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def load_keys(path):
+    """讀鑰匙檔 → [{name, sha256, can, created}]。沒有檔案就是沒有人。
+
+    讀壞了（半寫的檔、手改壞）回空的：寧可所有人都按不動，也不要猜。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for k in (data or {}).get("keys", []) if isinstance(data, dict) else []:
+        if (isinstance(k, dict) and isinstance(k.get("name"), str)
+                and isinstance(k.get("sha256"), str)):
+            can = [c for c in (k.get("can") or []) if c in CAPS]
+            out.append({"name": k["name"], "sha256": k["sha256"], "can": can,
+                        "created": k.get("created")})
+    return out
+
+
+def save_keys(path, keys):
+    """整份寫回去：先寫暫存檔（0600）再換名字，不會留下寫到一半的檔。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"schema": 1, "keys": keys}, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def grant_key(path, name, can):
+    """發一把新鑰匙 → 鑰匙本身。同名的舊鑰匙會被換掉（等於重發）。"""
+    token = secrets.token_hex(16)
+    keys = [k for k in load_keys(path) if k["name"] != name]
+    keys.append({"name": name, "sha256": _key_hash(token), "can": list(can),
+                 "created": int(time.time())})
+    save_keys(path, keys)
+    return token
+
+
+def revoke_key(path, name):
+    keys = load_keys(path)
+    left = [k for k in keys if k["name"] != name]
+    if len(left) == len(keys):
+        return False
+    save_keys(path, left)
+    return True
+
+
+def find_key(path, token):
+    """這把鑰匙是誰的 → 那一筆，或 None。"""
+    if not token:
+        return None
+    want = _key_hash(token)
+    for k in load_keys(path):
+        if hmac.compare_digest(k["sha256"], want):
+            return k
+    return None
+
+
+def parse_caps(v):
+    """--can ring,adb_off → ("ring", "adb_off")。all 是三格全給。"""
+    if v.strip() == "all":
+        return CAPS
+    out = []
+    for c in v.replace("-", "_").split(","):
+        c = c.strip()
+        if not c:
+            continue
+        if c not in CAPS:
+            raise ValueError(c)
+        if c not in out:
+            out.append(c)
+    if not out:
+        raise ValueError(v)
+    return tuple(out)
+
+
+# ------------------------------------------------------------------ 動作 ----
+#
+# 做事的仍然是 CLI：`hangar ring` / `hangar adb`，跟 helper 代跑的是同一行。
+# hub 這裡只多了三件事：誰按的（鑰匙）、記下來（紀錄）、同一支不要同時被按兩次。
+#
+# 用的是 **hub 自己**的 profile 與 agent token。這正是把動作搬到 hub 的理由：
+# 按的人那台電腦上什麼都不用有 —— 不用 setup、不用 helper、甚至不用是電腦。
+
+TIDY_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# hangar 印給人看的行首記號（err / warn / info / ok）
+TIDY_MARKER = re.compile(r"^\s*(?:xx|!!|==>|ok)\s+")
+
+
+def tidy(text, keep=4):
+    """把 hangar 的輸出整理成能放上網頁的幾行（跟 helper 那一份同一個規矩）。"""
+    lines = []
+    for raw in (text or "").splitlines():
+        line = TIDY_MARKER.sub("", TIDY_ANSI.sub("", raw)).strip()
+        if line:
+            lines.append(line)
+    return lines[-keep:]
+
+
+def run_action(hangar, args, profile, timeout):
+    """跑一次 `hangar <args> -p <profile>` → (成功嗎, 訊息, 細節幾行)。"""
+    try:
+        p = subprocess.run([hangar] + args + ["-p", profile],
+                           stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, errors="replace", timeout=timeout)
+    except FileNotFoundError:
+        return False, "找不到 hangar：%s" % hangar, []
+    except subprocess.TimeoutExpired:
+        return False, "動作逾時（超過 %g 秒）" % timeout, []
+    except OSError as e:
+        return False, "跑不起來 hangar：%s" % e, []
+    detail = tidy((p.stdout or "") + "\n" + (p.stderr or ""), keep=8)
+    if p.returncode == 0:
+        return True, detail[-1] if detail else "完成", detail
+    return False, (detail[-1] if detail
+                   else "失敗（hangar 離開碼 %d）" % p.returncode), detail
+
+
+class Actions:
+    """牆上按下去的那些動作：同一支手機一次一個、每次都記下來。"""
+
+    def __init__(self, hangar, log_path, timeout=ACTION_TIMEOUT):
+        self.hangar = hangar
+        self.log_path = log_path
+        self.timeout = timeout
+        self._lock = threading.Lock()
+        self._busy = set()
+        # profile → {動作 → 最後一次的 {at, who, ok, message, …}}。按動作分開
+        # 記：後來按的一次響鈴不該把「偵錯是誰關的」蓋掉。只放記憶體；完整的
+        # 歷史在紀錄檔裡
+        self.last = {}
+
+    def claim(self, profile):
+        with self._lock:
+            if profile in self._busy:
+                return False
+            self._busy.add(profile)
+            return True
+
+    def release(self, profile):
+        with self._lock:
+            self._busy.discard(profile)
+
+    def record(self, entry):
+        """記一筆。寫不進紀錄檔不擋動作 —— 但要在 hub 的視窗裡講。"""
+        with self._lock:
+            self.last.setdefault(entry["profile"], {})[entry["action"]] = {
+                k: entry[k] for k in ("at", "who", "ok", "message", "seconds", "enabled")
+                if k in entry}
+        if not self.log_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as e:
+            print("寫不進操作紀錄 %s：%s" % (self.log_path, e),
+                  file=sys.stderr, flush=True)
+
+    def snapshot(self):
+        with self._lock:
+            return {p: {a: dict(e) for a, e in v.items()} for p, v in self.last.items()}
+
+
 # ------------------------------------------------------------------ 合併 ----
 
 def _battery(b):
@@ -331,7 +550,7 @@ def _index(entry, by_profile, by_serial, by_mac):
 
 
 def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
-          adb_seen=None):
+          adb_seen=None, actions=None):
     """把 list、scan、usb 三份資料合成一張裝置牆。
 
     識別碼的優先順序跟 hangar scan 那一層同一套：DEVICE_SERIAL > MAC > IP。
@@ -353,6 +572,9 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
     adb_seen 是 State 記下的「每支手機最後一次看到的偵錯開關」（序號 →
     {enabled, at}）。agent 叫不動的那一輪，list 就不會帶 agent.adb，只有靠它
     才知道這支是不是「偵錯關著又沒人叫得動」—— 見 _stranded()。
+
+    actions 是 Actions.snapshot()（profile → 每種動作最後一次）。偵錯是
+    長期狀態、不會自己改回去，所以「是誰、什麼時候關的」要跟著卡片走。
     """
     devices = []
     by_profile = {}
@@ -589,6 +811,7 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
         d.setdefault("routed", False)
         d.setdefault("checkin", None)
         d["stranded"] = _stranded(d, adb_seen or {})
+        d["last_action"] = (actions or {}).get(d["name"]) if d.get("name") else None
 
     # 排序：要注意的排前面（偵錯關著又叫不動 > 電量低 > 設定過的 > 掃到的），
     # 同類再按名稱／IP
@@ -698,6 +921,8 @@ class State:
         # 每支手機最後一次看到的偵錯開關：序號 → {enabled, at}。只放記憶體 ——
         # hub 重開之後，要等 agent 再答一次話才知道
         self.adb_seen = {}
+        # 牆上的動作（main() 會塞進來）。只拿來把「最後一次按了什麼」端上牆
+        self.actions = None
         # 驗 check-in 用的 token 表：序號 → (profile, token)。由 hangar agent-tokens 來
         self.hangar = None
         self.tokens = {}
@@ -797,10 +1022,30 @@ class State:
                 self.adb_seen[serial] = {"enabled": enabled, "at": now}
         return 200, {"ok": True, "next_s": CHECKIN_NEXT_S}
 
+    def profile(self, name):
+        """hub 這台上叫這個名字的 profile（上一輪 list 的那一筆），沒有就 None。
+
+        動作只准打在這一份清單裡的名字上：它是要被接到 hangar 指令列上的字串，
+        不能讓瀏覽器送什麼就跑什麼。
+        """
+        with self._lock:
+            for d in (self.list_data or {}).get("devices", []):
+                if d.get("profile") == name:
+                    return dict(d)
+        return None
+
+    def saw_adb(self, serial, enabled):
+        """剛從牆上切完偵錯：不用等下一輪 list，牆上馬上就該是新的樣子。"""
+        if not serial:
+            return
+        with self._lock:
+            self.adb_seen[serial] = {"enabled": enabled, "at": time.time()}
+
     def snapshot(self):
         with self._lock:
             devices = merge(self.list_data, self.scan_data, self.usb_data,
-                            self.checkins, adb_seen=self.adb_seen)
+                            self.checkins, adb_seen=self.adb_seen,
+                            actions=self.actions.snapshot() if self.actions else None)
             errors = [{"source": k, "message": v} for k, v in self.errors.items()]
             # hangar 自己回報的錯誤（掃不動、缺工具…）也一起端上去
             for src, data in (("list", self.list_data), ("scan", self.scan_data),
@@ -890,6 +1135,13 @@ class Handler(BaseHTTPRequestHandler):
     helper_token = None
     helper_note = "這個 hub 沒有內嵌 helper"
     helper_hint = ""
+    # 牆上的動作。keys_file 每次都重讀（--revoke 馬上生效）；trust_loopback 是
+    # 「在 hub 這台自己開的那一頁不用鑰匙」—— 跟 /api/helper 同一個信任、同一個
+    # 開關（--no-auto-pair 一起關掉）
+    actions = None
+    keys_file = KEYS_FILE
+    trust_loopback = True
+    extra_origins = ()
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -899,6 +1151,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.state.snapshot())
         if path == "/api/helper":
             return self._helper_info()
+        if path == "/api/whoami":
+            return self._whoami()
         if path == "/healthz":
             return self._json({"ok": True})
         # 靜態檔只開 static/ 底下的，而且不准往上跳
@@ -912,6 +1166,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path, _, query = self.path.partition("?")
+        if path in ("/api/ring", "/api/adb"):
+            return self._action(path[len("/api/"):])
         if path != "/api/refresh":
             return self.send_error(404)
         want = "all"
@@ -976,6 +1232,155 @@ class Handler(BaseHTTPRequestHandler):
                                     "hint": self.helper_hint})
         return self._json({"ok": True, "port": self.helper_port,
                            "token": self.helper_token})
+
+    # ---- 牆上的動作 ----
+
+    def _actor(self):
+        """按按鈕的是誰 → {name, can, via}，認不出來就 None。
+
+        Bearer 鑰匙優先：就算在 hub 這台上，帶了鑰匙就記那把鑰匙的名字。
+        """
+        auth = self.headers.get("Authorization") or ""
+        token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        if token:
+            k = find_key(self.keys_file, token)
+            if k is None:
+                return None
+            return {"name": k["name"], "can": list(k["can"]), "via": "key"}
+        if self.trust_loopback and self._is_loopback():
+            return {"name": "%s（本機）" % hostname(), "can": list(CAPS),
+                    "via": "loopback"}
+        return None
+
+    def _origin_ok(self):
+        """從瀏覽器來的寫入，只接受這面牆自己那一頁。
+
+        Origin 是瀏覽器填的，別的網站上的 JS 偽造不了；它要等於這個請求自己打
+        的那個位址（Host），或是 --hub 明講過的（反向代理）。沒帶 Origin 的是
+        curl 之類，不歸瀏覽器的規則管 —— 那種靠鑰匙擋。
+        """
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        host = self.headers.get("Host") or ""
+        return origin.lower() in (("http://" + host).lower(),) + tuple(self.extra_origins)
+
+    def _whoami(self):
+        who = self._actor()
+        if who is None:
+            has_key = bool(self.headers.get("Authorization"))
+            return self._json(401, {
+                "ok": False,
+                "reason": "這把鑰匙不認得（可能被收回了）" if has_key
+                          else "這一頁沒有鑰匙，響鈴與切偵錯按不動",
+                "hint": "請管 hub 的人跑 hangar wall --grant <你的名字>，"
+                        "用它印出來的連結進來一次"})
+        return self._json({"ok": True, "name": who["name"], "can": who["can"],
+                           "via": who["via"]})
+
+    def _action(self, what):
+        """POST /api/ring 或 /api/adb。"""
+        if not self._origin_ok():
+            return self._json(403, {"ok": False,
+                                    "reason": "這個請求不是從這面牆送出來的"})
+        who = self._actor()
+        if who is None:
+            return self._json(401, {
+                "ok": False, "reason": "沒有鑰匙，或鑰匙已經被收回",
+                "hint": "請管 hub 的人跑 hangar wall --grant <你的名字>"})
+        # 只收 JSON：跨來源的 JSON POST 一定會先被瀏覽器 preflight，而這裡不回
+        # OPTIONS —— 別的網站就算拿得到鑰匙也送不進來
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._json(415, {"ok": False, "reason": "body 要是 application/json"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > ACTION_MAX_BODY:
+            return self._json(400, {"ok": False, "reason": "body 太大或 Content-Length 不合法"})
+        try:
+            body = json.loads(self.rfile.read(n).decode("utf-8") or "{}") if n else {}
+        except (ValueError, UnicodeDecodeError):
+            return self._json(400, {"ok": False, "reason": "body 不是 JSON"})
+        if not isinstance(body, dict):
+            return self._json(400, {"ok": False, "reason": "body 必須是 JSON 物件"})
+
+        name = body.get("profile")
+        if not isinstance(name, str) or not name.strip():
+            return self._json(400, {"ok": False, "reason": "要給 profile"})
+        name = name.strip()
+
+        if what == "ring":
+            seconds = body.get("seconds", 30)
+            if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 0:
+                return self._json(400, {"ok": False, "reason": "seconds 必須是非負整數"})
+            seconds = min(seconds, 120)
+            need = "ring"
+            args = ["ring", "--seconds", str(seconds)]
+            label = "響鈴 %d 秒" % seconds if seconds else "停止響鈴"
+        else:
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                return self._json(400, {"ok": False, "reason": "enabled 必須是布林值"})
+            if body.get("revert_after_s") is not None:
+                return self._json(400, {"ok": False,
+                                        "reason": "revert_after_s 已移除：偵錯狀態全手動",
+                                        "hint": "瀏覽器可能是舊頁面，重新整理一次"})
+            need = "adb_on" if enabled else "adb_off"
+            args = ["adb", "--on" if enabled else "--off"]
+            label = "開啟偵錯" if enabled else "關閉偵錯"
+
+        if need not in who["can"]:
+            return self._json(403, {"ok": False,
+                                    "reason": "%s 的鑰匙沒有「%s」的權限" % (who["name"], label),
+                                    "hint": "要的話請管 hub 的人重發：hangar wall --grant %s --can …"
+                                            % who["name"]})
+
+        dev = self.state.profile(name)
+        if dev is None:
+            return self._json(404, {"ok": False,
+                                    "reason": "hub 上沒有叫 %s 的手機" % name,
+                                    "hint": "牆上那張卡可能是舊的，重新整理一次"})
+        # 牆上那張卡可能是另一支手機換上同一個名字之前的樣子。序號對不上就不做
+        serial = body.get("serial")
+        if (isinstance(serial, str) and serial and dev.get("device_serial")
+                and serial != dev["device_serial"]):
+            return self._json(409, {"ok": False,
+                                    "reason": "%s 現在不是牆上那支手機了" % name,
+                                    "hint": "重新整理一次再按"})
+
+        if not self.actions.claim(name):
+            return self._json(409, {"ok": False, "profile": name,
+                                    "reason": "這支正在處理另一個動作，等一下"})
+        try:
+            ok, message, detail = run_action(self.actions.hangar, args, name,
+                                             self.actions.timeout)
+        finally:
+            self.actions.release(name)
+
+        entry = {"at": time.time(), "who": who["name"], "via": who["via"],
+                 "ip": self.client_address[0], "action": what, "profile": name,
+                 "serial": dev.get("device_serial"), "ok": ok, "message": message}
+        if what == "ring":
+            entry["seconds"] = seconds
+        else:
+            entry["enabled"] = enabled
+            if ok:
+                self.state.saw_adb(dev.get("device_serial"), enabled)
+                # 牆上的 agent.adb 是 list 那一輪問來的：叫它現在就重問
+                wake = self.state.wake.get("list")
+                if wake is not None:
+                    wake.set()
+        self.actions.record(entry)
+
+        result = {"ok": ok, "profile": name, "by": who["name"],
+                  "message": message, "detail": detail}
+        if what == "ring":
+            result.update({"ringing": ok and seconds > 0, "seconds": seconds})
+        else:
+            result["enabled"] = enabled
+        return self._json(200 if ok else 502, result)
 
     def _json(self, *args):
         """_json(obj) 或 _json(status, obj)。"""
@@ -1064,8 +1469,71 @@ def parse_checkin(v):
 
 # ------------------------------------------------------------------ main ----
 
+def _origin_of(url):
+    """網址 → 瀏覽器會送的 Origin（scheme://host:port，小寫、沒有路徑）。"""
+    u = url.strip()
+    if "://" not in u:
+        u = "http://" + u
+    scheme, _, rest = u.partition("://")
+    return scheme.lower() + "://" + rest.split("/", 1)[0].lower()
+
+
+def manage_keys(args):
+    """--grant / --revoke / --keys。做完就離開。"""
+    path = args.keys_file
+    if args.keys:
+        keys = load_keys(path)
+        if not keys:
+            print("還沒有人有鑰匙（%s）" % path)
+            print("  發一把：hangar wall --grant <名字>")
+            return 0
+        for k in keys:
+            when = time.strftime("%Y-%m-%d", time.localtime(k["created"])) \
+                if isinstance(k.get("created"), int) else "?"
+            print("%-16s %-24s %s" % (k["name"], ",".join(k["can"]) or "（沒有）", when))
+        return 0
+    if args.revoke:
+        try:
+            gone = revoke_key(path, args.revoke)
+        except OSError as e:
+            print("寫不了鑰匙檔 %s：%s" % (path, e), file=sys.stderr)
+            return 1
+        if not gone:
+            print("沒有叫 %s 的鑰匙（hangar wall --keys 看有誰）" % args.revoke,
+                  file=sys.stderr)
+            return 1
+        print("收回了 %s 的鑰匙。正在跑的 hub 下一次請求就不認它了" % args.revoke)
+        return 0
+
+    name = args.grant.strip()
+    if not KEY_NAME.match(name):
+        print("名字只能用英數字與 . _ -（最長 32 個字）：%s" % args.grant, file=sys.stderr)
+        return 1
+    try:
+        can = parse_caps(args.can)
+    except ValueError as e:
+        print("看不懂的 --can：%s（要是 %s 的組合，或 all）" % (e, "、".join(CAPS)),
+              file=sys.stderr)
+        return 1
+    try:
+        token = grant_key(path, name, can)
+    except OSError as e:
+        print("寫不了鑰匙檔 %s：%s" % (path, e), file=sys.stderr)
+        return 1
+    print("發給 %s 的鑰匙（能按：%s）。" % (name, "、".join(can)))
+    print("把下面的連結交給對方，在要用的那個瀏覽器開一次就記住了：")
+    hosts = [h for h in args.hub] or ["http://%s:%d" % (ip, args.port) for ip in local_ips()]
+    if not hosts:
+        hosts = ["http://<這台 hub 的位址>:%d" % args.port]
+    for h in hosts:
+        print("  %s/#key=%s" % (_origin_of(h), token))
+    print("（鑰匙只印這一次，檔案裡存的是雜湊。弄丟就重跑一次 --grant %s）" % name)
+    print("hub 要綁在別人連得到的位址上：hangar wall --bind 0.0.0.0")
+    return 0
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Hangar hub：常駐服務 + 唯讀裝置牆")
+    ap = argparse.ArgumentParser(description="Hangar hub：常駐服務 + 裝置牆")
     ap.add_argument("--hangar", default=os.path.join(HERE, "..", "hangar"),
                     help="hangar 執行檔的路徑（預設：這個 repo 裡的那支）")
     ap.add_argument("--bind", default="127.0.0.1",
@@ -1103,7 +1571,23 @@ def main(argv=None):
     ap.add_argument("--hub", action="append", default=[], metavar="網址",
                     help="額外的 Origin（走反向代理之類的情況才需要）。"
                          "這台機器自己的那些名字是自動認得的")
+    # ---- 牆上的動作：鑰匙 ----
+    # --grant / --revoke / --keys 做完就離開，不會把 hub 起起來
+    ap.add_argument("--grant", metavar="名字",
+                    help="發一把鑰匙給這個人（同名就是重發），印出帶鑰匙的連結後離開")
+    ap.add_argument("--can", default="all", metavar="能力",
+                    help="搭配 --grant：ring、adb_off、adb_on 用逗號串起來"
+                         "（預設 all = 三個都給）")
+    ap.add_argument("--revoke", metavar="名字", help="收回這個人的鑰匙後離開（不用重開 hub）")
+    ap.add_argument("--keys", action="store_true", help="列出誰有鑰匙後離開")
+    ap.add_argument("--keys-file", default=KEYS_FILE,
+                    help="鑰匙檔（預設 %s）" % KEYS_FILE)
+    ap.add_argument("--action-log", default=ACTION_LOG,
+                    help="操作紀錄（預設 %s，一行一筆 JSON）" % ACTION_LOG)
     args = ap.parse_args(argv)
+
+    if args.grant or args.revoke or args.keys:
+        return manage_keys(args)
 
     hangar = os.path.abspath(args.hangar)
     if not os.access(hangar, os.X_OK):
@@ -1148,6 +1632,13 @@ def main(argv=None):
     Handler.state = state
     CheckinHandler.state = state
     state.hangar = hangar
+    Handler.actions = Actions(hangar, args.action_log)
+    state.actions = Handler.actions
+    Handler.keys_file = args.keys_file
+    # --no-auto-pair 的意思是「這台機器上不是只有我」（多人共用帳號、反向代理）：
+    # 那時候 loopback 也不該免鑰匙
+    Handler.trust_loopback = not args.no_auto_pair
+    Handler.extra_origins = tuple(_origin_of(h) for h in args.hub)
     checkin_addr = None
     if args.checkin:
         try:
@@ -1244,8 +1735,15 @@ def main(argv=None):
     if args.bind not in ("127.0.0.1", "localhost", "::1"):
         print("注意：綁在 %s，同網段的人都看得到這頁裝置牆" % args.bind,
               file=sys.stderr, flush=True)
-        print("　　　動作按鈕沒有跟著開放：helper 只綁 127.0.0.1，別台電腦要"
-              "自己跑一支", file=sys.stderr, flush=True)
+        n = len(load_keys(args.keys_file))
+        if n:
+            print("　　　響鈴與切偵錯：%d 把鑰匙按得動（hangar wall --keys 看是誰）" % n,
+                  file=sys.stderr, flush=True)
+        else:
+            print("　　　響鈴與切偵錯還沒有人按得動 —— 發鑰匙："
+                  "hangar wall --grant <名字>", file=sys.stderr, flush=True)
+        print("　　　投影不在這裡：視窗要開在看的人面前，那台要自己跑 helper",
+              file=sys.stderr, flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

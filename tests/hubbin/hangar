@@ -28,5 +28,12 @@ case "$1" in
     if [ -f "$MOCK_STATE/tokens_json" ]; then cat "$MOCK_STATE/tokens_json"
     else echo '{"schema":1,"tokens":[]}'; fi
     ;;
+  ring|adb)
+    # 牆上的動作。$MOCK_STATE/action_fail 在就假裝 agent 拒絕；
+    # action_sleep 裡寫秒數就拖那麼久（測同一支不能同時被按兩次）
+    [ -f "$MOCK_STATE/action_sleep" ] && sleep "$(cat "$MOCK_STATE/action_sleep")"
+    [ -f "$MOCK_STATE/action_fail" ] && { echo "xx 叫不到 agent" >&2; exit 1; }
+    echo "ok 假裝做完了：$*"
+    ;;
   *) echo "假 hangar 不認得：$1" >&2; exit 2 ;;
 esac

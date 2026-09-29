@@ -22,8 +22,8 @@ mDNS 廣播則本來就只在區網成立。
 | | |
 |---|---|
 | [`hangar`](hangar) | CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是另外兩個元件的資料來源 |
-| [`hub/`](hub) | 常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件） |
-| [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影、響鈴、偵錯按鈕能動。`hangar wall` 會連它一起帶起來 |
+| [`hub/`](hub) | 常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）。牆上的響鈴、切偵錯由它執行，別台開瀏覽器就按得動 |
+| [`helper/`](helper) | 跑在**你自己那台電腦**上的小服務：讓裝置牆的投影（與入伍）按鈕能動。`hangar wall` 會連它一起帶起來 |
 | [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
 
 > **[📖 使用手冊（一頁可讀版）](https://s67586.github.io/Hangar/)**
@@ -44,6 +44,7 @@ hangar enroll -p work       # 用 USB 或網路 ADB 安裝並入伍 agent
 hangar ring -p work         # 讓 work 響鈴 30 秒，按手機通知或 --stop 停止
 hangar adb -p work --off    # 關閉偵錯，關掉就一直關著（不會自己開回來）
 hangar wall                 # 裝置牆：http://127.0.0.1:8787/（動作按鈕直接可用）
+hangar wall --grant alice   # 發一把鑰匙：別台開瀏覽器就能響鈴、切偵錯
 ```
 
 `setup` 預設建立的是**區網直連**的 profile。手機要拿去別的網段、4G/5G 或 NAT
@@ -74,7 +75,7 @@ README 走的是**裝起來 → 設定一支手機 → 每天投影**這條路�
 | [多台電腦共用同一支手機](docs/multi-host.md) | 第二台電腦怎麼接上同一支手機，RD 怎麼把 app build 進去 |
 | [手機端 agent](docs/agent.md) | 讓**沒開偵錯**的手機也回報得了電量與機型的那支 app：入伍、升級、限制 |
 | [hub（裝置牆網頁）](docs/hub.md) | 常駐服務與那頁裝置牆：參數、更新頻率、狀態的意思、換一台 hub |
-| [從裝置牆上按投影](docs/wall-actions.md) | 牆上那幾顆按鈕（投影、響鈴、切偵錯、入伍）怎麼運作，以及 helper 的三道鎖 |
+| [從裝置牆上按投影](docs/wall-actions.md) | 牆上那幾顆按鈕（投影、響鈴、切偵錯、入伍）怎麼運作，以及 helper 的三道鎖。只要響鈴與切偵錯的話看 [hub](docs/hub.md#響鈴與切偵錯由-hub-執行) 那一份 |
 | [Tailscale ACL](docs/tailscale.md) | 走 Tailscale 時**強烈建議**設的白名單 |
 | [密碼頁面投影全黑](docs/flag-secure.md) | 投影某些畫面時整片黑掉（`FLAG_SECURE`）的處理方式 |
 | [機房放公司 APK 的注意事項](docs/company-apk.md) | 沒加固的測試版放在共用測試機上，誰拿得走什麼、測試版與加固版怎麼分開對待 |
