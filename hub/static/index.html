@@ -589,7 +589,14 @@ function agentReason(d, capability) {
   if (!d.agent) return "尚未入伍，沒有可用的 agent";
   if (d.agent.reachable !== true) return "agent 沒有回應";
   if (d.agent.enrolled !== true) return "agent 尚未入伍";
-  if (!d.agent.can || d.agent.can[capability] !== true) {
+  // 完全沒有能力清單 = hub 沒問過它的 /status：這份 profile 沒有 token（agent 是
+  // 掃描看到的，入伍在別份 profile 或別台電腦上）。這跟「舊版」是兩回事
+  if (!d.agent.can) {
+    return d.same_device && d.same_device.length
+      ? `這份 profile 沒有 agent 的 token，改用「${d.same_device[0]}」那張卡`
+      : "這份 profile 沒有 agent 的 token（在別台電腦入伍的）—— hangar enroll -p " + d.name;
+  }
+  if (d.agent.can[capability] !== true) {
     // 舊版的話，卡片上就有一顆「更新agent」可以按。把話講完整，不要讓
     // 人看著一句「可能是舊版」卻不知道下一步該做什麼。
     const fix = agentNeedsUpdate(d) ? "（舊版 agent —— 按「更新agent」換成新版）" : "（可能是舊版）";
@@ -681,7 +688,8 @@ function adbRow(d) {
   const adb = d.agent && d.agent.adb;
   if (!adb || typeof adb.enabled !== "boolean")
     return `<span class="action-note bad">偵錯：拿不到目前狀態，請先按「立即更新」</span>`;
-  const enabled = adb.enabled;
+  // adb 連得上是硬證據：agent 讀值不準的機器上，按鈕要給「關閉」而不是「開啟」
+  const enabled = d.adb_conflict ? true : adb.enabled;
   const cap = enabled ? "adb_off" : "adb_on";
   if (!hubCan(cap) && helper.status !== "ok") {
     return `<button class="adb" type="button" data-copy-adb="${esc(d.key)}">複製偵錯指令</button>
@@ -690,7 +698,10 @@ function adbRow(d) {
         : "偵錯操作需要 hub 的鑰匙或這台電腦的 helper（目前都沒有）"}</span>`;
   }
   if (enabled) {
-    return `<button class="adb" type="button" data-adb="off" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>關閉偵錯</button>`;
+    const warn = d.adb_conflict
+      ? `<span class="action-note bad">這支的 agent 讀不到偵錯開關的真實值，按了之後牆上看不出結果 —— 以 adb 連不連得上為準</span>`
+      : "";
+    return `<button class="adb" type="button" data-adb="off" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>關閉偵錯</button>${warn}`;
   }
   return `<button class="adb" type="button" data-adb="on" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>開啟偵錯</button>`;
 }
@@ -919,7 +930,11 @@ async function toggleAdb(key, enabled) {
     const j = await act(via, "adb", d, { enabled });
     if (j.ok) {
       d.agent.adb = { ...(d.agent.adb || {}), enabled: j.enabled === true };
-      st = { msg: j.enabled === false ? "偵錯已關閉（不會自己開回來）" : "偵錯已開啟" };
+      // CLI 發現讀回來對不上時會說「讀不到結果」—— 那句要原話帶上來，
+      // 不能換成一句篤定的「已開啟」
+      st = (j.message || "").includes("讀不到結果")
+        ? { bad: true, msg: j.message }
+        : { msg: j.enabled === false ? "偵錯已關閉（不會自己開回來）" : "偵錯已開啟" };
       // 走 hub 的話 hub 已經記下是誰切的，重問一次卡片上就有
       if (via === "hub") setTimeout(tick, 500);
     } else {
@@ -1123,7 +1138,10 @@ function card(d) {
     // 切回去的話，那一筆就不是現在這個狀態的來由了
     const la = d.last_action && d.last_action.adb;
     const by = (on) => la && la.ok && la.enabled === on ? `（${la.who}，${ago(la.at)}）` : "";
-    if (d.agent.adb && typeof d.agent.adb.enabled === "boolean") {
+    if (d.adb_conflict) {
+      // adb 連得上就一定開著；agent 說關，是它讀不到真實值（Android 17 實測）
+      rows += row("偵錯", "開啟（依 adb；agent 讀到的是關閉，不準）");
+    } else if (d.agent.adb && typeof d.agent.adb.enabled === "boolean") {
       rows += row("偵錯", (d.agent.adb.enabled ? "開啟" : "關閉") + by(d.agent.adb.enabled));
     } else if (d.stranded) {
       // agent 叫不動的那一輪問不到，這是 hub 記著的最後一次
@@ -1174,6 +1192,9 @@ function card(d) {
     const me = helper.status === "ok" && helper.host === (latest && latest.host);
     notes.push(`這支手機的畫面正開在 ${who}${me ? "（你這台電腦）" : ""} 上`);
   }
+  if (d.same_device && d.same_device.length)
+    notes.push(`同一支手機另外還有 profile：${d.same_device.join("、")}（所以牆上有兩張卡）。` +
+      `不需要的那份在 ${(latest && latest.host) || "hub"} 上用 hangar forget 收掉`);
   for (const e of d.errors || []) if (e.message) notes.push(e.message);
 
   // M4 沒有自動復原：偵錯關掉之後唯一開得回來的路是 agent，agent 也叫不動

@@ -222,5 +222,42 @@ check "第一支還在"        "work"     "$out"
 check "第二支沒有被吃掉"  "test"     "$out"
 check "預設標記還在"      "\* *work" "$out"
 
+echo "=== M18. 同一支手機（同一個序號）不可以默默多一份 profile ==="
+# 實際踩過：先用 Tailscale setup 成 pixel-8a，後來用區網 setup 又取了新名字
+# pixel-8 —— 牆上兩張卡、兩份狀態，只有一份入伍過。
+# mock：USB 那支的序號是 PIX0000001；5555 上的 $P2 是 ZEN0000002。
+CFG="$XDG_CONFIG_HOME/hangar/profiles"
+dup_env() { # <已經有的那份的序號>
+  two_phones; rm -f "$CFG"/*.conf
+  printf 'PHONE_HOST="pixel"\nPHONE_IP="%s"\nTRANSPORT="tailscale"\nDEVICE_SERIAL="%s"\n' "$P1" "$1" > "$CFG/old.conf"
+  echo old > "$XDG_CONFIG_HOME/hangar/default"
+  printf 'USBSERIAL1\tdevice\n%s\tdevice\n' "$P2:5555" > "$MOCK_STATE/adb_devices"
+}
+dup_env PIX0000001
+out="$("$PM" setup --transport tailscale zenfone --name other 2>&1)"; rc=$?
+assert "給了別的名字 → 擋下來"       "1" "$rc"
+check  "講得出是哪一份"             "已經是 profile「old」" "$out"
+check  "教怎麼更新那一份"           "setup --name old" "$out"
+check  "也說得出真要兩份怎麼做"     "--duplicate" "$out"
+[ -f "$CFG/other.conf" ] && { echo "  FAIL  不該留下 other.conf"; FAIL=$((FAIL+1)); } || { echo "  PASS  沒有多出 other.conf"; PASS=$((PASS+1)); }
+
+dup_env PIX0000001
+out="$("$PM" setup --transport tailscale zenfone 2>&1)"
+check  "沒給名字 → 更新原本那份"     "更新那一份" "$out"
+assert "寫進的是 old"               "$P2" "$(grep -E '^PHONE_IP=' "$CFG/old.conf" | cut -d'"' -f2)"
+[ -f "$CFG/zenfone.conf" ] && { echo "  FAIL  不該另開 zenfone.conf"; FAIL=$((FAIL+1)); } || { echo "  PASS  沒有另開一份"; PASS=$((PASS+1)); }
+
+dup_env PIX0000001
+out="$("$PM" setup --transport tailscale zenfone --name other --duplicate 2>&1)"
+[ -f "$CFG/other.conf" ] && { echo "  PASS  --duplicate 照做"; PASS=$((PASS+1)); } || { echo "  FAIL  --duplicate 應該建出 other.conf：$out"; FAIL=$((FAIL+1)); }
+
+# --existing 要連上才知道序號：重複就把剛建的那份收回
+dup_env ZEN0000002; : > "$MOCK_STATE/adb_devices"; printf '%s\tdevice\n' "$P2:5555" > "$MOCK_STATE/adb_devices"
+out="$("$PM" setup --existing --transport tailscale zenfone --name dup2 2>&1)"; rc=$?
+assert "--existing 重複 → 失敗"      "1" "$rc"
+check  "說剛建的收回了"             "已經收回" "$out"
+[ -f "$CFG/dup2.conf" ] && { echo "  FAIL  dup2.conf 應該被收回"; FAIL=$((FAIL+1)); } || { echo "  PASS  沒留下 dup2.conf"; PASS=$((PASS+1)); }
+assert "預設仍然是 old"             "old" "$(cat "$XDG_CONFIG_HOME/hangar/default")"
+
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

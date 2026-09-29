@@ -176,6 +176,19 @@ adb 此刻是通的（網路或 USB）就一定開著，不算。
 才退回 MAC、再退回 IP —— 跟 `hangar scan` 認人用的是同一套順序
 （見[區網掃描](scan.md)）。所以手機換了 IP，裝置牆不會多出一台幽靈。
 
+**例外是同一支手機有兩份 profile**（例如先用 Tailscale setup 成 `pixel-8a`，
+後來又用區網 setup 成 `pixel-8`）：一份 profile 就是一張卡，因為兩份的連線方式、
+agent token 各自不同，合成一張的話按下去不知道該走哪一份。兩張卡上會互相註明
+「同一支手機另外還有 profile：…」（`/api/devices` 的 `same_device`），不需要的那份
+在 hub 上 `hangar forget` 收掉。`hangar setup` 現在會擋這種情況：沒給 `--name` 就
+更新原本那份，給了別的名字就停下來問，真的要兩份才加 `--duplicate`。
+
+**偵錯狀態以 adb 為準。** agent 說偵錯關著、adb 卻連得上的時候（`adb_conflict`），
+牆上寫「開啟（依 adb；agent 讀到的是關閉，不準）」，按鈕給的是「關閉偵錯」。
+實測 Android 17（Pixel 8a）上 app 讀 `adb_enabled` 永遠是 0，shell 讀得到 1 ——
+寫得進去，但 agent 讀不到結果。`hangar adb` 在這種機器上會說「已送出，但 agent
+讀不到結果」，不會篤定地說「已開啟」。
+
 ## 跨網段：主動回報（check-in）
 
 hub 看到的手機預設都是「hub 這台問得到的」：掃描只掃 hub 所在的網段，list 要連

@@ -89,7 +89,9 @@ STATIC_DIR = os.path.join(HERE, "static")
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
 # 10：每張卡多一個 last_action（從牆上按的動作，每種留最後一次：
 #     {"adb": {at, who, ok, message, enabled}, "ring": {…, seconds}}，沒按過是 null）。
-API_SCHEMA = 10
+# 11：same_device（同一個序號的其他 profile 名字）與 adb_conflict（agent 說偵錯
+#     關著，adb 卻連得上）。
+API_SCHEMA = 11
 
 # agent 主動回報（check-in）。
 #
@@ -807,9 +809,19 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
         if not entry.get("ip") and ips:
             entry["ip"] = ips[0]
 
+    # 同一支手機有好幾份 profile：每份各自是一張卡（各自的連線方式、token），
+    # 刻意不合成一張 —— 合了之後按下去不知道該走哪一份。但要讓人看得見
+    names_by_serial = {}
+    for d in devices:
+        if d.get("name") and d.get("device_serial"):
+            names_by_serial.setdefault(d["device_serial"], []).append(d["name"])
+
     for d in devices:
         d.setdefault("routed", False)
         d.setdefault("checkin", None)
+        d["same_device"] = [n for n in names_by_serial.get(d.get("device_serial"), [])
+                            if n != d.get("name")]
+        d["adb_conflict"] = _adb_conflict(d)
         d["stranded"] = _stranded(d, adb_seen or {})
         d["last_action"] = (actions or {}).get(d["name"]) if d.get("name") else None
 
@@ -830,6 +842,20 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
 
     devices.sort(key=sort_key)
     return devices
+
+
+def _adb_conflict(d):
+    """agent 說偵錯關著，adb 卻是 device。
+
+    adb 連得上是硬證據（偵錯一定開著）。實測 Android 17 上 app 讀 adb_enabled
+    永遠是 0，agent 的那一份在那種機器上不能信 —— 牆上要講「不確定」，不能照
+    抄「關閉」然後給一顆「開啟偵錯」。
+    """
+    adb = (d.get("agent") or {}).get("adb") or {}
+    if adb.get("enabled") is not False:
+        return False
+    return (d.get("adb_state") == "device"
+            or (d.get("usb") or {}).get("adb_state") == "device")
 
 
 def _stranded(d, adb_seen):
@@ -865,10 +891,12 @@ def record_adb_seen(adb_seen, list_data, now):
             continue
         agent = d.get("agent") or {}
         enabled = (agent.get("adb") or {}).get("enabled") if agent.get("reachable") else None
-        if isinstance(enabled, bool):
-            adb_seen[serial] = {"enabled": enabled, "at": now}
-        elif d.get("adb_state") == "device":
+        # adb 連得上優先：那是硬證據，agent 的讀值在某些 Android 版本上不準
+        # （見 _adb_conflict）
+        if d.get("adb_state") == "device":
             adb_seen[serial] = {"enabled": True, "at": now}
+        elif isinstance(enabled, bool):
+            adb_seen[serial] = {"enabled": enabled, "at": now}
 
 
 def _blank_entry(serial, profile):

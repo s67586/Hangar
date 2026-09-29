@@ -17,7 +17,7 @@
 #
 set -uo pipefail
 
-VERSION="1.5.0"
+VERSION="1.6.0"
 ADB_PORT=5555
 # 手機端 agent 聽的埠（見 ROADMAP 的「M3 協定」）
 AGENT_PORT_DEFAULT=5599
@@ -1383,6 +1383,26 @@ profile_for_serial() { # <device_serial>
   return 1
 }
 
+# 同一支手機（同一個序號）是不是已經有另一份 profile 了 → 那份的名字。
+# setup 靠它擋重複：同一支手機兩份 profile，裝置牆上就是兩張卡、兩份狀態，
+# 而且各自以為自己是對的。
+other_profile_for_serial() { # <device_serial> <要排除的 profile>
+  local want="$1" skip="$2" n got
+  [ -n "$want" ] || return 1
+  while IFS= read -r n <&4; do
+    [ -n "$n" ] && [ "$n" != "$skip" ] || continue
+    got="$(profile_field "$n" DEVICE_SERIAL)" || got=""
+    [ -n "$got" ] && [ "$got" = "$want" ] && { printf '%s' "$n"; return 0; }
+  done 4< <(list_profiles)
+  return 1
+}
+
+setup_dup_hints() { # <已經有的那份> <序號>
+  err "這支手機（序號 $2）已經是 profile「$1」了"
+  hint "要更新那一份（例如改走區網或 Tailscale）：hangar setup --name $1 [--transport lan|tailscale]"
+  hint "真的要兩份（同一支手機、兩種連線方式各一份）：加上 --duplicate"
+}
+
 # profile_set_field <profile> <欄位名> <值> — 只動這一個欄位，其他行原封不動。
 # save_profile 是「整份重寫」，要先把所有欄位都讀進全域變數才安全；掃描只是想
 # 補記一個 MAC，用這個就好。
@@ -2219,12 +2239,14 @@ setup_pick_tailscale_address() { # <節點名或空>
 
 cmd_setup() {
   local want_name="" alias_name="" existing="" base_serial="" transport_given=""
+  local allow_dup="" early_serial="" dup_of="" was_new=""
   # 區網是主場，所以預設就是 lan；要跨網路才 --transport tailscale。
   TRANSPORT="lan"
   while [ $# -gt 0 ]; do
     case "$1" in
       --name|-n)  alias_name="${2:-}"; [ -n "$alias_name" ] || die "--name 後面要接名稱"; shift 2 ;;
       --existing) existing=1; shift ;;
+      --duplicate) allow_dup=1; shift ;;
       --transport)   TRANSPORT="${2:-}"; transport_given=1; shift 2 ;;
       --transport=*) TRANSPORT="${1#--transport=}"; transport_given=1; shift ;;
       --lan)         TRANSPORT="lan"; transport_given=1; shift ;;
@@ -2329,6 +2351,21 @@ cmd_setup() {
     setup_model="$(run_timeout 8 adb -s "$base_serial" shell getprop ro.product.model 2>/dev/null | tr -d '\r\n')"
     [ -n "$setup_model" ] && info "機型：$setup_model"
 
+    # 序號現在就讀得到（USB 或無線偵錯那條已經連著）：趁還沒寫任何東西之前，
+    # 先看這支手機是不是已經有 profile 了
+    early_serial="$(run_timeout 8 adb -s "$base_serial" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+    if [ -z "$allow_dup" ] && dup_of="$(other_profile_for_serial "$early_serial" "")"; then
+      if [ -z "$alias_name" ]; then
+        # 沒指定名字 = 就是要設定這支手機。重跑 setup 的意思是更新原本那份，
+        # 不是另開一份
+        alias_name="$dup_of"
+        info "這支手機已經是 profile「${dup_of}」了 —— 更新那一份"
+      elif [ "$(sanitize_name "$alias_name")" != "$dup_of" ]; then
+        setup_dup_hints "$dup_of" "$early_serial"
+        exit 1
+      fi
+    fi
+
     echo
     # --- 2) 切到固定的 5555 -------------------------------------------------
     info "adb -s $base_serial tcpip $ADB_PORT"
@@ -2411,6 +2448,7 @@ cmd_setup() {
   done 3< <(list_profiles)
 
   SERIAL="${PHONE_IP}:${ADB_PORT}"
+  [ -f "$(profile_path "$PROFILE")" ] || was_new=1
   # TRANSPORT 在函式開頭就由 --transport 決定了，這裡不再覆寫。
   save_profile
   info "這支手機的名稱是「${C_B}$PROFILE${C_0}」（之後用 hangar -p $PROFILE 指定）"
@@ -2465,6 +2503,19 @@ cmd_setup() {
   # 硬體序號要等到真的連上才拿得到。它跨 IP、跨連線方式都不會變，
   # 是這支手機日後唯一可靠的識別碼，所以補寫回 profile。
   DEVICE_SERIAL="$(run_timeout 10 adb -s "$SERIAL" shell getprop ro.serialno 2>/dev/null | tr -d '\r\n')"
+  # --existing 那條路要到這裡才知道序號。重複的話，剛建的這份收回去 ——
+  # 留著它，牆上就多一張同一支手機的卡
+  if [ -z "$allow_dup" ] && dup_of="$(other_profile_for_serial "$DEVICE_SERIAL" "$PROFILE")"; then
+    if [ -n "$was_new" ]; then
+      rm -f "$(profile_path "$PROFILE")"
+      [ "$(get_default_profile 2>/dev/null)" = "$PROFILE" ] && set_default_profile "$dup_of"
+      setup_dup_hints "$dup_of" "$DEVICE_SERIAL"
+      hint "剛建的「${PROFILE}」已經收回，沒有留下來"
+      exit 1
+    fi
+    warn "profile「${dup_of}」也是這支手機（序號 ${DEVICE_SERIAL}）—— 兩份都留著"
+    hint "不需要兩份的話：hangar forget $dup_of"
+  fi
   if [ -n "$DEVICE_SERIAL" ]; then
     save_profile --quiet
     ok "裝置序號：$DEVICE_SERIAL"
@@ -3126,6 +3177,22 @@ cmd_adb() {
     exit 1
   }
   state="$(agent_field "$body" '.enabled')"
+  # 回應裡的 enabled 是 agent 把「你要的值」照抄回來，不是它讀回來的。讀回來
+  # 的那一份在 adb.enabled —— 兩個對不上就不能說「已開啟」。實測 Android 17
+  # 上 app 讀 adb_enabled 永遠是 0（shell 讀得到 1），所以這裡不判失敗，只是
+  # 老實說「送出去了、但看不到結果」，並指出哪裡看得到真的值。
+  local readback
+  readback="$(agent_field "$body" '.adb.enabled | if . == null then empty else tostring end')"
+  if { [ "$state" = "true" ] || [ "$state" = "false" ]; } && [ -n "$readback" ] && [ "$readback" != "$state" ]; then
+    local want_zh="開啟" got_zh="開啟"
+    [ "$state" = "false" ] && want_zh="關閉"
+    [ "$readback" = "false" ] && got_zh="關閉"
+    warn "agent 說寫進去了，但它自己讀回來是「${got_zh}」"
+    hint "有些 Android 版本（實測 Android 17）不讓 app 讀到偵錯開關的真實值。要確認就用 adb："
+    hint "  adb -s ${PHONE_IP}:${ADB_PORT} shell settings get global adb_enabled"
+    ok "[$PROFILE] 已送出「${want_zh}偵錯」，但 agent 讀不到結果 —— 實際狀態以 adb 為準"
+    return 0
+  fi
   if [ "$state" = "true" ]; then
     ok "[$PROFILE] 偵錯已開啟"
   elif [ "$state" = "false" ]; then
@@ -3645,6 +3712,7 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
                                    初始化一支手機（需同區網或插 USB）
   hangar setup --transport tailscale [節點名] [--name 別名]
                                    同上，但改走 Tailscale（手機要拿去別的網路時）
+  hangar setup ... --duplicate     同一支手機真的要第二份 profile 時才加（預設會擋）
   hangar setup --existing [IP 或節點名] [--name 別名]
                                    手機已由別台電腦設定好，只在這台建立設定
   hangar list                     列出已設定的手機與即時狀態（含電量）
