@@ -115,10 +115,10 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.6.0` | `hangar:20` |
-| `list` / `status --json` | schema **4** | `JSON_SCHEMA`，`hangar:2773` |
+| `list` / `status --json` | schema **5** | `JSON_SCHEMA`，`hangar:2786` |
 | `scan --json` | schema **8** | `SCAN_SCHEMA`，`hangar:181` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:182` |
-| hub `/api/devices` | schema **11** | `API_SCHEMA`，`hub/hangar_hub.py:94` |
+| hub `/api/devices` | schema **12** | `API_SCHEMA`，`hub/hangar_hub.py:95` |
 | agent 協定 | schema **4**，版本 `0.2.0` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、`GET /api/whoami`、**`POST /api/refresh`**、**`POST /api/ring`**、**`POST /api/adb`**（後兩個要鑰匙）；另一個 listener（`--checkin`）只有 `POST /api/checkin` | `Handler`、`CheckinHandler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
@@ -832,13 +832,13 @@ A1–A3、B1、B2 有照表跑的腳本：`tools/field_check.sh`（`watch`／`re
 | # | 要確認什麼 | 怎麼確認 | 影響 |
 |---|---|---|---|
 | B1 | 前景服務在各家 ROM 的省電策略下活多久；以及手機重開機後它自己回不回得來 | 裝上去放 24／72 小時，中間不碰手機，看 `/hello` 還答不答得出來；然後重開機再看一次 | **整套的單點故障**：agent 被殺 = 那支手機失聯 |
-| B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 偵錯現在會長期關著，這條決定了那段期間還剩哪些路回得去 |
+| B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 偵錯現在會長期關著，這條決定了那段期間還剩哪些路回得去。**Pixel 8a / Android 17：不會** —— 關掉之後 `adb tcpip` 開的 5555 照樣連得上，只停了 USB 那一頭。所以「adb 連得上」不能當成「偵錯開著」；別的機型還沒看過 |
 | B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完了，現在測得動：手機裝上新版 agent 後，在同區網的電腦跑 `dns-sd -B _hangar-agent._tcp`（macOS）或 `avahi-browse -rt _hangar-agent._tcp`（Linux）看得到嗎；再用 `hangar scan --json` 確認那台的 `agent.discovered_by` 是 `mdns` | 看不到就退回「探 5599」，只是慢。**電腦端已經自動處理這個退路**，不用改設定 |
 | B4 | AP 有沒有開 client isolation | 兩支手機互 ping；或電腦 ping 手機 | 有的話整個區網掃描與 agent 都不通，得改走 Tailscale |
 | B5 | 一個 /24 掃完要多久（真實網路，不是 mock） | `time hangar scan` | 太久的話 hub 的 `--scan-interval` 要往上調 |
 | B6 | 手機被調成靜音／開著勿擾時，alarm stream 還響不響（各家 ROM 不一） | 手動設成靜音與各級 DND，各按一次響鈴 | 不響的話響鈴要去動系統音量，那就多一個「會回不去的狀態」（見 C8） |
 | B7 | 高優先度 notification 會不會真的點亮螢幕、跳 heads-up | 螢幕關著時按響鈴，看它亮不亮 | 不亮的話只剩聲音；在櫃子裡聲音比亮光難定位，識別會慢很多 |
-| B8 | 新版 Android 上 agent 讀不讀得到 `adb_enabled` 的真實值 | **Android 17（Pixel 8a）已經看到讀不到**：shell `settings get global adb_enabled` 是 1，agent 的 `Settings.Global.getInt(ADB_ENABLED)` 讀到的不是 1；寫入看起來有效。要再確認的是「寫入真的生效嗎」（關掉之後 `adb devices` 會不會掉）與哪一版開始 | 牆上的偵錯狀態不能只信 agent：adb 連得上時以 adb 為準（hub 的 `adb_conflict`），`hangar adb` 比對 agent 讀回來的 `adb.enabled`。**偵錯關著、adb 也斷了的時候就沒有硬證據了**，那一段只能靠 agent 的讀值 —— 在這種機器上等於看不見。另外 agent `/adb` 回應裡的 `enabled` 是照抄請求，下一版改成讀回來的值 |
+| B8 | 新版 Android 上 agent 讀不讀得到 `adb_enabled` 的真實值 | **Pixel 8a / Android 17 實測過了**：寫入有效（系統紀錄的寫入者是 agent），但 agent 用 `Settings.Global.getInt` 讀永遠不是 1。之前看起來「寫不進去」，是因為手機上開著「開發人員選項」那一頁，設定 app 把值寫回去了 | 牆上改用 adb 直接讀的那份（`debug_enabled`），`hangar adb` 切完用 adb 驗證。**adb 斷掉的時候牆上只剩 agent 那份，在這種機器上不可信** —— 要換 agent 的讀法（診斷版比較幾種讀法中）。另外 agent `/adb` 回應裡的 `enabled` 是照抄請求，要改成讀回來的值 |
 
 ### C. 想知道的（還沒量過）
 

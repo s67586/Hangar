@@ -132,7 +132,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 06fd662ac508</span><span class="fact">hangar v1.6.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 da20ea7e3ede</span><span class="fact">hangar v1.6.0</span></div>
 </header>
 
 <div class="cols">
@@ -432,7 +432,7 @@ curl -s http://192.168.1.5:8787/api/helper     <span class="c"># 同事從區網
 <p>agent 叫不動的那一輪本來就問不到偵錯開關，所以這裡看的是 hub <strong>最後一次看到</strong> 的值（list 問到的、或主動回報帶來的）。這份記憶只放在 hub 的記憶體裡：hub 重開 之後，要等那支手機的 agent 再答一次話才知道 —— 在那之前不會誤報，但也不會警示。 adb 此刻是通的（網路或 USB）就一定開著，不算。</p>
 <p>同一支手機在兩份資料裡會合成同一張卡，合併的主鍵是 <code>DEVICE_SERIAL</code>，沒有序號 才退回 MAC、再退回 IP —— 跟 <code>hangar scan</code> 認人用的是同一套順序 （見<a href="#區網掃描">區網掃描</a>）。所以手機換了 IP，裝置牆不會多出一台幽靈。</p>
 <p><strong>例外是同一支手機有兩份 profile</strong>（例如先用 Tailscale setup 成 <code>pixel-8a</code>， 後來又用區網 setup 成 <code>pixel-8</code>）：一份 profile 就是一張卡，因為兩份的連線方式、 agent token 各自不同，合成一張的話按下去不知道該走哪一份。兩張卡上會互相註明 「同一支手機另外還有 profile：…」（<code>/api/devices</code> 的 <code>same_device</code>），不需要的那份 在 hub 上 <code>hangar forget</code> 收掉。<code>hangar setup</code> 現在會擋這種情況：沒給 <code>--name</code> 就 更新原本那份，給了別的名字就停下來問，真的要兩份才加 <code>--duplicate</code>。</p>
-<p><strong>偵錯狀態以 adb 為準。</strong> agent 說偵錯關著、adb 卻連得上的時候（<code>adb_conflict</code>）， 牆上寫「開啟（依 adb；agent 讀到的是關閉，不準）」，按鈕給的是「關閉偵錯」。 實測 Android 17（Pixel 8a）上 app 讀 <code>adb_enabled</code> 永遠是 0，shell 讀得到 1 —— 寫得進去，但 agent 讀不到結果。<code>hangar adb</code> 在這種機器上會說「已送出，但 agent 讀不到結果」，不會篤定地說「已開啟」。</p>
+<p><strong>偵錯狀態以 adb 讀到的為準。</strong> adb 連得上的時候，hub 會用 adb 直接讀手機上的 <code>adb_enabled</code>（<code>/api/devices</code> 的 <code>debug_enabled</code>），牆上用它，不用 agent 讀的那份。 兩份不一樣時（<code>adb_conflict</code>）牆上寫「開啟（依 adb；agent 讀到的是關閉，不準）」。 Pixel 8a / Android 17 實測兩件事：app 讀 <code>adb_enabled</code> 永遠不是 1（agent 一律說 關閉）；而且<strong>關掉偵錯之後 5555 照樣連得上</strong>，只停了 USB 那一頭 —— 所以「adb 連得 上」不能當成「偵錯開著」。<code>hangar adb</code> 切完之後，adb 還連得上就直接讀一次驗證，對 不上就明講失敗（例如手機上開著「開發人員選項」那一頁時，設定 app 會把值寫回去）。</p>
 <h3 id="跨網段主動回報check-in">跨網段：主動回報（check-in）</h3>
 <p>hub 看到的手機預設都是「hub 這台問得到的」：掃描只掃 hub 所在的網段，list 要連 得進手機。手機在路由器後面（另一個 VLAN、只放單向的防火牆）時，兩條都斷。</p>
 <p>反方向常常是通的，所以可以讓手機自己來報到：</p>
@@ -531,7 +531,7 @@ WantedBy=default.target</pre></div>
 hangar list --json              <span class="c"># 只出便宜的欄位（快）</span>
 hangar list --json --probe      <span class="c"># 連線路徑、機型、電量一起取（慢）</span></pre></div>
 <div class="term"><div class="bar">json</div><pre>{
-  &quot;schema&quot;: 4,
+  &quot;schema&quot;: 5,
   &quot;devices&quot;: [
     {
       &quot;profile&quot;: &quot;work&quot;,
@@ -543,6 +543,7 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
       &quot;device_serial&quot;: &quot;1A2B3C4D&quot;,
       &quot;reachability&quot;: &quot;online&quot;,
       &quot;adb_state&quot;: &quot;device&quot;,
+      &quot;debug_enabled&quot;: true,
       &quot;path&quot;: { &quot;kind&quot;: &quot;direct&quot;, &quot;latency_ms&quot;: 12 },
       &quot;model&quot;: &quot;Pixel 7&quot;,
       &quot;mac&quot;: { &quot;address&quot;: &quot;f0:5c:77:df:c7:43&quot;, &quot;randomized&quot;: false,
@@ -561,6 +562,7 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
   ]
 }</pre></div>
 <p>幾個重點：</p>
+<ul><li><strong>偵錯開關看 <code>debug_enabled</code>，不看 <code>agent.adb.enabled</code>。</strong> <code>debug_enabled</code> 是 adb 連著時直接讀手機 <code>adb_enabled</code> 的結果（<code>--probe</code> 才有，問不到是 <code>null</code>）。agent 讀的那份在某些 Android 版本上不準（Pixel 8a / Android 17 永遠讀到關閉）；而 <code>adb_state: &quot;device&quot;</code> 也<strong>不代表</strong>偵錯開著 —— 關掉之後 5555 可能照樣連得上。</li></ul>
 <ul><li><strong><code>errors</code> 帶 code，不只帶訊息。</strong> 「手機重開機了」這種判斷不能只活在印給人看的 中文句子裡，不然程式沒辦法據以決策。目前的 code：</li></ul>
 <p>| code | 意思 | |---|---| | <code>transport_down</code> | 傳輸層本身沒通（例如 Tailscale 沒開） | | <code>peer_not_found</code> | 連線方式裡找不到這台裝置 | | <code>peer_offline</code> | 找得到但離線 | | <code>adb_port_closed</code> | <strong>連得到機器但 5555 不通 → 通常是手機重開過</strong> | | <code>adb_unreachable</code> | 上層就不通了，adb 自然連不上（不是重開機） | | <code>unauthorized</code> | 這台電腦還沒被手機授權 | | <code>adb_offline</code> | adb 卡在 offline |</p>
 <p><code>adb_port_closed</code> 只在「連得到機器但埠不通」時才出現。傳輸層整個沒通的時候 不會一起報它 —— 否則讀 code 的人會去叫使用者插 USB，方向完全錯了。</p>
@@ -948,7 +950,7 @@ adb logcat</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 06fd662ac508</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 da20ea7e3ede</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>

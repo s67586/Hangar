@@ -149,6 +149,12 @@ Current Battery Service state:
   technology: Li-ion
 BATT
             ;;
+          settings)
+            # `settings get global adb_enabled`：手機上真正的偵錯開關。沒準備就
+            # 當成讀不到（舊測試不必知道這一條）
+            [ "$3" = "get" ] && [ "$5" = "adb_enabled" ] && [ -f "$S/adb_enabled_value" ] \
+              && cat "$S/adb_enabled_value"
+            ;;
           cmd)
             [ "$3" = "wifi" ] && [ "$4" = "status" ] || exit 0
             if [ -f "$S/wifi_off" ]; then echo "Wifi is disabled"; exit 0; fi

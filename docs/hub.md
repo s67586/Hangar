@@ -183,11 +183,13 @@ agent token 各自不同，合成一張的話按下去不知道該走哪一份�
 在 hub 上 `hangar forget` 收掉。`hangar setup` 現在會擋這種情況：沒給 `--name` 就
 更新原本那份，給了別的名字就停下來問，真的要兩份才加 `--duplicate`。
 
-**偵錯狀態以 adb 為準。** agent 說偵錯關著、adb 卻連得上的時候（`adb_conflict`），
-牆上寫「開啟（依 adb；agent 讀到的是關閉，不準）」，按鈕給的是「關閉偵錯」。
-實測 Android 17（Pixel 8a）上 app 讀 `adb_enabled` 永遠是 0，shell 讀得到 1 ——
-寫得進去，但 agent 讀不到結果。`hangar adb` 在這種機器上會說「已送出，但 agent
-讀不到結果」，不會篤定地說「已開啟」。
+**偵錯狀態以 adb 讀到的為準。** adb 連得上的時候，hub 會用 adb 直接讀手機上的
+`adb_enabled`（`/api/devices` 的 `debug_enabled`），牆上用它，不用 agent 讀的那份。
+兩份不一樣時（`adb_conflict`）牆上寫「開啟（依 adb；agent 讀到的是關閉，不準）」。
+Pixel 8a / Android 17 實測兩件事：app 讀 `adb_enabled` 永遠不是 1（agent 一律說
+關閉）；而且**關掉偵錯之後 5555 照樣連得上**，只停了 USB 那一頭 —— 所以「adb 連得
+上」不能當成「偵錯開著」。`hangar adb` 切完之後，adb 還連得上就直接讀一次驗證，對
+不上就明講失敗（例如手機上開著「開發人員選項」那一頁時，設定 app 會把值寫回去）。
 
 ## 跨網段：主動回報（check-in）
 

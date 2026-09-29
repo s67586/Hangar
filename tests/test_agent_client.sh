@@ -225,12 +225,19 @@ echo "=== C3. list --json：adb 通的時候，agent 只是附帶資訊 ==="
 env_one; : > "$MOCK_STATE/fake.apk"
 "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
 out="$("$PM" list --json --probe 2>/dev/null)"
-assert "schema 往上加了"     "4" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "5" "$(q '.schema' "$out")"
 assert "adb 通就用 adb 的資料" "adb" "$(q '.devices[0].battery.source' "$out")"
 assert "電量是 adb 那份"      "78" "$(q '.devices[0].battery.level' "$out")"
 assert "agent 也看得到"       "true" "$(q '.devices[0].agent.reachable' "$out")"
 assert "說得出 agent 版本"    "0.1.0-mock" "$(q '.devices[0].agent.version' "$out")"
 assert "能力宣告帶上牆"        "true" "$(q '.devices[0].agent.can.ring' "$out")"
+assert "問不到偵錯開關就是 null" "null" "$(q '.devices[0].debug_enabled' "$out")"
+# 偵錯開關的硬證據是 adb 直接讀的那一份：agent 在 Android 17 上讀不準，而
+# 「adb 連得上」也不代表開著（關掉只停 USB 那頭，5555 照樣連得上）
+echo 0 > "$MOCK_STATE/adb_enabled_value"
+out="$("$PM" list --json --probe 2>/dev/null)"
+rm -f "$MOCK_STATE/adb_enabled_value"
+assert "adb 連著也照實說關著"   "false" "$(q '.devices[0].debug_enabled' "$out")"
 
 echo "=== C3b. hangar ring / adb：不需要 adb 通也能走 agent ==="
 env_one; : > "$MOCK_STATE/fake.apk"
@@ -256,6 +263,22 @@ nocheck "讀回來對不上就不說已開啟" "偵錯已開啟" "$out"
 check  "老實說讀不到結果"         "agent 讀不到結果" "$out"
 check  "指出哪裡看得到真的值"     "settings get global adb_enabled" "$out"
 check  "不當成失敗"               "^0$" "$rc"
+
+# adb 還連得上就直接問手機：Android 17 實測，agent 寫入回報成功、值卻沒變，
+# 而 agent 讀回來又永遠是 0 —— 只看 agent 的話「關閉」永遠像是成功了
+echo 1 > "$MOCK_STATE/adb_enabled_value"
+touch "$MOCK_STATE/adb_readback_stuck_off"
+out="$("$PM" adb -p work --off 2>&1)"; rc=$?
+rm -f "$MOCK_STATE/adb_readback_stuck_off"
+assert "adb 讀到還開著 → 失敗"      "1" "$rc"
+check  "講清楚是 adb 讀的"          "用 adb 直接讀的" "$out"
+nocheck "不可以說已關閉"            "偵錯已關閉" "$out"
+check  "給出手動關的路"             "開發人員選項" "$out"
+echo 0 > "$MOCK_STATE/adb_enabled_value"
+out="$("$PM" adb -p work --off 2>&1)"; rc=$?
+assert "adb 讀到真的關了 → 成功"    "0" "$rc"
+check  "照常說已關閉"               "偵錯已關閉" "$out"
+rm -f "$MOCK_STATE/adb_enabled_value"
 
 echo "=== C4. adb 碰不到時，改問 agent —— 這就是 agent 存在的理由 ==="
 env_one; : > "$MOCK_STATE/fake.apk"
