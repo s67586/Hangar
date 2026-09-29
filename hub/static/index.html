@@ -539,6 +539,14 @@ async function act(via, kind, d, extra) {
   return r.json().catch(() => ({}));
 }
 
+// 走 helper 失敗、而這頁又沒有 hub 鑰匙：helper 只會叫人去 setup，但響鈴與
+// 切偵錯其實有一條不必 setup 的路 —— 要講出來，不然人會往錯的方向做
+function viaHelperHint(via) {
+  return via === "helper" && hubMe.status !== "ok"
+    ? "或者向管 hub 的人要一把鑰匙（hangar wall --grant 你的名字），就不必在這台 setup"
+    : "";
+}
+
 function unreachable(via) {
   return via === "hub" ? "叫不動 hub（網路斷了，或 hub 沒在跑）"
                        : "叫不動這台電腦的 helper（它還在跑嗎？）";
@@ -887,8 +895,8 @@ async function ring(key, seconds = 30) {
       else ringings.delete(key);
       st = { msg: actual > 0 ? `已響鈴 ${actual} 秒` : "已停止響鈴" };
     } else {
-      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
-                              .filter(Boolean).join(" —— ") };
+      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint,
+                              viaHelperHint(via)].filter(Boolean).join(" —— ") };
     }
   } catch (e) {
     st = { bad: true, msg: unreachable(via) };
@@ -930,8 +938,8 @@ async function toggleAdb(key, enabled) {
       // 走 hub 的話 hub 已經記下是誰切的，重問一次卡片上就有
       if (via === "hub") setTimeout(tick, 500);
     } else {
-      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint]
-                              .filter(Boolean).join(" —— ") };
+      st = { bad: true, msg: [j.reason || j.message, ...(j.detail || []), j.hint,
+                              viaHelperHint(via)].filter(Boolean).join(" —— ") };
     }
   } catch (e) {
     st = { bad: true, msg: unreachable(via) };

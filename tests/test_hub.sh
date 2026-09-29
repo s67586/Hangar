@@ -1102,6 +1102,7 @@ page="$(cat "$SP/../hub/static/index.html")"
 check  "牆上有 hub 鑰匙那一條路"  "async function whoami" "$page"
 check  "切偵錯之前要問一次"       "window.confirm" "$page"
 check  "鑰匙從 # 進來"            'get("key")' "$page"
+check  "helper 那條失敗時提 hub 鑰匙" "viaHelperHint(via)" "$page"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
