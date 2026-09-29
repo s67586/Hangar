@@ -3679,6 +3679,10 @@ ${C_B}hangar${C_0} v$VERSION — 一整隊 Android 測試機的停放、維護�
                                    同一台機器上不用再開那個帶鑰匙的連結
   hangar wall --checkin 0.0.0.0:8789
                                    另外開一個埠收手機的主動回報（跨網段用）
+  hangar wall --grant <名字> [--can ring,adb_off,adb_on]
+                                   發一把鑰匙：別台開瀏覽器就能響鈴、切偵錯
+  hangar wall --keys | --revoke <名字>
+                                   誰有鑰匙／收回一把
   hangar use <手機>               設定預設手機
   hangar forget <手機>            刪掉該手機的設定
   hangar status [-p 手機]         Tailscale / adb / 裝置狀態

@@ -47,9 +47,15 @@ hangar wall --bind 0.0.0.0 --port 8787    # 要給同事看才這樣開
 | `--helper-token-file` | `~/.config/hangar/helper.token` | helper 的鑰匙放哪 |
 | `--new-helper-token` | | 換一把新的（舊的連結就失效了） |
 | `--hub` | | 額外的 Origin，走反向代理之類的情況才需要 |
+| `--grant 名字` | | 發一把牆上動作的鑰匙，印出連結後離開（見[下面](#響鈴與切偵錯由-hub-執行)） |
+| `--can` | `all` | 搭配 `--grant`：`ring`、`adb_off`、`adb_on` 用逗號串起來 |
+| `--revoke 名字` / `--keys` | | 收回一把鑰匙／列出誰有，做完就離開 |
+| `--keys-file` | `~/.config/hangar/hub-keys.json` | 鑰匙檔（只存雜湊） |
+| `--action-log` | `~/.config/hangar/hub-actions.log` | 操作紀錄，一行一筆 JSON |
 
 端點：`/`（裝置牆）、`/api/devices`（合併後的 JSON）、`/api/helper`（見下面）、
-`/api/refresh`（POST，見下面）、`/healthz`。
+`/api/refresh`（POST，見下面）、`/api/whoami`、`/api/ring` 與 `/api/adb`（POST，
+要鑰匙，見[下面](#響鈴與切偵錯由-hub-執行)）、`/healthz`。
 
 ## helper 跟著一起起來
 
@@ -63,7 +69,8 @@ listener**：
 
 - helper 照樣自己綁 `127.0.0.1`，hub 的 `--bind` 不會傳給它
 - Origin 白名單與 token 那三道鎖原封不動
-- **hub 這一邊仍然一個會動到手機的端點都沒有** —— `POST /mirror` 打到 hub 是 404
+- helper 的端點不會出現在 hub 上 —— `POST /mirror` 打到 hub 是 404（hub 自己的
+  響鈴／切偵錯端點是另一回事，走鑰匙，見[下面](#響鈴與切偵錯由-hub-執行)）
 
 Origin 白名單不必再自己打：hub 知道自己聽哪個埠，會把 `127.0.0.1`、`localhost`、
 主機名與這台機器對外那個位址都算進去。那正是獨立跑 helper 時最常打錯的地方
@@ -198,21 +205,56 @@ hangar enroll -p work --no-hub                     # 不要再回報了
 多個網段也可以一起掃：`--subnet` 給好幾次，不在 hub 網段上的會逐台探埠（見
 [區網掃描](scan.md#跨網段)），逾時會按網段數放大。
 
-## 這一版是唯讀的
+## 輪詢是唯讀的
 
-裝置牆不會去動手機，也不會去改設定檔：輪詢只跑 `list` 與 `scan`，**刻意不帶
-`--fix-ip`**（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile
+裝置牆**自己**不會去動手機，也不會去改設定檔：輪詢只跑 `list` 與 `scan`，**刻意
+不帶 `--fix-ip`**（那會寫 profile，固定輪詢的程式無條件帶著它跑遲早出事）。profile
 指著舊 IP 時它只會在那張卡上說一句，要修還是你自己去跑 `hangar scan --fix-ip`。
+`--checkin` 收到的回報也只放在記憶體，不寫 profile。
 
-牆上的**投影、響鈴、切偵錯按鈕也沒有破壞這件事**：它們叫的不是 hub，而是你
-自己那台電腦上的 helper（見[從裝置牆上按投影](wall-actions.md)）。helper
-再呼叫 CLI，CLI 才去碰手機裡的 agent。hub 這一側仍然只有唯讀資料與輪詢喚醒
-端點；沒有任何 `/api/*` 寫入手機的路。`--checkin` 收到的回報也只放在記憶體，
-不寫 profile。
+會動手機的只有**有人按了才跑**的兩個動作，見下一節。
+
+## 響鈴與切偵錯由 hub 執行
+
+裝置牆只開在 hub 那一台，其他人開瀏覽器就按得動響鈴與切偵錯 —— 不用在自己那台
+裝 `hangar`、不用跑 helper、不用 `setup`，拿手機或平板開也行。hub 用的是**自己的**
+profile 與 agent token，跑的是跟你在終端機打的同一行 `hangar ring` / `hangar adb`。
+
+hub 要知道是誰按的，所以每人一把鑰匙：
+
+```bash
+hangar wall --grant alice                    # 三個動作都給
+hangar wall --grant qa --can ring,adb_off    # 只能響鈴、關偵錯（不能開）
+hangar wall --keys                           # 誰有鑰匙
+hangar wall --revoke alice                   # 收回，正在跑的 hub 馬上就不認了
+```
+
+`--grant` 會印出一個帶鑰匙的連結（`http://<hub>:8787/#key=…`），交給對方在要用的
+瀏覽器開一次就記住了。鑰匙在 `#` 後面，不會送到伺服器、不進瀏覽記錄；鑰匙檔
+（`~/.config/hangar/hub-keys.json`，0600）裡**只存雜湊**，弄丟了就重跑一次
+`--grant` 同一個名字。hub 要綁在別人連得到的位址上（`--bind 0.0.0.0`）。
+
+| | |
+|---|---|
+| 權限 | `ring`（響鈴）、`adb_off`（關偵錯）、`adb_on`（開偵錯），預設全給。開偵錯等於遠端把 adb 打開，所以值得分開 |
+| 紀錄 | 每按一次寫一行 JSON 進 `~/.config/hangar/hub-actions.log`：誰、從哪個 IP、什麼動作、哪一支、成不成。牆上的偵錯那一列會寫「關閉（alice，3 分鐘前）」 |
+| 在 hub 本機開的那一頁 | 不用鑰匙，紀錄上寫「<主機名>（本機）」。反向代理或多人共用帳號的機器帶 `--no-auto-pair`，本機也要鑰匙 |
+| 擋掉的 | 別的網站上的 JS（只收 JSON、Origin 要是這面牆自己）；hub 上沒有的 profile 名字；序號對不上的舊卡片；同一支手機同時兩個動作 |
+| 切偵錯之前 | 網頁會先問一次。偵錯沒有自動復原，按了就一直是那樣 |
+
+沒有鑰匙（或鑰匙沒有那一格權限）的時候，牆上的按鈕會退回走你自己那台的 helper，
+再不行就變成複製 `hangar ring`／`hangar adb` 指令。
+
+> [!WARNING]
+> 區網上是明文 HTTP，同網段的人聽得到鑰匙。測試機房多半可以接受；不能接受的話
+> 把 hub 放到 Tailscale 上，或前面加一層 TLS 反向代理（`--hub https://…` 讓 Origin
+> 對得上，並帶 `--no-auto-pair`）。
 
 在卡片上，響鈴只對「agent 可達且宣告 `can.ring`」的手機啟用；偵錯只對宣告
-`can.toggle_adb` 且回報了 `adb.enabled` 的手機啟用。helper 沒有啟動時，按鈕會
-改成複製 `hangar ring`／`hangar adb` 指令。**在瀏覽器裡直接看到畫面（網頁投影
+`can.toggle_adb` 且回報了 `adb.enabled` 的手機啟用。
+
+**投影不在這裡**：視窗得開在看的人面前，所以投影、入伍、更新 agent 仍然走你
+自己那台的 helper（見[從裝置牆上按投影](wall-actions.md)）。**在瀏覽器裡直接看到畫面（網頁投影
 串流）仍然是遠期目標** —— 投影本身維持走 CLI 的 scrcpy，那顆按鈕省的是打字，
 不是換掉投影的方式。
 

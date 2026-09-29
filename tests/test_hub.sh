@@ -228,7 +228,7 @@ check  "更新按鈕文字"            "更新agent" "$page"
 # 這一條是整條路的重點：hub 自己永遠不會動手機
 nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "9" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "10" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -646,9 +646,11 @@ nocheck "主動輪詢也不帶 --fix-ip" "fix-ip" "$(cat "$MOCK_STATE/argv_log")
 # GET 不該是觸發器 —— 那會讓任何預抓網址的東西都去戳一次手機
 assert "GET 不觸發輪詢"    "404" "$(code1 "$(get_code "$HUB_URL/api/refresh")")"
 assert "不認得的 what 回 400" "400" "$(code1 "$(post "$HUB_URL/api/refresh?what=nonesuch")")"
-# M3d/M4 的寫入仍然走本機 helper；hub 不可以悄悄長出直連手機的端點。
-assert "hub 沒有響鈴寫入端點" "404" "$(code1 "$(post "$HUB_URL/api/ring")")"
-assert "hub 沒有偵錯寫入端點" "404" "$(code1 "$(post "$HUB_URL/api/adb")")"
+# 響鈴與切偵錯現在是 hub 的端點（H23），但只收 JSON —— 表單式的 POST（任何
+# 網頁都送得出來、不用 preflight 的那一種）一律擋掉
+assert "響鈴端點不收非 JSON" "415" "$(code1 "$(post "$HUB_URL/api/ring")")"
+assert "偵錯端點不收非 JSON" "415" "$(code1 "$(post "$HUB_URL/api/adb")")"
+assert "投影仍然不在 hub 上" "404" "$(code1 "$(post "$HUB_URL/api/mirror")")"
 hub_stop
 
 echo "=== H13. 起不來的時候要講人話，不要丟 traceback ==="
@@ -932,6 +934,155 @@ assert "adb 通著就記成開著"           "True" \
 ci='(lambda st: [setattr(st, "tokens", {"S1": ("qa", "t")}), setattr(st, "tokens_at", 1e18), st.checkin({"device_serial":"S1","adb":{"enabled":False}}, "t", "1.2.3.4", now=50), st.adb_seen][-1])(hub.State())'
 assert "主動回報帶的偵錯開關也記"     "{'S1': {'enabled': False, 'at': 50}}" "$(m "$ci")"
 check  "牆上有橫幅"                   "要有人到手機旁邊處理" "$(cat "$SP/../hub/static/index.html")"
+
+echo "=== H23. 響鈴與切偵錯由 hub 執行：每人一把鑰匙、每次都記下來 ==="
+# 裝置牆只開在 hub 那一台，別台（甚至手機、平板）開瀏覽器就按得動。hub 用的
+# 是自己的 profile，按的人那台什麼都不用有 —— 所以 hub 必須知道是誰按的。
+KEYS="$MOCK_STATE/keys.json"; ALOG="$MOCK_STATE/actions.log"
+# act <方法> <網址> [JSON body] [token] [Origin] → "<狀態碼>|<body>"
+act() { python3 -c '
+import sys, urllib.request, urllib.error
+method, url, body, token, origin = (sys.argv[1:] + [""] * 5)[:5]
+r = urllib.request.Request(url, data=body.encode() if body else None, method=method)
+if body:   r.add_header("Content-Type", "application/json")
+if token:  r.add_header("Authorization", "Bearer " + token)
+if origin: r.add_header("Origin", origin)
+try:
+    resp = urllib.request.urlopen(r, timeout=10)
+    print("%d|%s" % (resp.status, resp.read().decode()))
+except urllib.error.HTTPError as e:
+    print("%d|%s" % (e.code, e.read().decode()))
+except Exception as e:
+    print("0|%s" % e)' "$@"; }
+grant() { python3 "$HUB" --keys-file "$KEYS" --port 8787 --hub http://hub.test:8787 --grant "$@"; }
+key_of() { sed -nE 's|.*#key=([0-9a-f]+)$|\1|p' | head -1; }
+
+hub_env
+out="$(grant alice --can ring,adb_off)"
+check  "發鑰匙會印出帶鑰匙的連結" "http://hub.test:8787/#key=" "$out"
+check  "講得出能按什麼"           "ring、adb_off" "$out"
+ALICE="$(printf '%s' "$out" | key_of)"
+BOB="$(grant bob | key_of)"
+assert "鑰匙檔只有自己讀得到" "600" "$(python3 -c 'import os,stat,sys;print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode))[2:])' "$KEYS")"
+nocheck "檔案裡不存鑰匙本身"   "$ALICE" "$(cat "$KEYS")"
+out="$(python3 "$HUB" --keys-file "$KEYS" --keys)"
+check  "--keys 列得出誰有"     "alice" "$out"
+check  "預設三格都給"         "ring,adb_off,adb_on" "$out"
+out="$(grant 'bad name' 2>&1)"; check "名字要乾淨" "只能用英數字" "$out"
+out="$(grant carol --can fly 2>&1)"; check "不認得的能力要說" "看不懂的 --can" "$out"
+assert "--grant 不會把 hub 起起來" "no" "$([ -f "$MOCK_STATE/argv_log" ] && echo yes || echo no)"
+
+# --no-auto-pair：loopback 也要鑰匙，這樣才測得到「沒鑰匙」的那一條
+hub_start --keys-file "$KEYS" --action-log "$ALOG" --no-auto-pair \
+  || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+get_devices >/dev/null
+W='{"profile":"work","serial":"R58M12345AB"}'
+
+out="$(act GET "$HUB_URL/api/whoami" "" "$ALICE")"
+assert "whoami 認得 alice"       "alice" "$(q 'd["name"]' "${out#*|}")"
+assert "而且講得出能按什麼"      "['ring', 'adb_off']" "$(q 'd["can"]' "${out#*|}")"
+out="$(act GET "$HUB_URL/api/whoami")"
+assert "沒鑰匙 → 401"            "401" "${out%%|*}"
+out="$(act POST "$HUB_URL/api/ring" "$W")"
+assert "沒鑰匙按不動"            "401" "${out%%|*}"
+check  "並且講得出怎麼拿鑰匙"    "--grant" "${out#*|}"
+
+out="$(act POST "$HUB_URL/api/ring" '{"profile":"work","seconds":30}' "$ALICE")"
+assert "alice 響得動"            "200" "${out%%|*}"
+assert "回報是誰按的"            "alice" "$(q 'd["by"]' "${out#*|}")"
+check  "真的叫了 hangar ring"    "ring --seconds 30 -p work" "$(cat "$MOCK_STATE/argv_log")"
+out="$(act POST "$HUB_URL/api/ring" '{"profile":"work","seconds":999}' "$ALICE")"
+assert "秒數夾到 120"            "120" "$(q 'd["seconds"]' "${out#*|}")"
+
+out="$(act POST "$HUB_URL/api/adb" '{"profile":"work","enabled":true}' "$ALICE")"
+assert "alice 沒有開偵錯的權限"  "403" "${out%%|*}"
+nocheck "而且真的沒去叫"         "adb --on" "$(cat "$MOCK_STATE/argv_log")"
+out="$(act POST "$HUB_URL/api/adb" '{"profile":"work","enabled":false}' "$ALICE")"
+assert "alice 關得掉"            "200" "${out%%|*}"
+check  "真的叫了 hangar adb --off" "adb --off -p work" "$(cat "$MOCK_STATE/argv_log")"
+out="$(act POST "$HUB_URL/api/adb" '{"profile":"work","enabled":false,"revert_after_s":60}' "$BOB")"
+assert "自動復原的欄位明講不收"  "400" "${out%%|*}"
+
+# 瀏覽器來的只收這面牆自己那一頁；profile 只收 hub 上真的有的名字
+out="$(act POST "$HUB_URL/api/ring" "$W" "$BOB" "http://evil.example")"
+assert "別的網站送不進來"        "403" "${out%%|*}"
+out="$(act POST "$HUB_URL/api/ring" '{"profile":"work","seconds":0}' "$BOB" "$HUB_URL")"
+assert "這面牆自己那一頁可以"    "200" "${out%%|*}"
+out="$(act POST "$HUB_URL/api/ring" '{"profile":"--help"}' "$BOB")"
+assert "不認得的 profile 不跑"   "404" "${out%%|*}"
+nocheck "不會被當成旗標接上去"   "ring.*--help" "$(cat "$MOCK_STATE/argv_log")"
+out="$(act POST "$HUB_URL/api/ring" '{"profile":"work","serial":"OTHER"}' "$BOB")"
+assert "序號對不上就不做"        "409" "${out%%|*}"
+
+touch "$MOCK_STATE/action_fail"
+out="$(act POST "$HUB_URL/api/ring" "$W" "$BOB")"
+assert "agent 拒絕 → 502"        "502" "${out%%|*}"
+check  "並且把 CLI 的話帶回來"   "叫不到 agent" "${out#*|}"
+rm -f "$MOCK_STATE/action_fail"
+
+# 同一支不能同時被按兩次
+echo 1 > "$MOCK_STATE/action_sleep"
+act POST "$HUB_URL/api/ring" "$W" "$BOB" > "$MOCK_STATE/first" &
+FIRST=$!
+sleep 0.4
+out="$(act POST "$HUB_URL/api/ring" "$W" "$ALICE")"
+# 只等這一個：光寫 wait 會連背景的 hub 一起等
+wait "$FIRST"
+rm -f "$MOCK_STATE/action_sleep"
+assert "同一支同時只跑一個"      "409" "${out%%|*}"
+assert "先來的那個照樣做完"      "200" "$(cut -d'|' -f1 < "$MOCK_STATE/first")"
+
+# 紀錄：檔案一行一筆，牆上每種動作留最後一次
+assert "紀錄檔記下誰關了偵錯"    "alice" \
+  "$(python3 -c 'import json,sys;print([e["who"] for e in map(json.loads,open(sys.argv[1])) if e["action"]=="adb" and e["ok"]][-1])' "$ALOG")"
+check  "紀錄帶著 IP"             '"ip": "127.0.0.1"' "$(cat "$ALOG")"
+out="$(get_devices)"
+la='[x for x in d["devices"] if x["name"]=="work"][0]["last_action"]'
+assert "後來的響鈴沒蓋掉偵錯那筆" "alice" "$(q "${la}['adb']['who']" "$out")"
+assert "而且記著是關的"          "False" "$(q "${la}['adb']['enabled']" "$out")"
+assert "沒按過的卡是 null"       "None"  "$(q '[x for x in d["devices"] if x["name"]=="spare"][0]["last_action"]' "$out")"
+
+# 收回不用重開 hub
+python3 "$HUB" --keys-file "$KEYS" --revoke bob >/dev/null
+out="$(act POST "$HUB_URL/api/ring" "$W" "$BOB")"
+assert "收回之後馬上按不動"      "401" "${out%%|*}"
+out="$(python3 "$HUB" --keys-file "$KEYS" --revoke nobody 2>&1)"
+check  "收回不存在的名字要說"    "沒有叫 nobody" "$out"
+hub_stop
+
+# 預設（沒有 --no-auto-pair）：在 hub 那台自己開的頁面不用鑰匙
+hub_env
+hub_start --keys-file "$KEYS" --action-log "$ALOG" || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+get_devices >/dev/null
+out="$(act GET "$HUB_URL/api/whoami")"
+assert "本機不用鑰匙"            "loopback" "$(q 'd["via"]' "${out#*|}")"
+out="$(act POST "$HUB_URL/api/ring" "$W")"
+assert "本機按得動"              "200" "${out%%|*}"
+out="$(act POST "$HUB_URL/api/ring" "$W" "not-a-key")"
+assert "但帶了錯的鑰匙就不算"    "401" "${out%%|*}"
+hub_stop
+
+LAN="$(lan_ip)"
+if [ -z "$LAN" ]; then
+  echo "  SKIP  這台機器問不出區網位址，沒辦法從非 loopback 打自己"
+else
+  hub_env                       # 這一步會連鑰匙檔一起清掉，所以重發一把
+  ALICE="$(grant alice --can ring | key_of)"
+  hub_start --bind 0.0.0.0 --keys-file "$KEYS" --action-log "$ALOG" \
+    || { echo "  FAIL  hub 起不來"; FAIL=$((FAIL+1)); }
+  get_devices >/dev/null
+  check "綁出去時講得出誰按得動" "把鑰匙按得動" "$(cat "$MOCK_STATE/hub_err")"
+  out="$(act POST "http://$LAN:$HUB_PORT/api/ring" "$W")"
+  assert "別台沒鑰匙按不動"      "401" "${out%%|*}"
+  out="$(act POST "http://$LAN:$HUB_PORT/api/ring" "$W" "$ALICE")"
+  assert "別台帶鑰匙按得動"      "200" "${out%%|*}"
+  hub_stop
+fi
+
+page="$(cat "$SP/../hub/static/index.html")"
+check  "牆上有 hub 鑰匙那一條路"  "async function whoami" "$page"
+check  "切偵錯之前要問一次"       "window.confirm" "$page"
+check  "鑰匙從 # 進來"            'get("key")' "$page"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
