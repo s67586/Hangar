@@ -197,7 +197,7 @@ check  "agent 無回應且 adb ready 可補裝" \
   'd.agent.reachable === false && d.agent.enrolled === null' "$(get "$HUB_URL/")"
 page="$(get "$HUB_URL/")"
 check  "首頁含更新 agent handler" "async function updateAgent" "$page"
-check  "看板目標 agent 版號"       'const CURRENT_AGENT_VERSION = "0.2.0";' "$page"
+check  "看板目標 agent 版號"       'const CURRENT_AGENT_VERSION = "0.2.1";' "$page"
 check  "舊版改用版號比較"          'compareAgentVersions(d.agent.version, CURRENT_AGENT_VERSION) === -1' "$page"
 version_logic="$(printf '%s' "$page" | sed -n '/function agentNeedsUpdate/,/^}/p')"
 nocheck "舊版判斷不再看 can.ring"  "can.ring" "$version_logic"
@@ -208,9 +208,9 @@ $(printf '%s' "$page" | awk '/function agentVersionParts/{keep=1} /function ring
   if VERSION_SOURCE="$version_source" node - <<'NODE'
 const source = process.env.VERSION_SOURCE || "";
 eval(source);
-const old = { agent: { reachable: true, enrolled: true, version: "0.1.2" } };
-const current = { agent: { reachable: true, enrolled: true, version: "0.2.0" } };
-const newer = { agent: { reachable: true, enrolled: true, version: "0.2.1" } };
+const old = { agent: { reachable: true, enrolled: true, version: "0.2.0" } };
+const current = { agent: { reachable: true, enrolled: true, version: "0.2.1" } };
+const newer = { agent: { reachable: true, enrolled: true, version: "0.2.2" } };
 if (!agentNeedsUpdate(old) || agentNeedsUpdate(current) || agentNeedsUpdate(newer)) process.exit(1);
 if (compareAgentVersions("0.1.10", "0.1.2") !== 1) process.exit(1);
 NODE
@@ -228,7 +228,7 @@ check  "更新按鈕文字"            "更新agent" "$page"
 # 這一條是整條路的重點：hub 自己永遠不會動手機
 nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "12" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "13" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著

@@ -34,7 +34,7 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
-SCHEMA = 4
+SCHEMA = 5
 VERSION = "0.1.0-fake"
 STARTED = time.time()
 
@@ -93,9 +93,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, self._err(
                 "bad_request", "revert_after_s 已移除：偵錯狀態全手動"))
         self.cfg.adb_enabled = enabled
+        # 關閉偵錯要連無線偵錯一起關（兩個開關共用 adbd，只關 USB 的話 5555 還在）；
+        # 開的時候只開 USB
+        if not enabled:
+            self.cfg.wifi_enabled = False
         return self._json(200, {"schema": SCHEMA, "enabled": enabled,
-                                "adb": {"enabled": enabled, "wifi_enabled": False,
-                                        "wifi_port": None}})
+                                "adb": self._adb()})
 
     def _token_ok(self):
         auth = self.headers.get("Authorization", "")
@@ -114,10 +117,17 @@ class Handler(BaseHTTPRequestHandler):
             "android": {"release": "14", "sdk": 34},
             "battery": {"level": 78, "status": "discharging", "temperature_c": 27.5},
             # wifi_port 是隨機的而且一般 app 讀不到 —— M3c 之前誠實回 null
-            "adb": {"enabled": getattr(self.cfg, "adb_enabled", True),
-                    "wifi_enabled": False, "wifi_port": None},
+            "adb": self._adb(),
             "can": {"toggle_adb": True, "toggle_wifi_adb": True, "ring": True},
         }
+
+    def _adb(self):
+        # 這台假手機讀得到真實值（source=settings）；讀不準的機器會是 agent_write /
+        # unknown，enabled 可能是 null —— 見 agent 的 AdbState
+        return {"enabled": getattr(self.cfg, "adb_enabled", True),
+                "source": "settings", "readable": True,
+                "wifi_enabled": getattr(self.cfg, "wifi_enabled", True),
+                "wifi_port": None, "changes_seen": 0}
 
     def _err(self, code, message):
         return {"schema": SCHEMA, "error": {"code": code, "message": message}}
@@ -142,6 +152,7 @@ def main():
     ap.add_argument("--not-enrolled", dest="enrolled", action="store_false")
     cfg = ap.parse_args()
     cfg.adb_enabled = True
+    cfg.wifi_enabled = True
     cfg.ring_until = 0
 
     Handler.cfg = cfg

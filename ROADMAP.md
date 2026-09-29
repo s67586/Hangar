@@ -115,11 +115,11 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | | 現在是 | 在哪裡 |
 |---|---|---|
 | `hangar` 版本 | `1.6.0` | `hangar:20` |
-| `list` / `status --json` | schema **5** | `JSON_SCHEMA`，`hangar:2786` |
+| `list` / `status --json` | schema **6** | `JSON_SCHEMA`，`hangar:2792` |
 | `scan --json` | schema **8** | `SCAN_SCHEMA`，`hangar:181` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:182` |
-| hub `/api/devices` | schema **12** | `API_SCHEMA`，`hub/hangar_hub.py:95` |
-| agent 協定 | schema **4**，版本 `0.2.0` | `agent/app/build.gradle.kts` |
+| hub `/api/devices` | schema **13** | `API_SCHEMA`，`hub/hangar_hub.py:97` |
+| agent 協定 | schema **5**，版本 `0.2.1` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、`GET /api/whoami`、**`POST /api/refresh`**、**`POST /api/ring`**、**`POST /api/adb`**（後兩個要鑰匙）；另一個 listener（`--checkin`）只有 `POST /api/checkin` | `Handler`、`CheckinHandler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
 | helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
@@ -394,6 +394,17 @@ agent 往哪裡送，hub 帶 `--checkin HOST:PORT` 另開一個埠收。幾條�
   **一定是同一個字串** —— 這是 hub 把 agent、`list`、`scan` 三份資料合成一張卡的主鍵。
 - `adb.wifi_port` 是無線偵錯當下的埠（隨機，重開機會變）。agent 讀得到就填，
   讀不到填 `null`，讓電腦端退回用 mDNS 找。
+- **`adb.enabled` 可能是 `null`（協定 5 起）**，旁邊的 `adb.source` 說它怎麼來的：
+  `settings`（照讀）、`agent_write`（讀不準的機器上，agent 自己最後寫的，之後沒人
+  動過）、`unknown`（讀不準，而且寫完之後有人在手機上切過）。`adb.readable` 是
+  `false` 就表示這台讀不準 —— Pixel 8a / Android 17 上一般 app 讀 `adb_enabled`
+  永遠是 0。判斷只靠證據：agent 寫了「開」、讀回來卻不是 1。「有人切過」靠的是
+  系統的設定變更通知（值被遮蔽時通知照樣會來，實測過）；自己的寫入在**寫之前**
+  登記，因為通知可能晚 3 秒以上才到。
+- **`POST /adb {"enabled": false}` 會連無線偵錯一起關（0.2.1 起）**。USB 偵錯與
+  無線偵錯是兩個開關，但共用同一個 adbd：無線偵錯開著時只關 USB，adbd 不會停，
+  `adb tcpip` 開的 5555 也還連得進來。開的時候只開 USB 偵錯 —— adbd 會照著
+  `service.adb.tcp.port` 把 5555 開回來（見 B2）。
 - `can` 是**能力宣告**：Android 10 的機器 `toggle_wifi_adb` 就是 `false`。介面一致、
   能力不一致，比「同一個端點在不同機器上有不同行為」好除錯。
 - 沒有 `mac`、沒有 `authorized_hosts` —— 前者拿不到，後者是 `/data/misc/adb/adb_keys`，
@@ -838,7 +849,7 @@ A1–A3、B1、B2 有照表跑的腳本：`tools/field_check.sh`（`watch`／`re
 | B5 | 一個 /24 掃完要多久（真實網路，不是 mock） | `time hangar scan` | 太久的話 hub 的 `--scan-interval` 要往上調 |
 | B6 | 手機被調成靜音／開著勿擾時，alarm stream 還響不響（各家 ROM 不一） | 手動設成靜音與各級 DND，各按一次響鈴 | 不響的話響鈴要去動系統音量，那就多一個「會回不去的狀態」（見 C8） |
 | B7 | 高優先度 notification 會不會真的點亮螢幕、跳 heads-up | 螢幕關著時按響鈴，看它亮不亮 | 不亮的話只剩聲音；在櫃子裡聲音比亮光難定位，識別會慢很多 |
-| B8 | 新版 Android 上 agent 讀不讀得到 `adb_enabled` 的真實值 | **Pixel 8a / Android 17 實測過了**：寫入有效（系統紀錄的寫入者是 agent），但 agent 用 `Settings.Global.getInt` 讀永遠不是 1。之前看起來「寫不進去」，是因為手機上開著「開發人員選項」那一頁，設定 app 把值寫回去了 | 牆上改用 adb 直接讀的那份（`debug_enabled`），`hangar adb` 切完用 adb 驗證。**adb 斷掉的時候牆上只剩 agent 那份，在這種機器上不可信** —— 要換 agent 的讀法（診斷版比較幾種讀法中）。另外 agent `/adb` 回應裡的 `enabled` 是照抄請求，要改成讀回來的值 |
+| B8 | 新版 Android 上 agent 讀不讀得到 `adb_enabled` 的真實值 | **Pixel 8a / Android 17 實測過了**：寫入有效（系統紀錄的寫入者是 agent），但 agent 用 `Settings.Global.getInt` 讀永遠不是 1。之前看起來「寫不進去」，是因為手機上開著「開發人員選項」那一頁，設定 app 把值寫回去了 | 牆上改用 adb 直接讀的那份（`debug_enabled`），`hangar adb` 切完用 adb 驗證。診斷版 agent 比過：`getInt`、`getString`、直接查 provider 全部固定回 0，`sys.usb.config`、`init.svc.adbd` 也不隨開關改變 —— **app 這一側讀不到**。0.2.1 起改成：讀不準的機器上報自己最後寫的（`source: agent_write`），有人在手機上切過就報 `null`（`unknown`）。「有人切過」靠系統的設定變更通知，值被遮蔽時通知照樣會來（實測過，但可能晚 3 秒以上） |
 
 ### C. 想知道的（還沒量過）
 

@@ -1268,13 +1268,16 @@ AGENT_CAN_RING=""     # true / false / 空（舊版或尚未問到 status）
 AGENT_CAN_TOGGLE_ADB=""
 AGENT_CAN_TOGGLE_WIFI_ADB=""
 AGENT_ADB_ENABLED=""  # true / false / 空
+# agent 那份偵錯開關是怎麼來的（協定 5）：settings / agent_write / unknown / 空（舊版）。
+# 讀不準的機器（Android 17）上 agent 報的是自己最後寫的，有人在手機上切過就是 unknown
+AGENT_ADB_SOURCE=""
 AGENT_WIFI_ADB_ENABLED=""
 AGENT_WIFI_ADB_PORT=""
 
 agent_reset() {
   AGENT_REACHABLE=0; AGENT_VERSION=""; AGENT_ENROLLED=""; AGENT_SOURCE=""
   AGENT_CAN_RING=""; AGENT_CAN_TOGGLE_ADB=""; AGENT_CAN_TOGGLE_WIFI_ADB=""
-  AGENT_ADB_ENABLED=""; AGENT_WIFI_ADB_ENABLED=""; AGENT_WIFI_ADB_PORT=""
+  AGENT_ADB_ENABLED=""; AGENT_ADB_SOURCE=""; AGENT_WIFI_ADB_ENABLED=""; AGENT_WIFI_ADB_PORT=""
 }
 
 # agent_ping <ip> [port] — 這支手機上有 agent 在聽嗎。便宜，不需要 token。
@@ -1300,6 +1303,8 @@ agent_apply_status() {
   [ -n "$v" ] && AGENT_CAN_TOGGLE_WIFI_ADB="$v"
   v="$(agent_field "$body" '.adb.enabled | if . == null then empty else tostring end')"
   [ -n "$v" ] && AGENT_ADB_ENABLED="$v"
+  v="$(agent_field "$body" '.adb.source')"
+  [ -n "$v" ] && AGENT_ADB_SOURCE="$v"
   v="$(agent_field "$body" '.adb.wifi_enabled | if . == null then empty else tostring end')"
   [ -n "$v" ] && AGENT_WIFI_ADB_ENABLED="$v"
   v="$(agent_field "$body" '.adb.wifi_port')"
@@ -2783,7 +2788,8 @@ scrcpy_pids_for() { pgrep -f "scrcpy .*${1}" 2>/dev/null | tr '\n' ' '; }
 # 這是之後 web 後端讀 hangar 的介面，schema 有變動就要把 schema 號碼往上加。
 
 # 5：debug_enabled —— 手機上的偵錯開關，adb 直接讀的（問不到是 null）。
-JSON_SCHEMA=5
+# 6：agent.adb.source —— agent 那份偵錯開關怎麼來的（settings / agent_write / unknown）。
+JSON_SCHEMA=6
 
 # device_json <is_default 0/1> — 依目前的 probe 結果組出一個 device 物件
 device_json() {
@@ -2826,6 +2832,7 @@ device_json() {
     --arg     acantoggle "$AGENT_CAN_TOGGLE_ADB" \
     --arg     acanwifi  "$AGENT_CAN_TOGGLE_WIFI_ADB" \
     --arg     aadbenabled "$AGENT_ADB_ENABLED" \
+    --arg     aadbsource "$AGENT_ADB_SOURCE" \
     --arg     awifienabled "$AGENT_WIFI_ADB_ENABLED" \
     --arg     awifiport "$AGENT_WIFI_ADB_PORT" \
     --arg     atoken    "${AGENT_TOKEN:-}" \
@@ -2875,9 +2882,11 @@ device_json() {
                           can: { ring: ($acanring == "true"),
                                  toggle_adb: ($acantoggle == "true"),
                                  toggle_wifi_adb: ($acanwifi == "true") },
-                          adb: (if $aadbenabled == "" and $awifienabled == "" and $awifiport == ""
+                          adb: (if $aadbenabled == "" and $awifienabled == "" and $awifiport == "" and $aadbsource == ""
                                 then null
                                 else { enabled: (if $aadbenabled == "" then null else $aadbenabled == "true" end),
+                                       # settings / agent_write / unknown；舊版 agent 是 null
+                                       source: ($aadbsource | s),
                                        wifi_enabled: (if $awifienabled == "" then null else $awifienabled == "true" end),
                                        wifi_port: ($awifiport | n) }
                                 end) }
@@ -3193,6 +3202,14 @@ cmd_adb() {
     exit 1
   }
   state="$(agent_field "$body" '.enabled')"
+  # 關了 USB 偵錯、無線偵錯卻還開著：兩個開關共用 adbd，adbd 沒停，`adb tcpip`
+  # 開的 5555 也還連得進來（Pixel 8a 實測）。0.2.1 起 agent 會兩個一起關；舊版
+  # 只關 USB，這裡要講
+  if [ "$enabled" = "0" ] \
+     && [ "$(agent_field "$body" '.adb.wifi_enabled | if . == null then empty else tostring end')" = "true" ]; then
+    warn "無線偵錯還開著 —— adbd 沒停，網路上的 adb（5555）可能還連得進來"
+    hint "舊版 agent 只關 USB 偵錯。更新 agent：hangar enroll -p $PROFILE --reinstall"
+  fi
   # 開回來之後 adb 不會自己連回去：hub 輪詢不主動連線，牆上那張卡會一直停在
   # offline。Pixel 4 / Android 13 實測：關偵錯時 5555 斷掉，開回來之後 adbd 照著
   # service.adb.tcp.port 重開 5555 —— 只要重連一次就回來了（手機重開過就沒有
