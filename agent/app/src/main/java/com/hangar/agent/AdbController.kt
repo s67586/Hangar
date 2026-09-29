@@ -19,5 +19,6 @@ object AdbController {
             if (enabled) 1 else 0,
         )
         if (!wrote) throw SecurityException("Android 拒絕寫入 adb_enabled")
+        AdbState.noteWrite(ctx, enabled)
     }
 }

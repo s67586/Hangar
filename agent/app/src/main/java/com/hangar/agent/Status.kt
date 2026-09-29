@@ -95,7 +95,9 @@ object Status {
     }
 
     private fun adb(ctx: Context): JSONObject = JSONObject().apply {
-        put("enabled", globalInt(ctx, Settings.Global.ADB_ENABLED) == 1)
+        // enabled / source / readable：讀不準的機器上改報自己最後寫的，見 AdbState
+        AdbState.report(ctx, this)
+        put("changes_seen", AdbState.changesSeen(ctx))
         // adb_wifi_enabled 在 Android 10 以下根本不存在，讀不到就回 null
         // —— 「關著」跟「這台機器沒有這個東西」是兩件事。
         val wifi = globalInt(ctx, "adb_wifi_enabled")
