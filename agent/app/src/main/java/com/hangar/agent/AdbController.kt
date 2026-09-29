@@ -13,6 +13,7 @@ import android.provider.Settings
 object AdbController {
     /** 寫不進去時丟 SecurityException，由 HTTP 層轉成明確的 403，而不是假裝成功。 */
     fun set(ctx: Context, enabled: Boolean) {
+        AdbState.beforeWrite(ctx)
         val wrote = Settings.Global.putInt(
             ctx.applicationContext.contentResolver,
             Settings.Global.ADB_ENABLED,

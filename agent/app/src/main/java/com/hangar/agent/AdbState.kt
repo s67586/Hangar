@@ -22,8 +22,19 @@ import org.json.JSONObject
  */
 object AdbState {
     private const val PREFS = "hangar_adb_state"
-    // 自己寫完之後這麼久以內收到的變更通知，當成是自己造成的
-    private const val SELF_WINDOW_MS = 3000L
+    // 自己的寫入「在路上」最多算多久。不能用「寫完幾秒內的通知算自己的」：
+    // Pixel 8a 實測通知晚了 3 秒多才到，會被誤判成有人在手機上切過。這一筆
+    // 要有期限，因為寫入同一個值時系統不會送通知，它就永遠不會被銷掉
+    private const val PENDING_MS = 15_000L
+
+    /**
+     * AdbController **寫入之前**叫：記一筆「接下來那個通知是我自己造成的」。
+     * 一定要在寫之前 —— 通知走主執行緒，可能比寫完之後的記錄還早到。
+     * commit 而不是 apply：主執行緒那邊要馬上讀得到。
+     */
+    fun beforeWrite(ctx: Context) {
+        prefs(ctx).edit().putLong("self_pending_at", System.currentTimeMillis()).commit()
+    }
 
     /** AdbController 寫完之後叫：記下寫了什麼，順便看讀不讀得準。 */
     fun noteWrite(ctx: Context, enabled: Boolean) {
@@ -42,11 +53,15 @@ object AdbState {
         val p = prefs(ctx)
         val now = System.currentTimeMillis()
         val e = p.edit().putInt("changes_seen", p.getInt("changes_seen", 0) + 1)
-        if (now - p.getLong("last_written_at", 0) > SELF_WINDOW_MS) {
-            // 不是自己剛寫的：有人在手機上（或用 adb）切過。自己記的那份就不能再信
+        val pendingAt = p.getLong("self_pending_at", 0)
+        if (pendingAt > 0 && now - pendingAt < PENDING_MS) {
+            // 自己寫的那一筆到了：銷掉，下一個通知就不算自己的
+            e.remove("self_pending_at")
+        } else {
+            // 不是自己寫的：有人在手機上（或用 adb）切過。自己記的那份就不能再信
             e.putLong("external_change_at", now)
         }
-        e.apply()
+        e.commit()
     }
 
     /** /status 的 adb.enabled / adb.source / adb.readable。 */
