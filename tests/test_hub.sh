@@ -228,7 +228,7 @@ check  "更新按鈕文字"            "更新agent" "$page"
 # 這一條是整條路的重點：hub 自己永遠不會動手機
 nocheck "hub 沒有新的動手機端點" "/api/reinstall" "$(get "$HUB_URL/")"
 out="$(get_devices)"
-assert "api 有 schema"    "11" "$(q 'd["schema"]' "$out")"
+assert "api 有 schema"    "12" "$(q 'd["schema"]' "$out")"
 assert "掃到的網段帶出來" "192.168.1.0/24" "$(q 'd["subnet"]' "$out")"
 
 # scrcpy_pids 是 hangar 在 hub 這台機器上 pgrep 出來的，牆上要講「哪一台開著
@@ -929,8 +929,11 @@ assert "排在電量低的前面"          "z-qa" "$(m "merge(${two}, None, adb_
 rec='(lambda seen: [hub.record_adb_seen(seen, {"devices":[{"device_serial":"S1","agent":{"reachable":True,"adb":{"enabled":False}}}]}, 10), hub.record_adb_seen(seen, {"devices":[{"device_serial":"S1","adb_state":"disconnected","agent":{"reachable":False}}]}, 20), seen][-1])({})'
 assert "agent 答得出話時記下來"       "False" "$(m "${rec}['S1']['enabled']")"
 assert "叫不動的那一輪不蓋掉最後一次" "10"    "$(m "${rec}['S1']['at']")"
-assert "adb 通著就記成開著"           "True" \
-  "$(m '(lambda s: [hub.record_adb_seen(s, {"devices":[{"device_serial":"S1","adb_state":"device","agent":{"reachable":False}}]}, 5), s["S1"]["enabled"]][-1])({})')"
+assert "adb 讀得到就記 adb 那份"      "False" \
+  "$(m '(lambda s: [hub.record_adb_seen(s, {"devices":[{"device_serial":"S1","adb_state":"device","debug_enabled":False,"agent":{"reachable":False}}]}, 5), s["S1"]["enabled"]][-1])({})')"
+# 「adb 連得上」不是證據：Pixel 8a 實測，關掉偵錯之後 5555 照樣連得上
+assert "adb 連著但讀不到 → 不猜"      "{}" \
+  "$(m '(lambda s: [hub.record_adb_seen(s, {"devices":[{"device_serial":"S1","adb_state":"device","agent":{"reachable":False}}]}, 5), s][-1])({})')"
 ci='(lambda st: [setattr(st, "tokens", {"S1": ("qa", "t")}), setattr(st, "tokens_at", 1e18), st.checkin({"device_serial":"S1","adb":{"enabled":False}}, "t", "1.2.3.4", now=50), st.adb_seen][-1])(hub.State())'
 assert "主動回報帶的偵錯開關也記"     "{'S1': {'enabled': False, 'at': 50}}" "$(m "$ci")"
 check  "牆上有橫幅"                   "要有人到手機旁邊處理" "$(cat "$SP/../hub/static/index.html")"
@@ -1086,16 +1089,20 @@ two_p='{"devices":[{"profile":"pixel-8","device_serial":"S8","adb_state":"device
 assert "兩份 profile 還是兩張卡"   "3" "$(m "len(merge(${two_p}, None))")"
 assert "互相指認"                  "['pixel-8a']" "$(m "[x for x in merge(${two_p}, None) if x['name']=='pixel-8'][0]['same_device']")"
 assert "別支手機不算"              "[]" "$(m "[x for x in merge(${two_p}, None) if x['name']=='other'][0]['same_device']")"
-# Android 17 實測：app 讀 adb_enabled 永遠是 0，adb 卻連得上
-lie='{"devices":[{"profile":"p8","device_serial":"S8","adb_state":"device","agent":{"reachable":True,"adb":{"enabled":False}}}]}'
-honest='{"devices":[{"profile":"p8","device_serial":"S8","adb_state":"disconnected","agent":{"reachable":True,"adb":{"enabled":False}}}]}'
-assert "agent 說關、adb 連得上 → 矛盾" "True"  "$(m "merge(${lie}, None)[0]['adb_conflict']")"
-assert "adb 連不上就不算矛盾"        "False" "$(m "merge(${honest}, None)[0]['adb_conflict']")"
-assert "記下的是 adb 那份（硬證據）"  "True" \
+# 偵錯開關的硬證據是 adb 直接讀的那份（debug_enabled）。Pixel 8a / Android 17
+# 實測：agent 讀到的永遠是關閉；而且關掉偵錯之後 5555 照樣連得上
+lie='{"devices":[{"profile":"p8","device_serial":"S8","adb_state":"device","debug_enabled":True,"agent":{"reachable":True,"adb":{"enabled":False}}}]}'
+off_but_up='{"devices":[{"profile":"p8","device_serial":"S8","adb_state":"device","debug_enabled":False,"agent":{"reachable":True,"adb":{"enabled":False}}}]}'
+no_proof='{"devices":[{"profile":"p8","device_serial":"S8","adb_state":"device","agent":{"reachable":True,"adb":{"enabled":False}}}]}'
+assert "agent 說關、adb 讀到開 → 矛盾"  "True"  "$(m "merge(${lie}, None)[0]['adb_conflict']")"
+assert "兩份都說關 → 不矛盾（連著也一樣）" "False" "$(m "merge(${off_but_up}, None)[0]['adb_conflict']")"
+assert "adb 讀不到就不從連線推論"       "False" "$(m "merge(${no_proof}, None)[0]['adb_conflict']")"
+assert "debug_enabled 帶上牆"          "True"  "$(m "merge(${lie}, None)[0]['debug_enabled']")"
+assert "記下的是 adb 讀的那份"          "True" \
   "$(m "(lambda s: [hub.record_adb_seen(s, ${lie}, 1), s['S8']['enabled']][-1])({})")"
 page="$(cat "$SP/../hub/static/index.html")"
 check  "牆上講得出同一支手機" "同一支手機另外還有 profile" "$page"
-check  "矛盾時按鈕以 adb 為準" "d.adb_conflict ? true : adb.enabled" "$page"
+check  "按鈕以 adb 讀的為準"   "debugNow(d)" "$page"
 check  "沒 token 不再說是舊版" "這份 profile 沒有 agent 的 token" "$page"
 
 page="$(cat "$SP/../hub/static/index.html")"

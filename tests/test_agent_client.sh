@@ -225,12 +225,19 @@ echo "=== C3. list --json：adb 通的時候，agent 只是附帶資訊 ==="
 env_one; : > "$MOCK_STATE/fake.apk"
 "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1
 out="$("$PM" list --json --probe 2>/dev/null)"
-assert "schema 往上加了"     "4" "$(q '.schema' "$out")"
+assert "schema 往上加了"     "5" "$(q '.schema' "$out")"
 assert "adb 通就用 adb 的資料" "adb" "$(q '.devices[0].battery.source' "$out")"
 assert "電量是 adb 那份"      "78" "$(q '.devices[0].battery.level' "$out")"
 assert "agent 也看得到"       "true" "$(q '.devices[0].agent.reachable' "$out")"
 assert "說得出 agent 版本"    "0.1.0-mock" "$(q '.devices[0].agent.version' "$out")"
 assert "能力宣告帶上牆"        "true" "$(q '.devices[0].agent.can.ring' "$out")"
+assert "問不到偵錯開關就是 null" "null" "$(q '.devices[0].debug_enabled' "$out")"
+# 偵錯開關的硬證據是 adb 直接讀的那一份：agent 在 Android 17 上讀不準，而
+# 「adb 連得上」也不代表開著（關掉只停 USB 那頭，5555 照樣連得上）
+echo 0 > "$MOCK_STATE/adb_enabled_value"
+out="$("$PM" list --json --probe 2>/dev/null)"
+rm -f "$MOCK_STATE/adb_enabled_value"
+assert "adb 連著也照實說關著"   "false" "$(q '.devices[0].debug_enabled' "$out")"
 
 echo "=== C3b. hangar ring / adb：不需要 adb 通也能走 agent ==="
 env_one; : > "$MOCK_STATE/fake.apk"
@@ -256,6 +263,43 @@ nocheck "讀回來對不上就不說已開啟" "偵錯已開啟" "$out"
 check  "老實說讀不到結果"         "agent 讀不到結果" "$out"
 check  "指出哪裡看得到真的值"     "settings get global adb_enabled" "$out"
 check  "不當成失敗"               "^0$" "$rc"
+
+# adb 還連得上就直接問手機：Android 17 實測，agent 寫入回報成功、值卻沒變，
+# 而 agent 讀回來又永遠是 0 —— 只看 agent 的話「關閉」永遠像是成功了
+echo 1 > "$MOCK_STATE/adb_enabled_value"
+touch "$MOCK_STATE/adb_readback_stuck_off"
+out="$("$PM" adb -p work --off 2>&1)"; rc=$?
+rm -f "$MOCK_STATE/adb_readback_stuck_off"
+assert "adb 讀到還開著 → 失敗"      "1" "$rc"
+check  "講清楚是 adb 讀的"          "用 adb 直接讀的" "$out"
+nocheck "不可以說已關閉"            "偵錯已關閉" "$out"
+check  "給出手動關的路"             "開發人員選項" "$out"
+echo 0 > "$MOCK_STATE/adb_enabled_value"
+out="$("$PM" adb -p work --off 2>&1)"; rc=$?
+assert "adb 讀到真的關了 → 成功"    "0" "$rc"
+check  "照常說已關閉"               "偵錯已關閉" "$out"
+rm -f "$MOCK_STATE/adb_enabled_value"
+
+# 偵錯開回來之後 adb 不會自己連回去：hub 輪詢不主動連線，牆上會一直停在
+# offline。Pixel 4 / Android 13 實測：關偵錯時 5555 斷，開回來之後重連一次
+# 就回來了。這裡要替使用者連
+printf '192.168.1.77:5555\toffline\n' > "$MOCK_STATE/adb_devices"; : > "$MOCK_STATE/connect_log"
+out="$(HANGAR_RECONNECT_TRIES=1 "$PM" adb -p work --on 2>&1)"; rc=$?
+check  "開回來之後替你重連"         "adb 也連回來了" "$out"
+check  "先拔掉殘留的 offline 那筆"  "disconnect 192.168.1.77:5555" "$(cat "$MOCK_STATE/connect_log")"
+check  "真的變回 device"            "device" "$(cat "$MOCK_STATE/adb_devices")"
+assert "開回來照樣是成功"           "0" "$rc"
+# 連不回來（手機重開過，5555 沒了）：偵錯開回來仍然算成功，但要說清楚
+printf '192.168.1.77:5555\toffline\n' > "$MOCK_STATE/adb_devices"; echo fail > "$MOCK_STATE/adb_connect_result"
+out="$(HANGAR_RECONNECT_TRIES=1 "$PM" adb -p work --on 2>&1)"; rc=$?
+echo ok > "$MOCK_STATE/adb_connect_result"
+check  "連不回來要講"               "adb 沒連回" "$out"
+check  "並且說下一步"               "hangar setup --name work" "$out"
+assert "偵錯本身仍然開回來了"       "0" "$rc"
+# adb 本來就連著：不做多餘的重連
+printf '192.168.1.77:5555\tdevice\n' > "$MOCK_STATE/adb_devices"; : > "$MOCK_STATE/connect_log"
+"$PM" adb -p work --on >/dev/null 2>&1
+assert "連著的時候不重連"           "" "$(cat "$MOCK_STATE/connect_log")"
 
 echo "=== C4. adb 碰不到時，改問 agent —— 這就是 agent 存在的理由 ==="
 env_one; : > "$MOCK_STATE/fake.apk"

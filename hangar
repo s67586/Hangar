@@ -1682,6 +1682,17 @@ adb_state() { # <serial> → device / offline / unauthorized / ""（不存在）
   adb devices 2>/dev/null | awk -v s="$1" 'NR>1 && $1==s {print $2; exit}'
 }
 
+# 手機上真正的偵錯開關（adb_enabled），用 adb 直接問 → true / false / 空（問不到）。
+#
+# 這是偵錯狀態唯一的硬證據。兩個常見的推論都不成立（Pixel 8a / Android 17 實測）：
+#   「adb 連得上 = 偵錯開著」   關掉 adb_enabled 只停 USB 那一頭，5555 照樣連得上
+#   agent 讀到的值             app 讀 adb_enabled 在那台上永遠不是 1
+adb_debug_setting() { # <serial>
+  local v
+  v="$(run_timeout 8 adb -s "$1" shell settings get global adb_enabled 2>/dev/null | tr -d '\r\n')"
+  case "$v" in 1) echo true ;; 0) echo false ;; esac
+}
+
 # ---- 裝置資訊（機型 / Android / 序號 / 電量）--------------------------------
 #
 # 結果放進全域變數，人類輸出與 --json 共用同一份取得邏輯。
@@ -2666,7 +2677,7 @@ probe_add_error() { PROBE_ERRORS="${PROBE_ERRORS}${1}|${2}"$'\n'; }
 probe_reset() {
   PROBE_REACH=""; PROBE_ADB=""; PROBE_PATH_KIND=""; PROBE_PATH_MS=""; PROBE_ERRORS=""
   DEV_MODEL=""; DEV_RELEASE=""; DEV_SDK=""; DEV_SERIALNO=""
-  DEV_MAC=""; DEV_MAC_SSID=""
+  DEV_MAC=""; DEV_MAC_SSID=""; DEV_DEBUG=""
   BATTERY_LEVEL=""; BATTERY_STATUS=""; BATTERY_TEMP=""
   agent_reset
 }
@@ -2745,6 +2756,7 @@ probe_adb() { # <deep 0/1> <try_connect 0/1>
       adb_device_info "$SERIAL"
       adb_battery "$SERIAL" || true
       adb_wifi_mac "$SERIAL" || true
+      DEV_DEBUG="$(adb_debug_setting "$SERIAL")"
       AGENT_SOURCE="adb"
       # 入伍過的手機順手確認 agent 還活著。agent 死掉而 adb 還通，是「現在沒事、
       # 但下次重開機就會失聯」的預警 —— 那是會想提早知道的事。
@@ -2770,7 +2782,8 @@ scrcpy_pids_for() { pgrep -f "scrcpy .*${1}" 2>/dev/null | tr '\n' ' '; }
 #
 # 這是之後 web 後端讀 hangar 的介面，schema 有變動就要把 schema 號碼往上加。
 
-JSON_SCHEMA=4
+# 5：debug_enabled —— 手機上的偵錯開關，adb 直接讀的（問不到是 null）。
+JSON_SCHEMA=5
 
 # device_json <is_default 0/1> — 依目前的 probe 結果組出一個 device 物件
 device_json() {
@@ -2791,6 +2804,7 @@ device_json() {
     --arg     devserial "${DEVICE_SERIAL:-$DEV_SERIALNO}" \
     --arg     reach     "$PROBE_REACH" \
     --arg     adbstate  "$PROBE_ADB" \
+    --arg     debug     "${DEV_DEBUG:-}" \
     --arg     pathkind  "$PROBE_PATH_KIND" \
     --arg     pathms    "$PROBE_PATH_MS" \
     --arg     model     "$DEV_MODEL" \
@@ -2829,6 +2843,8 @@ device_json() {
       device_serial: ($devserial | s),
       reachability:  ($reach | s),
       adb_state:     (if $adbstate == "" then "disconnected" else $adbstate end),
+      # 偵錯開關的硬證據（adb 直接讀）。agent.adb.enabled 在某些 Android 版本上不準
+      debug_enabled: (if $debug == "" then null else $debug == "true" end),
       path:          (if $pathkind == "" then null
                       else { kind: $pathkind, latency_ms: ($pathms | n) } end),
       model:         ($model | s),
@@ -3177,6 +3193,51 @@ cmd_adb() {
     exit 1
   }
   state="$(agent_field "$body" '.enabled')"
+  # 開回來之後 adb 不會自己連回去：hub 輪詢不主動連線，牆上那張卡會一直停在
+  # offline。Pixel 4 / Android 13 實測：關偵錯時 5555 斷掉，開回來之後 adbd 照著
+  # service.adb.tcp.port 重開 5555 —— 只要重連一次就回來了（手機重開過就沒有
+  # 這個屬性，那要重跑 setup）。adbd 重啟要幾秒，所以重試幾次。
+  if [ "$enabled" = "1" ] && command -v adb >/dev/null 2>&1 \
+     && [ "$(adb_state "$SERIAL")" != "device" ]; then
+    local tries="${HANGAR_RECONNECT_TRIES:-5}" i=0 back=""
+    info "adb 沒連著 → 偵錯開回來了，重新連 ${SERIAL}"
+    # 殘留的 offline 那一筆不先拔掉，connect 會回 already connected 而不重連
+    adb disconnect "$SERIAL" >/dev/null 2>&1
+    while [ "$i" -lt "$tries" ]; do
+      if adb_connect "$SERIAL" && wait_for_device "$SERIAL" 3; then back=1; break; fi
+      i=$((i + 1))
+      [ "$i" -lt "$tries" ] && sleep 2
+    done
+    if [ -n "$back" ]; then
+      ok "adb 也連回來了（${SERIAL}）"
+    else
+      warn "偵錯開回來了，但 adb 沒連回 ${SERIAL}"
+      hint "手機重開過的話 5555 已經沒了，要重跑：hangar setup --name $PROFILE"
+    fi
+  fi
+
+  # 最硬的證據：adb 還連得上的話，直接問手機（見 adb_debug_setting 上面那段）。
+  # agent 的寫入回報成功不代表值真的變了 —— 手機上開著「開發人員選項」那一頁
+  # 時，設定 app 會把它寫回去。讀不到（adb 斷了）就退回下面只看 agent 的判斷。
+  local want_val=false real=""
+  [ "$enabled" = "1" ] && want_val=true
+  if command -v adb >/dev/null 2>&1 && [ "$(adb_state "$SERIAL")" = "device" ]; then
+    real="$(adb_debug_setting "$SERIAL")"
+  fi
+  if [ -n "$real" ]; then
+    if [ "$real" != "$want_val" ]; then
+      local want_zh="關閉" real_zh="開著"
+      [ "$want_val" = "true" ] && want_zh="開啟"
+      [ "$real" = "false" ] && real_zh="關著"
+      err "[${PROFILE}] agent 說寫進去了，但手機上的偵錯開關還是${real_zh}（用 adb 直接讀的）"
+      hint "這支手機不讓 agent 切偵錯（實測 Android 17 會這樣：寫入回報成功，值不會變）"
+      hint "要${want_zh}的話只能在手機上手動切：設定 → 系統 → 開發人員選項 → USB 偵錯"
+      exit 1
+    fi
+    if [ "$want_val" = "true" ]; then ok "[$PROFILE] 偵錯已開啟"
+    else ok "[$PROFILE] 偵錯已關閉（不會自己開回來）"; fi
+    return 0
+  fi
   # 回應裡的 enabled 是 agent 把「你要的值」照抄回來，不是它讀回來的。讀回來
   # 的那一份在 adb.enabled —— 兩個對不上就不能說「已開啟」。實測 Android 17
   # 上 app 讀 adb_enabled 永遠是 0（shell 讀得到 1），所以這裡不判失敗，只是

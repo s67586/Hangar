@@ -681,15 +681,22 @@ function ringRow(d) {
   return `<button class="ring" type="button" data-ring="${esc(d.key)}" ${st.busy ? "disabled" : ""}>響鈴 30 秒</button>`;
 }
 
+// 偵錯現在是開是關 → true / false / null（不知道）。
+// adb 直接讀的那份（debug_enabled）優先；問不到才用 agent 讀的。
+// 「adb 連得上」不當證據：Pixel 8a 實測，關掉偵錯之後 5555 照樣連得上。
+function debugNow(d) {
+  if (typeof d.debug_enabled === "boolean") return d.debug_enabled;
+  const a = d.agent && d.agent.adb;
+  return a && typeof a.enabled === "boolean" ? a.enabled : null;
+}
+
 function adbRow(d) {
   const reason = agentReason(d, "toggle_adb");
   const st = says.get(d.key) || {};
   if (reason) return `<span class="action-note bad">偵錯：${esc(reason)}</span>`;
-  const adb = d.agent && d.agent.adb;
-  if (!adb || typeof adb.enabled !== "boolean")
+  const enabled = debugNow(d);
+  if (enabled === null)
     return `<span class="action-note bad">偵錯：拿不到目前狀態，請先按「立即更新」</span>`;
-  // adb 連得上是硬證據：agent 讀值不準的機器上，按鈕要給「關閉」而不是「開啟」
-  const enabled = d.adb_conflict ? true : adb.enabled;
   const cap = enabled ? "adb_off" : "adb_on";
   if (!hubCan(cap) && helper.status !== "ok") {
     return `<button class="adb" type="button" data-copy-adb="${esc(d.key)}">複製偵錯指令</button>
@@ -697,13 +704,14 @@ function adbRow(d) {
         ? `你的鑰匙沒有「${CAP_ZH[cap]}」的權限，這台電腦的 helper 也沒有連上`
         : "偵錯操作需要 hub 的鑰匙或這台電腦的 helper（目前都沒有）"}</span>`;
   }
+  // agent 讀值不準的機器：adb 斷掉之後牆上就只剩 agent 那份，要先講
+  const warn = d.adb_conflict
+    ? `<span class="action-note bad">這支的 agent 讀不到偵錯開關的真實值（牆上現在用的是 adb 讀的）。adb 斷掉之後，牆上的偵錯狀態就不可信了</span>`
+    : "";
   if (enabled) {
-    const warn = d.adb_conflict
-      ? `<span class="action-note bad">這支的 agent 讀不到偵錯開關的真實值，按了之後牆上看不出結果 —— 以 adb 連不連得上為準</span>`
-      : "";
     return `<button class="adb" type="button" data-adb="off" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>關閉偵錯</button>${warn}`;
   }
-  return `<button class="adb" type="button" data-adb="on" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>開啟偵錯</button>`;
+  return `<button class="adb" type="button" data-adb="on" data-key="${esc(d.key)}" ${st.busy ? "disabled" : ""}>開啟偵錯</button>${warn}`;
 }
 
 function castRow(d) {
@@ -911,7 +919,7 @@ async function toggleAdb(key, enabled) {
   const via = route(enabled ? "adb_on" : "adb_off");
   if (!d || !via) return;
   const capability = agentReason(d, "toggle_adb");
-  if (capability || !d.agent.adb || typeof d.agent.adb.enabled !== "boolean") {
+  if (capability || debugNow(d) === null) {
     says.set(key, { bad: true, msg: `不能切偵錯：${capability || "拿不到目前狀態"}` });
     paint();
     return;
@@ -930,6 +938,9 @@ async function toggleAdb(key, enabled) {
     const j = await act(via, "adb", d, { enabled });
     if (j.ok) {
       d.agent.adb = { ...(d.agent.adb || {}), enabled: j.enabled === true };
+      // 成功 = CLI 用 adb 驗證過（或 adb 已經斷了）：adb 那份也跟著改，不然要等
+      // 下一輪輪詢，牆上才會翻過來
+      if (typeof d.debug_enabled === "boolean") d.debug_enabled = j.enabled === true;
       // CLI 發現讀回來對不上時會說「讀不到結果」—— 那句要原話帶上來，
       // 不能換成一句篤定的「已開啟」
       st = (j.message || "").includes("讀不到結果")
@@ -1138,11 +1149,11 @@ function card(d) {
     // 切回去的話，那一筆就不是現在這個狀態的來由了
     const la = d.last_action && d.last_action.adb;
     const by = (on) => la && la.ok && la.enabled === on ? `（${la.who}，${ago(la.at)}）` : "";
-    if (d.adb_conflict) {
-      // adb 連得上就一定開著；agent 說關，是它讀不到真實值（Android 17 實測）
-      rows += row("偵錯", "開啟（依 adb；agent 讀到的是關閉，不準）");
-    } else if (d.agent.adb && typeof d.agent.adb.enabled === "boolean") {
-      rows += row("偵錯", (d.agent.adb.enabled ? "開啟" : "關閉") + by(d.agent.adb.enabled));
+    const now = debugNow(d);
+    if (now !== null) {
+      // adb 讀的跟 agent 讀的不一樣：以 adb 為準，並講出 agent 那份不準
+      const note = d.adb_conflict ? `（依 adb；agent 讀到的是${now ? "關閉" : "開啟"}，不準）` : by(now);
+      rows += row("偵錯", (now ? "開啟" : "關閉") + note);
     } else if (d.stranded) {
       // agent 叫不動的那一輪問不到，這是 hub 記著的最後一次
       rows += row("偵錯", `關閉（最後一次看到是 ${ago(d.stranded.adb_seen_off_at)}）` +

@@ -10,7 +10,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 
 ```json
 {
-  "schema": 4,
+  "schema": 5,
   "devices": [
     {
       "profile": "work",
@@ -22,6 +22,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
       "device_serial": "1A2B3C4D",
       "reachability": "online",
       "adb_state": "device",
+      "debug_enabled": true,
       "path": { "kind": "direct", "latency_ms": 12 },
       "model": "Pixel 7",
       "mac": { "address": "f0:5c:77:df:c7:43", "randomized": false,
@@ -42,6 +43,11 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
 ```
 
 幾個重點：
+
+- **偵錯開關看 `debug_enabled`，不看 `agent.adb.enabled`。** `debug_enabled` 是 adb
+  連著時直接讀手機 `adb_enabled` 的結果（`--probe` 才有，問不到是 `null`）。agent
+  讀的那份在某些 Android 版本上不準（Pixel 8a / Android 17 永遠讀到關閉）；而
+  `adb_state: "device"` 也**不代表**偵錯開著 —— 關掉之後 5555 可能照樣連得上。
 
 - **`errors` 帶 code，不只帶訊息。** 「手機重開機了」這種判斷不能只活在印給人看的
   中文句子裡，不然程式沒辦法據以決策。目前的 code：

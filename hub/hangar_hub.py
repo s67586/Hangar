@@ -89,9 +89,10 @@ STATIC_DIR = os.path.join(HERE, "static")
 # 這一版 /api/devices 的形狀。跟 hangar 的 --json 一樣的規矩：欄位有變動就往上加。
 # 10：每張卡多一個 last_action（從牆上按的動作，每種留最後一次：
 #     {"adb": {at, who, ok, message, enabled}, "ring": {…, seconds}}，沒按過是 null）。
-# 11：same_device（同一個序號的其他 profile 名字）與 adb_conflict（agent 說偵錯
-#     關著，adb 卻連得上）。
-API_SCHEMA = 11
+# 11：same_device（同一個序號的其他 profile 名字）與 adb_conflict。
+# 12：debug_enabled（adb 直接讀的偵錯開關，問不到是 null）；adb_conflict 改成
+#     「agent 讀到的跟 adb 讀到的不一樣」，不再從「adb 連得上」推論。
+API_SCHEMA = 12
 
 # agent 主動回報（check-in）。
 #
@@ -121,8 +122,9 @@ ACTION_LOG = os.path.join(CONFIG_DIR, "hub-actions.log")
 CAPS = ("ring", "adb_off", "adb_on")
 # 名字會印在牆上、寫進紀錄，也會出現在 --revoke 的指令列上
 KEY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
-# 按鈕是有人在等的：一次響鈴／切偵錯跑超過這麼久就當失敗
-ACTION_TIMEOUT = 20.0
+# 按鈕是有人在等的：一次響鈴／切偵錯跑超過這麼久就當失敗。60 秒是給「開啟偵錯」
+# 的：開回來之後 hangar adb 會等 adbd 重啟、重連 5555，那一段要重試好幾次
+ACTION_TIMEOUT = 60.0
 ACTION_MAX_BODY = 4096
 
 
@@ -595,6 +597,8 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
             "adb_serial": d.get("adb_serial"),
             "device_serial": d.get("device_serial"),
             "adb_state": d.get("adb_state"),
+            # 偵錯開關的硬證據：adb 直接讀的（hangar list 的 debug_enabled）
+            "debug_enabled": d.get("debug_enabled"),
             "reachability": d.get("reachability"),
             "model": d.get("model"),
             "android": d.get("android"),
@@ -819,6 +823,7 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
     for d in devices:
         d.setdefault("routed", False)
         d.setdefault("checkin", None)
+        d.setdefault("debug_enabled", None)
         d["same_device"] = [n for n in names_by_serial.get(d.get("device_serial"), [])
                             if n != d.get("name")]
         d["adb_conflict"] = _adb_conflict(d)
@@ -845,17 +850,16 @@ def merge(list_data, scan_data, usb_data=None, checkins=None, now=None,
 
 
 def _adb_conflict(d):
-    """agent 說偵錯關著，adb 卻是 device。
+    """agent 讀到的偵錯開關，跟 adb 直接讀的不一樣。
 
-    adb 連得上是硬證據（偵錯一定開著）。實測 Android 17 上 app 讀 adb_enabled
-    永遠是 0，agent 的那一份在那種機器上不能信 —— 牆上要講「不確定」，不能照
-    抄「關閉」然後給一顆「開啟偵錯」。
+    adb 讀的那份（debug_enabled）才是硬證據。Pixel 8a / Android 17 實測：app
+    讀 adb_enabled 永遠不是 1，所以 agent 在那台上一律說「關閉」。反過來，
+    「adb 連得上」**不是**證據 —— 關掉 adb_enabled 只停 USB 那一頭，5555 照樣
+    連得上。所以這裡只比兩份讀值，不從連線狀態推論。
     """
-    adb = (d.get("agent") or {}).get("adb") or {}
-    if adb.get("enabled") is not False:
-        return False
-    return (d.get("adb_state") == "device"
-            or (d.get("usb") or {}).get("adb_state") == "device")
+    agent_says = ((d.get("agent") or {}).get("adb") or {}).get("enabled")
+    real = d.get("debug_enabled")
+    return isinstance(agent_says, bool) and isinstance(real, bool) and agent_says != real
 
 
 def _stranded(d, adb_seen):
@@ -866,7 +870,7 @@ def _stranded(d, adb_seen):
     這裡只負責讓它**看得見**，不做任何狀態變更。
 
     偵錯開關用的是 hub 最後一次看到的值：agent 叫不動的那一輪本來就問不到。
-    adb 此刻是通的（網路或 USB）就表示偵錯開著，不算。
+    adb 此刻是通的（網路或 USB）就不算：偵錯就算關著，也還有 adb 這條路開得回來。
     """
     agent = d.get("agent")
     if not agent or agent.get("reachable") is True:
@@ -882,8 +886,8 @@ def _stranded(d, adb_seen):
 def record_adb_seen(adb_seen, list_data, now):
     """從一輪 list --json 更新 adb_seen（就地改）。
 
-    只在「真的知道」的時候寫：agent 答得出 adb.enabled，或 adb 本身是通的
-    （那就一定開著）。叫不動的那一輪什麼都不寫 —— 最後一次知道的值要留著。
+    只在「真的知道」的時候寫：adb 直接讀得到（debug_enabled），或 agent 答得出
+    adb.enabled。叫不動的那一輪什麼都不寫 —— 最後一次知道的值要留著。
     """
     for d in (list_data or {}).get("devices", []):
         serial = d.get("device_serial")
@@ -891,10 +895,10 @@ def record_adb_seen(adb_seen, list_data, now):
             continue
         agent = d.get("agent") or {}
         enabled = (agent.get("adb") or {}).get("enabled") if agent.get("reachable") else None
-        # adb 連得上優先：那是硬證據，agent 的讀值在某些 Android 版本上不準
-        # （見 _adb_conflict）
-        if d.get("adb_state") == "device":
-            adb_seen[serial] = {"enabled": True, "at": now}
+        # adb 直接讀的那份優先（見 _adb_conflict）。「adb 連得上」不算：偵錯關了
+        # 5555 也可能還連著
+        if isinstance(d.get("debug_enabled"), bool):
+            adb_seen[serial] = {"enabled": d["debug_enabled"], "at": now}
         elif isinstance(enabled, bool):
             adb_seen[serial] = {"enabled": enabled, "at": now}
 
