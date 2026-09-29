@@ -832,7 +832,7 @@ A1–A3、B1、B2 有照表跑的腳本：`tools/field_check.sh`（`watch`／`re
 | # | 要確認什麼 | 怎麼確認 | 影響 |
 |---|---|---|---|
 | B1 | 前景服務在各家 ROM 的省電策略下活多久；以及手機重開機後它自己回不回得來 | 裝上去放 24／72 小時，中間不碰手機，看 `/hello` 還答不答得出來；然後重開機再看一次 | **整套的單點故障**：agent 被殺 = 那支手機失聯 |
-| B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死 | 手動關掉 → 看 `adb devices` 與 agent 端點 | 偵錯現在會長期關著，這條決定了那段期間還剩哪些路回得去。**Pixel 8a / Android 17：不會** —— 關掉之後 `adb tcpip` 開的 5555 照樣連得上，只停了 USB 那一頭。所以「adb 連得上」不能當成「偵錯開著」；別的機型還沒看過 |
+| B2 | 關掉 `adb_enabled` 時無線偵錯會不會一起死；agent 開回來之後 adb 回不回得來 | 手動關掉 → 看 `adb devices` 與 agent 端點；再用 agent 開回來、`adb connect` | 偵錯現在會長期關著，這條決定了那段期間還剩哪些路回得去。**兩支實測過，行為不一樣**：Pixel 4 / Android 13 —— 一關 5555 就斷（連線被拒），agent 開回來之後 adbd 照著 `service.adb.tcp.port` 重開 5555，**重連一次就回來了**，不用插 USB。Pixel 8a / Android 17 —— 關了 5555 也不斷，只停 USB 那一頭。所以：(1)「adb 連得上」不能當成「偵錯開著」；(2) 偵錯被關造成的斷線 agent 救得回來，**手機重開機就不行**（那個屬性會清掉，要等 M3c）；(3) 開回來之後 adb 不會自己連，`hangar adb --on` 會替你重連 |
 | B3 | `NsdManager` 在你的機器 + AP 上的表現 | M3b 做完了，現在測得動：手機裝上新版 agent 後，在同區網的電腦跑 `dns-sd -B _hangar-agent._tcp`（macOS）或 `avahi-browse -rt _hangar-agent._tcp`（Linux）看得到嗎；再用 `hangar scan --json` 確認那台的 `agent.discovered_by` 是 `mdns` | 看不到就退回「探 5599」，只是慢。**電腦端已經自動處理這個退路**，不用改設定 |
 | B4 | AP 有沒有開 client isolation | 兩支手機互 ping；或電腦 ping 手機 | 有的話整個區網掃描與 agent 都不通，得改走 Tailscale |
 | B5 | 一個 /24 掃完要多久（真實網路，不是 mock） | `time hangar scan` | 太久的話 hub 的 `--scan-interval` 要往上調 |

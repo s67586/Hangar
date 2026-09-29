@@ -3193,6 +3193,29 @@ cmd_adb() {
     exit 1
   }
   state="$(agent_field "$body" '.enabled')"
+  # 開回來之後 adb 不會自己連回去：hub 輪詢不主動連線，牆上那張卡會一直停在
+  # offline。Pixel 4 / Android 13 實測：關偵錯時 5555 斷掉，開回來之後 adbd 照著
+  # service.adb.tcp.port 重開 5555 —— 只要重連一次就回來了（手機重開過就沒有
+  # 這個屬性，那要重跑 setup）。adbd 重啟要幾秒，所以重試幾次。
+  if [ "$enabled" = "1" ] && command -v adb >/dev/null 2>&1 \
+     && [ "$(adb_state "$SERIAL")" != "device" ]; then
+    local tries="${HANGAR_RECONNECT_TRIES:-5}" i=0 back=""
+    info "adb 沒連著 → 偵錯開回來了，重新連 ${SERIAL}"
+    # 殘留的 offline 那一筆不先拔掉，connect 會回 already connected 而不重連
+    adb disconnect "$SERIAL" >/dev/null 2>&1
+    while [ "$i" -lt "$tries" ]; do
+      if adb_connect "$SERIAL" && wait_for_device "$SERIAL" 3; then back=1; break; fi
+      i=$((i + 1))
+      [ "$i" -lt "$tries" ] && sleep 2
+    done
+    if [ -n "$back" ]; then
+      ok "adb 也連回來了（${SERIAL}）"
+    else
+      warn "偵錯開回來了，但 adb 沒連回 ${SERIAL}"
+      hint "手機重開過的話 5555 已經沒了，要重跑：hangar setup --name $PROFILE"
+    fi
+  fi
+
   # 最硬的證據：adb 還連得上的話，直接問手機（見 adb_debug_setting 上面那段）。
   # agent 的寫入回報成功不代表值真的變了 —— 手機上開著「開發人員選項」那一頁
   # 時，設定 app 會把它寫回去。讀不到（adb 斷了）就退回下面只看 agent 的判斷。

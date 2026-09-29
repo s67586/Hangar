@@ -122,8 +122,9 @@ ACTION_LOG = os.path.join(CONFIG_DIR, "hub-actions.log")
 CAPS = ("ring", "adb_off", "adb_on")
 # 名字會印在牆上、寫進紀錄，也會出現在 --revoke 的指令列上
 KEY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
-# 按鈕是有人在等的：一次響鈴／切偵錯跑超過這麼久就當失敗
-ACTION_TIMEOUT = 20.0
+# 按鈕是有人在等的：一次響鈴／切偵錯跑超過這麼久就當失敗。60 秒是給「開啟偵錯」
+# 的：開回來之後 hangar adb 會等 adbd 重啟、重連 5555，那一段要重試好幾次
+ACTION_TIMEOUT = 60.0
 ACTION_MAX_BODY = 4096
 
 

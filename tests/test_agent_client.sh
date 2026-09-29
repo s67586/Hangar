@@ -280,6 +280,27 @@ assert "adb 讀到真的關了 → 成功"    "0" "$rc"
 check  "照常說已關閉"               "偵錯已關閉" "$out"
 rm -f "$MOCK_STATE/adb_enabled_value"
 
+# 偵錯開回來之後 adb 不會自己連回去：hub 輪詢不主動連線，牆上會一直停在
+# offline。Pixel 4 / Android 13 實測：關偵錯時 5555 斷，開回來之後重連一次
+# 就回來了。這裡要替使用者連
+printf '192.168.1.77:5555\toffline\n' > "$MOCK_STATE/adb_devices"; : > "$MOCK_STATE/connect_log"
+out="$(HANGAR_RECONNECT_TRIES=1 "$PM" adb -p work --on 2>&1)"; rc=$?
+check  "開回來之後替你重連"         "adb 也連回來了" "$out"
+check  "先拔掉殘留的 offline 那筆"  "disconnect 192.168.1.77:5555" "$(cat "$MOCK_STATE/connect_log")"
+check  "真的變回 device"            "device" "$(cat "$MOCK_STATE/adb_devices")"
+assert "開回來照樣是成功"           "0" "$rc"
+# 連不回來（手機重開過，5555 沒了）：偵錯開回來仍然算成功，但要說清楚
+printf '192.168.1.77:5555\toffline\n' > "$MOCK_STATE/adb_devices"; echo fail > "$MOCK_STATE/adb_connect_result"
+out="$(HANGAR_RECONNECT_TRIES=1 "$PM" adb -p work --on 2>&1)"; rc=$?
+echo ok > "$MOCK_STATE/adb_connect_result"
+check  "連不回來要講"               "adb 沒連回" "$out"
+check  "並且說下一步"               "hangar setup --name work" "$out"
+assert "偵錯本身仍然開回來了"       "0" "$rc"
+# adb 本來就連著：不做多餘的重連
+printf '192.168.1.77:5555\tdevice\n' > "$MOCK_STATE/adb_devices"; : > "$MOCK_STATE/connect_log"
+"$PM" adb -p work --on >/dev/null 2>&1
+assert "連著的時候不重連"           "" "$(cat "$MOCK_STATE/connect_log")"
+
 echo "=== C4. adb 碰不到時，改問 agent —— 這就是 agent 存在的理由 ==="
 env_one; : > "$MOCK_STATE/fake.apk"
 "$PM" enroll -p work --apk "$MOCK_STATE/fake.apk" >/dev/null 2>&1

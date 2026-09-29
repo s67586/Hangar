@@ -369,7 +369,7 @@ class Handler(BaseHTTPRequestHandler):
     origins = ()
     grace = 30.0
     enroll_timeout = 180.0
-    command_timeout = 20.0
+    command_timeout = 60.0
 
     # ---- CORS ----
     def _origin_ok(self):
@@ -601,8 +601,8 @@ def main(argv=None):
                     help="等投影起來的上限（秒，預設 30）")
     ap.add_argument("--enroll-timeout", type=float, default=180.0,
                     help="等 agent 入伍完成的上限（秒，預設 180）")
-    ap.add_argument("--command-timeout", type=float, default=20.0,
-                    help="響鈴／切偵錯指令的上限（秒，預設 20）")
+    ap.add_argument("--command-timeout", type=float, default=60.0,
+                    help="響鈴／切偵錯指令的上限（秒，預設 60 —— 開啟偵錯之後要等 adb 重連）")
     ap.add_argument("--timeout", type=float, default=30.0,
                     help="單次 hangar list 的逾時（秒）")
     ap.add_argument("--token-file", default=TOKEN_FILE, help="鑰匙放哪（預設 %s）" % TOKEN_FILE)
