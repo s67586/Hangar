@@ -22,7 +22,7 @@ mDNS 廣播則本來就只在區網成立。
 | | |
 |---|---|
 | [`hangar`](hangar) | CLI（bash，無外部相依）：投影、設定、掃描、入伍。也是 hub 的資料來源 |
-| [`hub/`](hub) | 常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）。牆上的響鈴、切偵錯由它執行，別台開瀏覽器就按得動。裡面的 `hangar_helper.py` 是跑在**你自己那台電腦**上的小服務，讓投影（與入伍）按鈕能動 —— `hangar wall` 會連它一起帶起來 |
+| [`hub/`](hub) | 常駐服務 + 裝置牆網頁（Python 3 標準函式庫，零套件）。牆上的響鈴、切偵錯由它執行，別台開瀏覽器就按得動。裡面的 `hangar_helper.py` 是跑在**按按鈕那台電腦**上的小服務，讓投影、註冊／更新 agent 按鈕能動 —— `hangar wall` 會連它一起帶起來 |
 | [`agent/`](agent) | 手機端 app（Kotlin）：不需要 adb 就回報得了電量與機型 |
 
 > **[📖 使用手冊（一頁可讀版）](https://s67586.github.io/Hangar/)**
@@ -57,11 +57,64 @@ hangar setup --transport tailscale --name work
 
 ---
 
+## 誰要裝什麼
+
+方向是：**只有 hub 那一台裝 Hangar，其他電腦盡量什麼都不裝。** 手機一律在 hub
+那台 `setup` 與入伍，agent 的 token 只放在 hub 上。
+
+| | hub 那一台（常駐機器） | 其他電腦（RD、QA） |
+|---|---|---|
+| 要裝什麼 | 這份 README 的[安裝](#安裝)全部 + [讓 hub 開機就自己跑](docs/hub.md#讓它開機就自己跑) | 瀏覽器。要 build 的另外要有 `adb`（裝了 Android Studio 就有） |
+| 手機 | `hangar setup`、`hangar enroll` 都在這台做；手機重開機後也是在這台插 USB 重跑 `setup` | 不用 `setup` |
+| 看狀態 | `http://127.0.0.1:8787/` | `http://<hub>:8787/`（hub 要帶 `--bind 0.0.0.0`） |
+| 響鈴、切偵錯 | 本機開那一頁就按得動 | 請管 hub 的人 `hangar wall --grant 你的名字`，用它印出來的連結開一次 |
+| build 進手機 | — | 偵錯開著時，牆上那張卡按「複製 adb connect」，在自己的電腦貼上。第一次連某支手機時，要有人在手機上按一次「允許」 |
+| 投影 | 牆上按「投影到這台電腦」 | **目前還要裝**：`hangar`、`scrcpy`，跑一支 helper（見[從裝置牆上按投影](docs/wall-actions.md)）；或走下面的 SSH 通道 |
+
+裝置牆上的按鈕分成兩組，頂端那一框也分兩列講：**「由 hub 執行」**（響鈴、切偵錯，
+看你有沒有 hub 的鑰匙）與**「在這台電腦上」**（投影、註冊／更新 agent、adb connect，
+看這台有沒有跑 helper）。缺哪一邊，那一列就會變橘色並寫出補法；在 hub 本機開的時候
+兩列合成一列。
+
+> 網頁投影（在瀏覽器裡直接看到畫面，其他電腦就完全不用裝）還在評估，見
+> [ROADMAP](ROADMAP.md)。
+
+### 選用：透過 hub 連手機（SSH 通道）
+
+RD 的電腦也可以**不被手機授權、不直連手機**，改用 hub 的 adb server：手機只認得 hub
+那一把金鑰，加人不用碰手機；手機重開後只要插在 hub 的 USB 上，大家馬上都看得到。
+2026-09-30 實測成立（Android Studio、`adb install`、投影都可以），細節與結果見
+[ROADMAP 的待實測 1](ROADMAP.md#待實測-1讓-hub-當唯一被授權的那台電腦)。
+
+```bash
+# 在 RD 的電腦上（本機不能有 adb server 在跑）
+adb kill-server
+ssh -N -L 5037:localhost:5037 -L 27183:localhost:27183 <hub>
+```
+
+通道開著時，`adb`、Android Studio 都以為連的是本機，實際上是 hub 的。投影要多帶
+一個參數：`hangar -p <手機> -- --force-adb-forward`（一次只能一個人投一支）。用完
+按 `Ctrl-C`，再 `adb start-server` 回到直連。
+
+> [!WARNING]
+> **通道開著時，不要在 RD 的電腦上管理 adb server。** `adb kill-server`、
+> `hangar reset`、Android Studio 的自動管理，關掉的都是 **hub 的** adb server，
+> 所有人會一起斷線（實際發生過）。Android Studio 要設成 *Settings → Build,
+> Execution, Deployment → Debugger → ADB Server Lifecycle Management → Use existing
+> manually managed server*（port 5037）。
+>
+> **不要把 hub 的 5037 直接開在網路上**（包括 `tailscale serve`、`adb -L`）：
+> 它沒有任何認證，連得到就等於控制所有手機。走 SSH 才有金鑰；每把金鑰可以在 hub
+> 的 `~/.ssh/authorized_keys` 限制成只能轉送：
+> `restrict,port-forwarding,permitopen="localhost:5037",permitopen="localhost:27183" ssh-ed25519 …`
+
+---
+
 ## 這份文件怎麼讀
 
 README 走的是**裝起來 → 設定一支手機 → 每天投影**這條路，從頭讀到尾就夠用了：
 
-[它解決了什麼](#它解決了什麼) · [安裝](#安裝) · [環境前提](#環境前提) ·
+[誰要裝什麼](#誰要裝什麼) · [它解決了什麼](#它解決了什麼) · [安裝](#安裝) · [環境前提](#環境前提) ·
 [使用](#使用) · [多台手機](#多台手機) · [手機重開機後](#手機重開機後) ·
 [疑難排解](#疑難排解)
 
@@ -74,7 +127,7 @@ README 走的是**裝起來 → 設定一支手機 → 每天投影**這條路�
 | [多台電腦共用同一支手機](docs/multi-host.md) | 第二台電腦怎麼接上同一支手機，RD 怎麼把 app build 進去 |
 | [手機端 agent](docs/agent.md) | 讓**沒開偵錯**的手機也回報得了電量與機型的那支 app：入伍、升級、限制 |
 | [hub（裝置牆網頁）](docs/hub.md) | 常駐服務與那頁裝置牆：參數、更新頻率、狀態的意思、換一台 hub |
-| [從裝置牆上按投影](docs/wall-actions.md) | 牆上那幾顆按鈕（投影、響鈴、切偵錯、入伍）怎麼運作，以及 helper 的三道鎖。只要響鈴與切偵錯的話看 [hub](docs/hub.md#響鈴與切偵錯由-hub-執行) 那一份 |
+| [從裝置牆上按投影](docs/wall-actions.md) | 「在這台電腦上」那一組按鈕（投影、註冊／更新 agent）怎麼運作，以及 helper 的三道鎖。只要響鈴與切偵錯的話看 [hub](docs/hub.md#響鈴與切偵錯由-hub-執行) 那一份 |
 | [Tailscale ACL](docs/tailscale.md) | 走 Tailscale 時**強烈建議**設的白名單 |
 | [密碼頁面投影全黑](docs/flag-secure.md) | 投影某些畫面時整片黑掉（`FLAG_SECURE`）的處理方式 |
 | [機房放公司 APK 的注意事項](docs/company-apk.md) | 沒加固的測試版放在共用測試機上，誰拿得走什麼、測試版與加固版怎麼分開對待 |
@@ -144,11 +197,24 @@ brew install nmap        # 選配，只影響 scan 的「廠商」那一欄
 PREFIX=~/.local ./hangar_install.sh
 ```
 
-移除：
+移除（`PREFIX` 要跟安裝時一樣，否則找不到那個 symlink）：
 
 ```bash
-./hangar_install.sh --uninstall
+./hangar_install.sh --uninstall                  # 裝在 /usr/local/bin 的
+PREFIX=~/.local ./hangar_install.sh --uninstall  # 裝在 ~/.local/bin 的
 ```
+
+它只拿掉 `hangar` 指令。其餘要自己刪：
+
+| | |
+|---|---|
+| `~/.config/hangar/` | profile、helper 與 hub 的鑰匙、操作紀錄。**入伍過的 profile 裡有 agent token** |
+| repo 資料夾 | 整個刪掉 |
+| hub 那一台多兩樣 | 常駐服務：`launchctl bootout gui/$(id -u)/com.hangar.hub` 再刪 `~/Library/LaunchAgents/com.hangar.hub.plist`；log 在 `~/Library/Logs/hangar/`。**hub 一拿掉，其他電腦的響鈴、切偵錯也跟著失效** |
+| 手機上的 agent | `adb uninstall com.hangar.agent` |
+
+`~/.android/adbkey` 是 adb 自己的金鑰、`adb` 與 `scrcpy` 是獨立的工具，都不屬於
+Hangar，不要一起刪 —— 刪了金鑰，每支手機都要重新授權。
 
 ---
 
@@ -213,7 +279,9 @@ PREFIX=~/.local ./hangar_install.sh
 2. **USB 偵錯**：設定 → 系統 → 開發人員選項 → USB 偵錯（打開）
 3. **無線偵錯**：同一頁往下打開 —— 只有走配對碼流程（手邊沒有 USB 線）時才需要
 4. **Tailscale App**：登入同一個 tailnet 並保持連線 —— 只有走 Tailscale
-   （`--transport tailscale`）時才需要
+   （`--transport tailscale`）時才需要。**把它設成永久連線的 VPN**：設定 → 網路和
+   網際網路 → VPN → Tailscale 的齒輪 → 永久連線的 VPN（「封鎖未使用 VPN 的連線」
+   不要開）。不設的話手機重開機後 Tailscale 不會自己起來，hub 與 agent 都碰不到它
 
 插 USB 的話，第一次接上這台電腦時手機會跳「允許 USB 偵錯」，勾**「一律允許透過
 這台電腦」**再按允許。沒按這個，`setup` 會停在 `unauthorized`。
@@ -496,6 +564,16 @@ hangar 偵測到這個情況時會直接講清楚，不會讓你對著原始 adb
      請把這支手機接回 USB 或回到同一區網，重跑：hangar setup --name work
 ```
 
+**重開機之後 agent 還連得到**（前提是 Tailscale 設成了永久連線的 VPN，見
+[手機上要先開好的東西](#手機上要先開好的東西)）：Pixel 8a 實測重開約 55 秒，牆上就
+看得到它的電量，響鈴、切偵錯也按得動。回不來的只有 adb。有螢幕鎖的手機，Android
+可能要等第一次解鎖才啟動 VPN。
+
+**反過來，5555 開著、adb 卻沒連上**是另一回事：切過偵錯、adb server 重啟、電腦睡過
+或換過網路，網路 adb 連線都會斷，而且不會自己接回去。`hangar list` 與裝置牆會寫
+「5555 開著，只是這台的 adb 沒連上」，這時不用重跑 `setup`，`hangar status -p <手機>`
+或按投影就會連回來；其他電腦則是再跑一次 `adb connect <IP>:5555`。
+
 > 如果手機有 root，可以用 `setprop persist.adb.tcp.port 5555` 讓它開機就監聽。
 > 但那等於把 adb 永久開在所有網路介面上，請務必搭配
 > [Tailscale ACL](docs/tailscale.md) 一起用。
@@ -510,7 +588,11 @@ hangar 偵測到這個情況時會直接講清楚，不會讓你對著原始 adb
 |---|---|
 | `Tailscale 目前是 Stopped` | `tailscale up` |
 | `手機不在 tailnet 上` | 手機端 Tailscale App 沒開，或被系統省電關掉 |
-| `無法連上 …:5555` + Connection refused | 手機重開機過 → 重跑 `hangar setup` |
+| `無法連上 …:5555` + Connection refused | 手機重開機過 → 在 hub 那台插 USB 重跑 `hangar setup` |
+| 牆上寫「5555 開著，只是這台的 adb 沒連上」 | 連線斷了但埠還在 → `hangar status -p <手機>` 或按投影就會連回來，不用 `setup` |
+| 切過偵錯之後 Android Studio 看不到手機 | 你那台的網路 adb 連線斷了 → 牆上按「複製 adb connect」，貼到終端機 |
+| 牆上寫「這個瀏覽器存的鑰匙 hub 不認得了」 | 鑰匙被收回或重發過 → 請管 hub 的人重跑 `hangar wall --grant 你的名字`，用新連結開一次（網址要跟你平常開牆的一樣） |
+| 手機重開後牆上整張卡都沒消息 | 手機上的 Tailscale 沒自己起來 → 設成永久連線的 VPN |
 | `adb 狀態為 unauthorized` | 手機上會跳「允許 USB 偵錯」，勾「一律允許」再按允許 |
 | `adb 狀態為 offline` | Hangar 會自動重試一次；還是不行就 `hangar reset` |
 | 一直走 DERP relay | 兩端的 UDP 打洞被防火牆擋住。公司網路常見，`tailscale netcheck` 可以看細節 |
@@ -531,6 +613,9 @@ hangar reset
 ```bash
 adb kill-server && hangar
 ```
+
+> 正在用 [SSH 通道](#選用透過-hub-連手機ssh-通道)的話**不要這樣做**：關掉的會是
+> hub 的 adb server，所有人一起斷線。先 `Ctrl-C` 關掉通道再說。
 
 ---
 
