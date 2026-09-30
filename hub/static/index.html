@@ -25,16 +25,17 @@
   h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
   .meta { color: var(--dim); font-size: 13px; }
   .counts { margin: 12px 0 20px; color: var(--dim); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  button.refresh, button.cast, button.enroll, button.ring, button.adb, button.update-agent {
+  button.refresh, button.cast, button.enroll, button.ring, button.adb, button.connect, button.update-agent {
     font: inherit; font-size: 12.5px; color: var(--fg); background: var(--card);
     border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
   }
   button.refresh:hover:not(:disabled), button.cast:hover:not(:disabled),
   button.enroll:hover:not(:disabled), button.ring:hover:not(:disabled),
-  button.adb:hover:not(:disabled), button.update-agent:hover:not(:disabled) {
+  button.adb:hover:not(:disabled), button.connect:hover:not(:disabled),
+  button.update-agent:hover:not(:disabled) {
     border-color: var(--ok); color: var(--ok); }
   button.refresh:disabled, button.cast:disabled, button.enroll:disabled,
-  button.ring:disabled, button.adb:disabled, button.update-agent:disabled {
+  button.ring:disabled, button.adb:disabled, button.connect:disabled, button.update-agent:disabled {
     opacity: .55; cursor: default;
   }
   .said { font-size: 12.5px; color: var(--dim); }
@@ -765,8 +766,31 @@ function castRow(d) {
       : `<button class="enroll" type="button" data-enroll="${esc(d.key)}" ${st.busy ? "disabled" : ""}>註冊 agent</button>`)
     : "";
   return `<div class="cast-row">
-    ${cast}${enroll}${updateAgentRow(d)}${ringRow(d)}${adbRow(d)}${said}
+    ${cast}${enroll}${updateAgentRow(d)}${ringRow(d)}${adbRow(d)}${connectRow(d)}${said}
   </div>`;
+}
+
+// 開偵錯的目的是讓 RD 的電腦 build 得進去 —— 但「開啟偵錯」只替 hub 自己把 adb
+// 連回來。偵錯切過（adbd 重啟）或 RD 的電腦睡過、換過網路，那台的網路 adb 連線
+// 就斷了，而且不會自己接回去；Android Studio 只會看到「沒有裝置」。所以偵錯開著
+// 的時候，把 RD 那台要跑的那一行擺出來。只給網路 adb（ip:port）的卡：USB 序號
+// connect 不了。
+function connectTarget(d) {
+  return d.name && typeof d.adb_serial === "string" && /:\d+$/.test(d.adb_serial)
+    ? d.adb_serial : null;
+}
+
+function connectCommand(d) {
+  return `adb connect ${connectTarget(d)}`;
+}
+
+function connectRow(d) {
+  if (debugNow(d) !== true || !connectTarget(d)) return "";
+  const port = connectTarget(d).split(":").pop();
+  const lan = d.lan_ip && !connectTarget(d).startsWith(`${d.lan_ip}:`)
+    ? `；在同一個區網、沒有 Tailscale 的話改連 ${d.lan_ip}:${port}` : "";
+  return `<button class="connect" type="button" data-copy-connect="${esc(d.key)}">複製 adb connect</button>
+    <span class="action-note">要 build 的電腦跑這行，adb 與 Android Studio 就看得到這支。偵錯切過之後那台的連線會斷，要再跑一次${esc(lan)}</span>`;
 }
 
 function copyText(t) {
@@ -842,6 +866,18 @@ async function copyRingCmd(key) {
   const cmd = ringCommand(d);
   let st;
   try { await copyText(cmd); st = { msg: `複製了：${cmd}` }; }
+  catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function copyConnectCmd(key) {
+  const d = byKey.get(key);
+  if (!d || !connectTarget(d)) return;
+  const cmd = connectCommand(d);
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了：${cmd}（在要 build 的那台電腦上跑）` }; }
   catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
   says.set(key, st);
   paint();
@@ -959,7 +995,9 @@ async function toggleAdb(key, enabled) {
       // 不能換成一句篤定的「已開啟」
       st = (j.message || "").includes("讀不到結果")
         ? { bad: true, msg: j.message }
-        : { msg: j.enabled === false ? "偵錯已關閉（不會自己開回來）" : "偵錯已開啟" };
+        : { msg: j.enabled === false ? "偵錯已關閉（不會自己開回來）"
+            : connectTarget(d) ? `偵錯已開啟 —— 要 build 的電腦跑一次 ${connectCommand(d)} 才連得上`
+            : "偵錯已開啟" };
       // 走 hub 的話 hub 已經記下是誰切的，重問一次卡片上就有
       if (via === "hub") setTimeout(tick, 500);
     } else {
@@ -1086,7 +1124,7 @@ document.addEventListener("click", (ev) => {
   const target = rawTarget && typeof rawTarget.closest === "function"
     ? rawTarget : rawTarget && rawTarget.parentElement;
   const b = target && typeof target.closest === "function"
-    ? target.closest("button.cast, button.enroll, button.ring, button.adb, button.update-agent") : null;
+    ? target.closest("button.cast, button.enroll, button.ring, button.adb, button.connect, button.update-agent") : null;
   if (!b || b.disabled) return;
   if (b.dataset.copy) copyCmd(b.dataset.copy);
   else if (b.dataset.copySetup) copySetupCmd(b.dataset.copySetup);
@@ -1095,6 +1133,7 @@ document.addEventListener("click", (ev) => {
   else if (b.dataset.copyUpdateAgent) copyUpdateAgentCmd(b.dataset.copyUpdateAgent);
   else if (b.dataset.updateAgent) updateAgent(b.dataset.updateAgent);
   else if (b.dataset.copyAdb) copyAdbCmd(b.dataset.copyAdb);
+  else if (b.dataset.copyConnect) copyConnectCmd(b.dataset.copyConnect);
   else if (b.dataset.ring) ring(b.dataset.ring, 30);
   else if (b.dataset.ringStop) ring(b.dataset.ringStop, 0);
   else if (b.dataset.adb) toggleAdb(b.dataset.key, b.dataset.adb === "on");
