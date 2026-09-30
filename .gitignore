@@ -13,3 +13,6 @@ hangar-test/
 
 # IDE 個人設定
 .idea/
+
+# 本機暫存：備份、診斷輸出、另開的 worktree（見 CLAUDE.md）
+.local/
