@@ -160,6 +160,23 @@ printf '%s\toffline\n' "$P1:5555" > "$MOCK_STATE/adb_devices"
 out="$("$PM" status --json 2>/dev/null)"
 assert "offline code" "adb_offline" "$(q '.devices[0].errors[] | select(.code=="adb_offline") | .code' "$out")"
 
+echo "=== J6b. list 不主動連線：沒連上但 5555 開著，不能說成重開機 ==="
+# 切過偵錯或 adb server 重啟後，連線斷了但埠還在。hub 每 30 秒跑的就是這個 list，
+# 報成 adb_port_closed 會叫人去重跑 setup，其實按一下投影就連回來了。
+two_phones
+: > "$MOCK_STATE/adb_devices"
+out="$("$PM" list --json 2>/dev/null)"
+assert "埠開著 → adb_not_connected" "adb_not_connected" "$(q '.devices[] | select(.profile=="work") | .errors[0].code' "$out")"
+assert "不該報 adb_port_closed" "" \
+  "$(q '.devices[] | select(.profile=="work") | .errors[] | select(.code=="adb_port_closed") | .code' "$out")"
+check  "訊息講得出怎麼連回來" "hangar status -p work" "$(q '.devices[] | select(.profile=="work") | .errors[0].message' "$out")"
+
+two_phones
+: > "$MOCK_STATE/adb_devices"
+echo "$P2" > "$MOCK_STATE/nc_open_ips"   # 只有 test 那支的 5555 開著
+out="$("$PM" list --json 2>/dev/null)"
+assert "埠真的關了 → 仍是 adb_port_closed" "adb_port_closed" "$(q '.devices[] | select(.profile=="work") | .errors[0].code' "$out")"
+
 echo "=== J7. 傳輸層掛掉時不可誤報成「手機重開機」 ==="
 two_phones
 echo Stopped > "$MOCK_STATE/ts_backend"
