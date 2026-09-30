@@ -2746,7 +2746,15 @@ probe_adb() { # <deep 0/1> <try_connect 0/1>
     "")
       # 「連得到這台機器，但 5555 不通」才是重開機的徵狀。傳輸層本身就不通的時候
       # 別一起報 adb_port_closed —— 那會讓讀 code 的人去叫使用者插 USB，方向全錯。
-      if [ "$PROBE_REACH" = "online" ]; then
+      # list 不主動連線（try=0），adb 清單裡沒有它不代表埠關了：切過偵錯、adb
+      # server 重啟之後，連線斷了但 5555 還開著，按投影或 status 就會連回來。
+      # 沒探過埠就報「重開過、重跑 setup」會叫人去做一件根本不需要的事。
+      if [ "$PROBE_REACH" = "online" ] && [ "$try" -eq 0 ] \
+         && command -v nc >/dev/null 2>&1 \
+         && run_timeout 3 nc -z -w 1 "$PHONE_IP" "$ADB_PORT" >/dev/null 2>&1; then
+        probe_add_error "adb_not_connected" \
+          "${ADB_PORT} 開著，只是這台的 adb 沒連上 → hangar status -p ${PROFILE}（或按投影）會自己連回來"
+      elif [ "$PROBE_REACH" = "online" ]; then
         probe_add_error "adb_port_closed" \
           "${ADB_PORT} 沒在聽 → 手機可能重開過，請重跑 hangar setup --name $PROFILE"
       else

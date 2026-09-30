@@ -62,6 +62,7 @@ hangar list --json --probe      # 連線路徑、機型、電量一起取（慢�
   | `peer_not_found` | 連線方式裡找不到這台裝置 |
   | `peer_offline` | 找得到但離線 |
   | `adb_port_closed` | **連得到機器但 5555 不通 → 通常是手機重開過** |
+  | `adb_not_connected` | 5555 開著，只是這台電腦的 adb 沒連上（只有不主動連線的 `list` 會報；`status` 或投影會自己連回來） |
   | `adb_unreachable` | 上層就不通了，adb 自然連不上（不是重開機） |
   | `unauthorized` | 這台電腦還沒被手機授權 |
   | `adb_offline` | adb 卡在 offline |
