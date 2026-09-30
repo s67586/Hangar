@@ -1112,9 +1112,15 @@ check  "鑰匙從 # 進來"            'get("key")' "$page"
 check  "helper 那條失敗時提 hub 鑰匙" "viaHelperHint(via)" "$page"
 # 開偵錯是為了讓 RD 的電腦 build 得進去；hub 只替自己重連，RD 那台要自己 connect
 check  "偵錯開著時給 RD 的 adb connect" "function connectRow(d)" "$page"
-check  "那一排真的有接上去"             '${adbRow(d)}${connectRow(d)}' "$page"
+check  "那一排真的有接上去"             '${updateAgentRow(d)}${connectRow(d)}' "$page"
 check  "點得到"                         "b.dataset.copyConnect" "$page"
 check  "開啟成功也講要 connect"         "才連得上" "$page"
+# 按鈕要分得出是 hub 在做、還是這台電腦（helper）在做：兩邊缺的東西不一樣
+check  "頂端分成 hub 與這台電腦兩列"     'id="who"' "$page"
+check  "hub 那列講它負責什麼"            'const HUB_WHAT = "響鈴、切偵錯"' "$page"
+check  "這台電腦那列講它負責什麼"        'const HERE_WHAT = "投影、註冊／更新 agent、adb connect"' "$page"
+check  "在 hub 本機開時合成一列"         "function hubIsHere()" "$page"
+check  "卡片按鈕分兩組"                  '${actGroup(hubGroupTitle(), hubGroupOff(), `${ringRow(d)}${adbRow(d)}`)}' "$page"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
