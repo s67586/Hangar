@@ -53,7 +53,6 @@ import argparse
 import errno
 import hashlib
 import hmac
-import importlib.util
 import ipaddress
 import json
 import os
@@ -140,9 +139,8 @@ ACTION_MAX_BODY = 4096
 # 所以這裡把 helper 帶進同一個 process —— 但**只是同一個 process，不是同一個
 # listener**。helper 照樣自己綁 127.0.0.1，照樣走它那三道鎖；helper 的端點不會
 # 出現在 hub 上（hub 自己的響鈴／切偵錯走鑰匙，見 Handler._action）。要拆開跑
-# （hub 在角落常駐機、每人一支 helper）也完全沒變：helper/hangar_helper.py 一行都沒動。
-
-HELPER_PATH = os.path.join(HERE, "..", "helper", "hangar_helper.py")
+# （hub 在角落常駐機、每人一支 helper）也完全沒變：hub/hangar_helper.py 自己照樣
+# 跑得起來。
 
 # helper 那邊的 `hangar list` 要多久算逾時。刻意不沿用 hub 的 --timeout：那個
 # 是給掃整個 /24 用的（預設 120 秒），而這裡是有人按了按鈕在等，瀏覽器那端掛
@@ -150,26 +148,21 @@ HELPER_PATH = os.path.join(HERE, "..", "helper", "hangar_helper.py")
 HELPER_LIST_TIMEOUT = 30.0
 
 
-def load_helper(path=HELPER_PATH):
-    """把 helper 那支腳本當成模組載進來 → (模組, 錯誤字串)。
+def load_helper():
+    """把旁邊那支 hangar_helper.py 載進來 → (模組, 錯誤字串)。
 
-    hub/ 與 helper/ 是兩個平行的目錄，不是 package。為了共用一支模組把整個 repo
-    改成 package，代價遠大於這裡的收穫，所以照路徑載。
+    它就放在 hub/ 裡，跟這一支同一個目錄，所以是一般的 import。
 
-    載不起來不是致命的：hub 照樣是一頁看得到的裝置牆，只是動作按鈕要那台電腦
-    自己跑一支 helper。**hub 絕不能因為 helper 不在就起不來** —— 只複製 hub/
-    出去的部署本來就該活得下去。
+    載不起來仍然不是致命的：hub 照樣是一頁看得到的裝置牆，只是動作按鈕要那台
+    電腦自己跑一支 helper。**hub 絕不能因為 helper 壞了就起不來。**
     """
-    full = os.path.abspath(path)
-    if not os.path.exists(full):
-        return None, "找不到 %s" % full
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
     try:
-        spec = importlib.util.spec_from_file_location("hangar_helper", full)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        import hangar_helper
     except Exception as e:      # noqa: BLE001 —— 載不起來的理由很多種，都一樣不致命
-        return None, "載不進 %s：%s: %s" % (full, type(e).__name__, e)
-    return mod, None
+        return None, "載不進 hangar_helper：%s: %s" % (type(e).__name__, e)
+    return hangar_helper, None
 
 
 def local_ips():
@@ -1260,7 +1253,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": False,
                 "reason": "動作按鈕只在跑 hub 的那台機器上按得動",
                 "hint": "你這台要自己跑一支："
-                        "./helper/hangar_helper.py --hub <這一頁的網址>"})
+                        "./hub/hangar_helper.py --hub <這一頁的網址>"})
         if not self.helper_token:
             return self._json(404, {"ok": False, "reason": self.helper_note,
                                     "hint": self.helper_hint})
@@ -1740,7 +1733,7 @@ def main(argv=None):
     if args.no_helper:
         Handler.helper_note = "這個 hub 是帶著 --no-helper 跑的"
         Handler.helper_hint = ("拿掉那個旗標，或在要按按鈕的那台電腦上跑一支 "
-                               "helper/hangar_helper.py")
+                               "hub/hangar_helper.py")
     else:
         helper, why = start_helper(hangar, args, port)
         if helper is None:
@@ -1748,7 +1741,7 @@ def main(argv=None):
             Handler.helper_hint = "看 hub 那個視窗印出來的訊息"
             print("沒有把 helper 一起帶起來：%s" % why, file=sys.stderr, flush=True)
             print("  牆上的動作按鈕要那台電腦自己跑一支："
-                  "./helper/hangar_helper.py --hub http://%s:%d" % (host, port),
+                  "./hub/hangar_helper.py --hub http://%s:%d" % (host, port),
                   file=sys.stderr, flush=True)
         elif args.no_auto_pair:
             Handler.helper_note = "這個 hub 是帶著 --no-auto-pair 跑的"
