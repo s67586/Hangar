@@ -46,6 +46,24 @@
   .helper b { color: var(--fg); font-weight: 600; }
   .helper code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); }
   .helper.off { color: var(--warn); }
+  /* 頂端那一框：每個按鈕是誰在執行。hub 做響鈴與切偵錯，這台電腦（helper）做投影與
+     裝 agent —— 兩邊缺的東西不一樣、補的方法也不一樣，所以分兩列各講各的 */
+  .who { margin: -6px 0 18px; padding: 6px 12px; font-size: 12.5px; color: var(--dim);
+         background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  .who-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 4px 0; }
+  .who-row + .who-row { border-top: 1px dashed var(--line); }
+  .who-row[hidden] { display: none; }
+  .who-tag { flex: none; min-width: 11em; font-weight: 600; color: var(--fg); }
+  .who-what { flex: none; min-width: 12em; }
+  .who-state { flex: 1 1 18em; }
+  .who-row.off .who-state { color: var(--warn); }
+  .who b { color: var(--fg); font-weight: 600; }
+  .who code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); }
+  .acts { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .act-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+               border-top: 1px solid var(--line); padding-top: 8px; }
+  .act-h { flex: 1 1 100%; font-size: 11.5px; color: var(--dim); }
+  .act-h.off { color: var(--warn); }
   .cast-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: 2px; }
   .cast-row .said { flex: 1 1 100%; }
   .action-note { flex: 1 1 100%; font-size: 12px; color: var(--dim); }
@@ -148,8 +166,10 @@
     <button class="refresh" id="refresh" type="button">立即更新</button>
     <span class="said" id="said"></span>
   </div>
-  <div class="helper" id="me"></div>
-  <div class="helper" id="helper"></div>
+  <div class="who" id="who">
+    <div class="who-row" id="me"></div>
+    <div class="who-row" id="helper"></div>
+  </div>
   <div id="errors"></div>
   <section class="zone" id="zone-mine">
     <h2 class="zone-h" id="h-mine"></h2>
@@ -414,35 +434,49 @@ async function helperPing() {
   helper = out || { status: "none" };
 }
 
+// 頂端那一框的兩列共用的外框：標籤（誰）、它負責哪些按鈕、現在的狀態
+function whoRow(el, off, tag, what, state) {
+  el.hidden = false;
+  el.className = off ? "who-row off" : "who-row";
+  el.innerHTML = `<span class="who-tag">${tag}</span>` +
+    (what ? `<span class="who-what">${what}</span>` : "") +
+    `<span class="who-state">${state}</span>`;
+}
+
+// 這一頁就開在 hub 那台上、而且 helper 也起來了：兩列講的是同一台，合成一列
+function hubIsHere() {
+  return hubMe.status === "ok" && hubMe.via === "loopback" && helper.status === "ok"
+    && !!latest && helper.host === latest.host;
+}
+
+const HERE_WHAT = "投影、註冊／更新 agent、adb connect";
+
 function helperLine() {
   const el = document.getElementById("helper");
+  if (hubIsHere()) { el.hidden = true; el.innerHTML = ""; return; }
+  const tag = helper.status === "ok" && helper.host
+    ? `這台電腦 · ${esc(helper.host)}` : "這台電腦";
   if (helper.status === "ok") {
-    el.className = "helper";
-    const what = hubMe.status === "ok" ? "投影與註冊" : "投影、響鈴與偵錯按鈕";
-    el.innerHTML = `這台電腦：<b>${esc(helper.host || "?")}</b>` +
-      `　${what}會在這台執行（它看得到 ${helper.profiles.length} 支設定過的手機）`;
+    whoRow(el, false, tag, HERE_WHAT,
+      `helper 在跑，這些按鈕直接在這台執行（它看得到 ${helper.profiles.length} 支設定過的手機）`);
   } else if (helper.status === "nokey") {
-    el.className = "helper off";
-    el.innerHTML = "這台電腦的 helper 在跑，但這一頁沒有它的鑰匙 —— " +
-      "去 helper 那個視窗，用它印出來的連結再進來一次。";
+    whoRow(el, true, tag, HERE_WHAT,
+      "helper 在跑，但這一頁沒有它的鑰匙 —— 用 helper 啟動時印出來的連結再進來一次");
   } else if (helper.status === "down") {
-    el.className = "helper off";
-    el.innerHTML = "叫不動這台電腦的 helper：它沒在跑，或者它的 <code>--hub</code> " +
-      `跟這一頁的網址對不起來（這一頁是 <code>${esc(location.origin)}</code>）。`;
+    whoRow(el, true, tag, HERE_WHAT,
+      "叫不動這台的 helper：它沒在跑，或者它的 <code>--hub</code> " +
+      `跟這一頁的網址對不起來（這一頁是 <code>${esc(location.origin)}</code>）`);
   } else if (autoWhy === "off") {
     // helper 沒起來是 hub 那邊的決定 —— 把它的原話帶過來，不然這裡只能猜
-    el.className = "helper off";
-    el.innerHTML = `這個 hub 沒有把鑰匙交給這一頁：${esc(autoReason)}` +
-      (autoHint ? `　—— ${esc(autoHint)}` : "");
+    whoRow(el, true, tag, HERE_WHAT,
+      `hub 沒有把鑰匙交給這一頁：${esc(autoReason)}` + (autoHint ? `　—— ${esc(autoHint)}` : ""));
   } else {
-    el.className = "helper";
-    el.innerHTML = (hubMe.status === "ok" ? "要從這裡投影" : "要按投影、響鈴或偵錯按鈕") +
-      "，這台電腦得先跑一支 helper：" +
+    whoRow(el, true, tag, HERE_WHAT,
+      "helper 沒在跑，這些按鈕只能複製指令 —— 在這台跑 " +
       `<code>./hub/hangar_helper.py --hub ${esc(location.origin)}</code>` +
-      "，然後照它印出來的連結進來一次。" +
+      "，再照它印出來的連結進來一次" +
       (autoWhy === "remote" ? "" :
-        "　（hub 跟你在同一台的話，改用 <code>hangar wall</code> 開，" +
-        "鑰匙會自動給這一頁。）");
+        "（hub 跟你在同一台的話，改用 <code>hangar wall</code> 開，鑰匙會自動給這一頁）"));
   }
 }
 
@@ -494,24 +528,38 @@ function hubCan(cap) {
 
 const CAP_ZH = { ring: "響鈴", adb_off: "關偵錯", adb_on: "開偵錯" };
 
+const HUB_WHAT = "響鈴、切偵錯";
+
 function meLine() {
   const el = document.getElementById("me");
+  const host = (latest && latest.host) || "";
+  if (hubIsHere()) {
+    whoRow(el, false, `這台就是 hub · ${esc(host || helper.host || "?")}`, "",
+      "所有按鈕都在這台執行：響鈴、切偵錯由 hub 做，投影、註冊／更新 agent 由這台的 helper 做");
+    return;
+  }
+  const tag = host ? `hub · ${esc(host)}` : "hub";
   if (hubMe.status === "ok") {
-    el.className = "helper";
     const can = (hubMe.can || []).map(c => CAP_ZH[c] || c).join("、") || "（沒有）";
-    el.innerHTML = hubMe.via === "loopback"
-      ? `這一頁開在 hub 本機：響鈴與偵錯按鈕直接由 hub 執行`
-      : `你在這面牆上是 <b>${esc(hubMe.name)}</b>　響鈴與偵錯按鈕直接由 hub 執行（能按：${esc(can)}）`;
+    whoRow(el, false, tag, HUB_WHAT, hubMe.via === "loopback"
+      ? "這一頁開在 hub 本機，直接由 hub 執行"
+      : `你是 <b>${esc(hubMe.name)}</b>，直接由 hub 執行（能按：${esc(can)}）`);
   } else if (hubMe.status === "bad") {
-    el.className = "helper off";
-    el.innerHTML = `hub 不認得這個瀏覽器存的鑰匙了（可能被收回）—— 請管 hub 的人重發：` +
-      `<code>hangar wall --grant 你的名字</code>`;
-  } else if (hubMe.status === "none" && helper.status !== "ok") {
-    el.className = "helper";
-    el.innerHTML = "響鈴與切偵錯可以直接由 hub 執行，不必在這台裝任何東西：請管 hub 的人跑 " +
-      "<code>hangar wall --grant 你的名字</code>，用它印出來的連結進來一次。";
+    whoRow(el, true, tag, HUB_WHAT,
+      "這個瀏覽器存的鑰匙 hub 不認得了（可能被收回或重發過）—— 請管 hub 的人跑 " +
+      "<code>hangar wall --grant 你的名字</code>，用它印出來的連結進來一次");
+  } else if (hubMe.status === "old") {
+    whoRow(el, helper.status !== "ok", tag, HUB_WHAT,
+      "這個 hub 是舊版，不會自己執行" +
+      (helper.status === "ok" ? "，改由這台電腦的 helper 執行" : "；這台電腦也沒有 helper，只能複製指令"));
+  } else if (helper.status === "ok") {
+    whoRow(el, false, tag, HUB_WHAT,
+      "這一頁沒有 hub 的鑰匙，改由這台電腦的 helper 執行（這台要先 setup 過那支手機）。" +
+      "要走 hub 的話請管 hub 的人跑 <code>hangar wall --grant 你的名字</code>");
   } else {
-    el.className = "helper"; el.innerHTML = "";
+    whoRow(el, true, tag, HUB_WHAT,
+      "這一頁沒有 hub 的鑰匙，只能複製指令 —— 請管 hub 的人跑 " +
+      "<code>hangar wall --grant 你的名字</code>，用它印出來的連結進來一次（這台什麼都不用裝）");
   }
 }
 
@@ -653,8 +701,7 @@ function updateAgentRow(d) {
       （接 USB，或先讓網路／Tailscale ADB 回到 device）</span>`;
   }
   if (helper.status !== "ok") {
-    return `<button class="update-agent" type="button" data-copy-update-agent="${esc(d.key)}">複製更新指令</button>
-      <span class="action-note">更新agent需要這台電腦的 helper（目前沒有連上）</span>`;
+    return `<button class="update-agent" type="button" data-copy-update-agent="${esc(d.key)}">複製更新指令</button>`;
   }
   if (st.action === "update_agent" && st.busy) {
     return `<button class="update-agent" type="button" disabled>更新agent中…</button>`;
@@ -668,10 +715,10 @@ function ringRow(d) {
   const st = says.get(d.key) || {};
   if (reason) return `<span class="action-note bad">響鈴：${esc(reason)}</span>`;
   if (!hubCan("ring") && helper.status !== "ok") {
-    return `<button class="ring" type="button" data-copy-ring="${esc(d.key)}">複製響鈴指令</button>
-      <span class="action-note">${hubMe.status === "ok"
-        ? "你的鑰匙沒有響鈴的權限，這台電腦的 helper 也沒有連上"
-        : "響鈴需要 hub 的鑰匙或這台電腦的 helper（目前都沒有）"}</span>`;
+    // 沒鑰匙也沒 helper 的話，組標題已經講了；只有「有鑰匙但少這一格」要另外說
+    return `<button class="ring" type="button" data-copy-ring="${esc(d.key)}">複製響鈴指令</button>${
+      hubMe.status === "ok"
+        ? `<span class="action-note">你的鑰匙沒有響鈴的權限，這台電腦的 helper 也沒有連上</span>` : ""}`;
   }
   const until = ringings.get(d.key);
   if (until && secondsLeft(until) > 0) {
@@ -711,10 +758,9 @@ function adbRow(d) {
     return `<span class="action-note bad">偵錯：拿不到目前狀態，請先按「立即更新」</span>`;
   const cap = enabled ? "adb_off" : "adb_on";
   if (!hubCan(cap) && helper.status !== "ok") {
-    return `<button class="adb" type="button" data-copy-adb="${esc(d.key)}">複製偵錯指令</button>
-      <span class="action-note">${hubMe.status === "ok"
-        ? `你的鑰匙沒有「${CAP_ZH[cap]}」的權限，這台電腦的 helper 也沒有連上`
-        : "偵錯操作需要 hub 的鑰匙或這台電腦的 helper（目前都沒有）"}</span>`;
+    return `<button class="adb" type="button" data-copy-adb="${esc(d.key)}">複製偵錯指令</button>${
+      hubMe.status === "ok"
+        ? `<span class="action-note">你的鑰匙沒有「${CAP_ZH[cap]}」的權限，這台電腦的 helper 也沒有連上</span>` : ""}`;
   }
   // agent 讀值不準的機器，要先講它靠什麼知道狀態
   const warn = agentAdb.readable === false
@@ -765,9 +811,35 @@ function castRow(d) {
       ? `<button class="enroll" type="button" data-copy-enroll="${esc(d.key)}">複製註冊指令</button>`
       : `<button class="enroll" type="button" data-enroll="${esc(d.key)}" ${st.busy ? "disabled" : ""}>註冊 agent</button>`)
     : "";
-  return `<div class="cast-row">
-    ${cast}${enroll}${updateAgentRow(d)}${ringRow(d)}${adbRow(d)}${connectRow(d)}${said}
+  // 兩組：誰在執行不一樣，缺東西時要補的也不一樣（見頂端那一框）
+  return `<div class="acts">
+    ${actGroup(hubGroupTitle(), hubGroupOff(), `${ringRow(d)}${adbRow(d)}`)}
+    ${actGroup(hereGroupTitle(), helper.status !== "ok",
+               `${cast}${enroll}${updateAgentRow(d)}${connectRow(d)}`)}
+    ${said}
   </div>`;
+}
+
+function actGroup(title, off, body) {
+  if (!body.trim()) return "";
+  return `<div class="act-group"><div class="act-h ${off ? "off" : ""}">${title}</div>${body}</div>`;
+}
+
+// 響鈴與切偵錯有鑰匙走 hub，沒有才退回 helper（route()）—— 標題照實講是誰
+function hubGroupTitle() {
+  if (hubMe.status === "ok") return "由 hub 執行";
+  if (helper.status === "ok") return "響鈴、切偵錯（沒有 hub 鑰匙，改由這台電腦的 helper 執行）";
+  return "由 hub 執行（這一頁沒有鑰匙，只能複製指令）";
+}
+
+function hubGroupOff() {
+  return hubMe.status !== "ok" && helper.status !== "ok";
+}
+
+function hereGroupTitle() {
+  return helper.status === "ok"
+    ? `在這台電腦上${helper.host ? `（${esc(helper.host)}）` : ""}`
+    : "在這台電腦上（helper 沒在跑，只能複製指令）";
 }
 
 // 開偵錯的目的是讓 RD 的電腦 build 得進去 —— 但「開啟偵錯」只替 hub 自己把 adb
