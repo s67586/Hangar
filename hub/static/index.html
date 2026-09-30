@@ -214,7 +214,7 @@
         <ol>
           <li>這一頁就是從這台電腦的 <code>hangar wall</code> 開出來的話，按鈕本來就是活的 —— hub 認得本機，helper 的鑰匙也由 hub 直接交給這一頁（它只回答本機）。</li>
           <li>從別台開這一頁、只要響鈴與切偵錯：請管 hub 的人跑 <code>hangar wall --grant 你的名字</code>，用它印出的連結開一次，這個瀏覽器就記住了。</li>
-          <li>還要從別台投影：那台要自己跑 <code>./helper/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次；第一次投影某支手機前，也要在那台跑一次 <code>hangar setup</code>（adb 授權綁定的是每台電腦自己的金鑰）。</li>
+          <li>還要從別台投影：那台要自己跑 <code>./hub/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次；第一次投影某支手機前，也要在那台跑一次 <code>hangar setup</code>（adb 授權綁定的是每台電腦自己的金鑰）。</li>
         </ol>
       </div>
 
@@ -290,7 +290,7 @@ function row(dt, dd, cls) {
 //
 // 這一頁是 hub 給的，但投影要開在「正在看這一頁的那台電腦」上 —— hub 跑起來的
 // scrcpy 視窗開在那台常駐機器的螢幕上，沒有人看得到。網頁又啟動不了本機程式，
-// 所以那台電腦要自己跑一支 helper（helper/hangar_helper.py），這頁再去叫它。
+// 所以那台電腦要自己跑一支 helper（hub/hangar_helper.py），這頁再去叫它。
 //
 // 鑰匙有兩條路進來：
 //
@@ -437,7 +437,7 @@ function helperLine() {
     el.className = "helper";
     el.innerHTML = (hubMe.status === "ok" ? "要從這裡投影" : "要按投影、響鈴或偵錯按鈕") +
       "，這台電腦得先跑一支 helper：" +
-      `<code>./helper/hangar_helper.py --hub ${esc(location.origin)}</code>` +
+      `<code>./hub/hangar_helper.py --hub ${esc(location.origin)}</code>` +
       "，然後照它印出來的連結進來一次。" +
       (autoWhy === "remote" ? "" :
         "　（hub 跟你在同一台的話，改用 <code>hangar wall</code> 開，" +

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# helper（helper/hangar_helper.py）：裝置牆上的投影按鈕真正動手的那一端。
+# helper（hub/hangar_helper.py）：裝置牆上的投影按鈕真正動手的那一端。
 #
 # 這一支會在使用者自己的電腦上開程式，所以測試的重點有兩半：
 #   1. 三道鎖都要真的鎖著 —— 只綁 127.0.0.1、Origin 白名單、token
@@ -10,7 +10,7 @@
 #
 SP="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SP/.." && pwd)"
-HELPER="$ROOT/helper/hangar_helper.py"
+HELPER="$ROOT/hub/hangar_helper.py"
 FAKE="$SP/helperbin/hangar"
 export MOCK_STATE="${TMPDIR:-/tmp}/hangar-test/helper"
 export MOCK_SCRCPY_SLEEP=30
@@ -273,7 +273,7 @@ assert "切偵錯 body 非 JSON 回 400" "400" "$(code "$r")"
 echo "=== L11. normalize_origin：使用者貼進來的網址要收斂得起來 ==="
 out="$(python3 - "$ROOT" <<'PY'
 import sys
-sys.path.insert(0, sys.argv[1] + "/helper")
+sys.path.insert(0, sys.argv[1] + "/hub")
 import hangar_helper as h
 for raw in ["http://192.168.1.5:8787/", "HTTP://192.168.1.5:8787",
             "192.168.1.5:8787", "http://192.168.1.5:8787/#helper=abc"]:

@@ -3762,7 +3762,7 @@ cmd_wall() {
   self="$root/hangar"
   if [ ! -f "$hub" ]; then
     err "找不到 $hub"
-    hint "裝置牆在 repo 裡（hub/ 與 helper/），這支 hangar 看起來不是從 repo 跑的"
+    hint "裝置牆在 repo 裡（hub/），這支 hangar 看起來不是從 repo 跑的"
     exit 1
   fi
   command -v python3 >/dev/null 2>&1 || {

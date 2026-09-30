@@ -23,7 +23,7 @@ line_of() { grep -n -m1 -E "$2" "$1" 2>/dev/null | cut -d: -f1; }
 HANGAR="$ROOT/hangar"
 ROADMAP="$ROOT/ROADMAP.md"
 HUB="$ROOT/hub/hangar_hub.py"
-HELPER="$ROOT/helper/hangar_helper.py"
+HELPER="$ROOT/hub/hangar_helper.py"
 BUILD="$ROOT/agent/app/build.gradle.kts"
 FAKE="$ROOT/tests/agentbin/fake_agent.py"
 HUB_PAGE="$ROOT/hub/static/index.html"
@@ -53,7 +53,7 @@ json_row="$(value 's/^\| `list` \/ `status --json` \| schema \*\*([0-9]+)\*\* \|
 scan_row="$(value 's/^\| `scan --json` \| schema \*\*([0-9]+)\*\* \| `SCAN_SCHEMA`，`hangar:([0-9]+)` \|$/\1 \2/p' "$ROADMAP")"
 hub_row="$(value 's/^\| hub `\/api\/devices` \| schema \*\*([0-9]+)\*\* \| `API_SCHEMA`，`hub\/hangar_hub.py:([0-9]+)` \|$/\1 \2/p' "$ROADMAP")"
 agent_row="$(value 's/^\| agent 協定 \| schema \*\*([0-9]+)\*\*，版本 `([^`]+)` \| `agent\/app\/build.gradle.kts` \|$/\1 \2/p' "$ROADMAP")"
-helper_row="$(value 's/^\| helper 端點 .* \| `API_SCHEMA` \*\*([0-9]+)\*\*，`helper\/hangar_helper.py:([0-9]+)` \|$/\1 \2/p' "$ROADMAP")"
+helper_row="$(value 's/^\| helper 端點 .* \| `API_SCHEMA` \*\*([0-9]+)\*\*，`hub\/hangar_helper.py:([0-9]+)` \|$/\1 \2/p' "$ROADMAP")"
 
 read -r roadmap_hangar roadmap_hangar_line <<< "$hangar_row"
 read -r roadmap_json roadmap_json_line <<< "$json_row"

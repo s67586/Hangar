@@ -53,7 +53,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 | 加固 app 實際擋什麼 | 還不知道，要先實測（實測 protocol 另存於專案外部） |
 | 網頁投影 | **遠期目標**，不排進 M1–M5。投影目前維持走 CLI 的 scrcpy，網頁只負責切偵錯（見里程碑下面那段） |
 | 網段互相隔離時的跨網段 | **遠期目標**。網段之間兩個方向都不通時，只剩走網際網路；方案見「[遠期：網段完全隔離時怎麼跨](#遠期網段完全隔離時怎麼跨)」 |
-| 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 `helper/`，helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
+| 牆上的投影按鈕 | 已經做了，但它**不是**上面那條：按鈕叫的是按按鈕那台電腦上的 helper（`hub/hangar_helper.py`），helper 跑的就是 CLI 的 `hangar -p`。畫面仍然開在本機的 scrcpy 視窗裡，不是在瀏覽器裡 |
 | 牆上的響鈴與切偵錯 | **改由 hub 執行**（原本走 helper，「hub 維持唯讀」那條已翻案）：每人一把 `hangar wall --grant` 發的鑰匙、每次都記進操作紀錄，裝置牆只開在 hub 那一台，別台開瀏覽器就按得動。沒有 hub 鑰匙時退回 helper。見「[動作搬到 hub](#動作搬到-hub每人一把鑰匙每次都記下來)」 |
 | hub 內嵌 helper（`hangar wall`） | 整合的是 **process，不是 listener**：helper 照樣自己綁 127.0.0.1、照樣走 Origin ＋ token 那三道鎖（hub 自己的響鈴／切偵錯端點是另一回事，走鑰匙，不經過 helper）。多出來的只有 `GET /api/helper`，而它**只回答 loopback** —— 同事從區網開同一頁拿不到鑰匙，他那台還是得自己跑一支 helper |
 
@@ -80,7 +80,7 @@ adb shell pm grant com.hangar.agent android.permission.WRITE_SECURE_SETTINGS
 近期要做的網頁功能到 **M4 的切偵錯**為止。
 
 牆上那顆投影按鈕不算破例：它按下去之後跑的還是 CLI 的 `hangar -p`，只是由
-`helper/hangar_helper.py` 在**按按鈕那台電腦**上代跑（網頁啟動不了本機程式，
+`hub/hangar_helper.py` 在**按按鈕那台電腦**上代跑（網頁啟動不了本機程式，
 而 hub 跑起來的視窗開在沒有人看的那台機器上）。真正還沒做的是「畫面出現在
 瀏覽器裡」，那才是下面這兩條要先有答案的東西。
 
@@ -118,11 +118,11 @@ D1 若是「每次都要人按」，這件事就不是「遠端管得動」，�
 | `list` / `status --json` | schema **6** | `JSON_SCHEMA`，`hangar:2792` |
 | `scan --json` | schema **8** | `SCAN_SCHEMA`，`hangar:181` |
 | `usb --json` | schema **1** | `USB_SCHEMA`，`hangar:182` |
-| hub `/api/devices` | schema **13** | `API_SCHEMA`，`hub/hangar_hub.py:97` |
+| hub `/api/devices` | schema **13** | `API_SCHEMA`，`hub/hangar_hub.py:96` |
 | agent 協定 | schema **5**，版本 `0.2.1` | `agent/app/build.gradle.kts` |
 | hub 端點 | `GET /`、`GET /api/devices`、`GET /healthz`、`GET /static/…`、**`GET /api/helper`**（只回答 loopback）、`GET /api/whoami`、**`POST /api/refresh`**、**`POST /api/ring`**、**`POST /api/adb`**（後兩個要鑰匙）；另一個 listener（`--checkin`）只有 `POST /api/checkin` | `Handler`、`CheckinHandler` |
 | agent 端點 | `GET /hangar/v1/hello`、`GET /hangar/v1/status`、`POST /hangar/v1/ring`、`POST /hangar/v1/adb` | 5599/tcp |
-| helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`helper/hangar_helper.py:73` |
+| helper 端點 | `POST /mirror`、`POST /enroll`（可帶 `reinstall`）、`POST /ring`、`POST /adb`（只綁 127.0.0.1） | `API_SCHEMA` **5**，`hub/hangar_helper.py:73` |
 
 `POST /api/refresh` **不會動手機**，只是把輪詢提早叫醒，跑的還是同樣那兩個唯讀
 的 `hangar` 指令 —— 「輪詢是唯讀的」在這份文件裡一律指這個意思，不是指「只有
@@ -211,7 +211,7 @@ GET」。會動手機的只有 `POST /api/ring` 與 `POST /api/adb`：有人按�
    （帶 `HANGAR_AGENT_URL` 就打真的手機）。這是刻意的：同一份協定被寫兩次，
    對不起來的地方就是協定沒講清楚的地方。參考實作同時也讓 `hangar` 那一側不用
    有手機就能開發。
-6. **helper 也只站在 `--json` 上面。** `helper/hangar_helper.py` 要知道「這台
+6. **helper 也只站在 `--json` 上面。** `hub/hangar_helper.py` 要知道「這台
    電腦上有哪些手機」，走的是 `hangar list --json`，不是自己去讀
    `~/.config/hangar/`。設定檔長什麼樣子是 `hangar` 的事 —— 多一個地方認得那個
    格式，就多一個地方會跟它走岔。它做的事也只有一件：在本機跑 `hangar -p`。
@@ -1196,10 +1196,9 @@ hangar/
 │   └── app/src/main/     # HttpServer / Status / Enrollment / AgentService / MdnsBroadcast …
 ├── hub/
 │   ├── hangar_hub.py     # 常駐服務：輪詢 hangar --json、合併、開 HTTP
+│   ├── hangar_helper.py  # 按按鈕那台電腦上的那一支：牆上的投影按鈕代跑 hangar -p（hub 預設內嵌）
 │   └── static/
 │       └── index.html    # 裝置牆（純 HTML/CSS/JS，沒有 build 步驟）
-├── helper/
-│   └── hangar_helper.py  # 每個人自己電腦上的那一支：牆上的投影按鈕代跑 hangar -p
 └── tests/
     ├── run.sh            # 跑全部測試
     ├── test_core.sh      # 核心流程與錯誤分支

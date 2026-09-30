@@ -30,7 +30,7 @@ hub 跟 helper 會在同一個 process 裡一起起來（但仍是兩個 listene
 這時候按按鈕的那台電腦要自己跑一支：
 
 ```bash
-./helper/hangar_helper.py --hub http://192.168.1.5:8787
+./hub/hangar_helper.py --hub http://192.168.1.5:8787
 ```
 
 `--hub` 要跟你**瀏覽器網址列上的那一串一模一樣**（只有那一頁叫得動 helper）。
@@ -209,7 +209,7 @@ macOS（launchd，存成 `~/Library/LaunchAgents/com.hangar.helper.plist`）：
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/python3</string>
-    <string>/Users/你/Hangar/helper/hangar_helper.py</string>
+    <string>/Users/你/Hangar/hub/hangar_helper.py</string>
     <string>--hangar</string><string>/usr/local/bin/hangar</string>
     <string>--hub</string><string>http://192.168.1.5:8787</string>
   </array>

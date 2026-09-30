@@ -8,7 +8,7 @@ hub 在角落那台常駐機器上，它跑起來的 scrcpy 視窗開在那台�
 它只聽 127.0.0.1，收到請求之後在這台電腦上跑 `hangar -p <名稱>`——跟你自己在
 終端機打的是同一行指令，沒有另外一條通往手機的路。
 
-    ./helper/hangar_helper.py --hub http://192.168.1.5:8787
+    ./hub/hangar_helper.py --hub http://192.168.1.5:8787
 
 起來之後會印一個帶鑰匙的連結，在這台電腦的瀏覽器上開一次，裝置牆就記得住了。
 
@@ -616,7 +616,7 @@ def main(argv=None):
         return 1
     if not args.hub:
         print("要給 --hub：裝置牆開在哪個網址", file=sys.stderr)
-        print("  ./helper/hangar_helper.py --hub http://192.168.1.5:8787", file=sys.stderr)
+        print("  ./hub/hangar_helper.py --hub http://192.168.1.5:8787", file=sys.stderr)
         print("  （只有那一頁叫得動這支 helper，所以它一定要講出來）", file=sys.stderr)
         return 1
 
