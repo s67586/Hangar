@@ -132,7 +132,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 534c6062aa71</span><span class="fact">hangar v1.6.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 11407e9dbabe</span><span class="fact">hangar v1.6.0</span></div>
 </header>
 
 <div class="cols">
@@ -567,7 +567,7 @@ hangar list --json --probe      <span class="c"># 連線路徑、機型、電量
 <p>幾個重點：</p>
 <ul><li><strong>偵錯開關看 <code>debug_enabled</code>，不看 <code>agent.adb.enabled</code>。</strong> <code>debug_enabled</code> 是 adb 連著時直接讀手機 <code>adb_enabled</code> 的結果（<code>--probe</code> 才有，問不到是 <code>null</code>）。agent 讀的那份在某些 Android 版本上不準（Pixel 8a / Android 17 永遠讀到關閉）；而 <code>adb_state: &quot;device&quot;</code> 也<strong>不代表</strong>偵錯開著 —— 關掉之後 5555 可能照樣連得上。 adb 斷掉時只剩 agent 那份；看 <code>agent.adb.source</code>：<code>settings</code> 是照讀的， <code>agent_write</code> 是讀不準的機器上 agent 最後寫的，<code>unknown</code>（<code>enabled</code> 為 <code>null</code>） 是有人在手機上切過、agent 不知道。舊版 agent 沒有這一欄（<code>null</code>）。</li></ul>
 <ul><li><strong><code>errors</code> 帶 code，不只帶訊息。</strong> 「手機重開機了」這種判斷不能只活在印給人看的 中文句子裡，不然程式沒辦法據以決策。目前的 code：</li></ul>
-<p>| code | 意思 | |---|---| | <code>transport_down</code> | 傳輸層本身沒通（例如 Tailscale 沒開） | | <code>peer_not_found</code> | 連線方式裡找不到這台裝置 | | <code>peer_offline</code> | 找得到但離線 | | <code>adb_port_closed</code> | <strong>連得到機器但 5555 不通 → 通常是手機重開過</strong> | | <code>adb_unreachable</code> | 上層就不通了，adb 自然連不上（不是重開機） | | <code>unauthorized</code> | 這台電腦還沒被手機授權 | | <code>adb_offline</code> | adb 卡在 offline |</p>
+<p>| code | 意思 | |---|---| | <code>transport_down</code> | 傳輸層本身沒通（例如 Tailscale 沒開） | | <code>peer_not_found</code> | 連線方式裡找不到這台裝置 | | <code>peer_offline</code> | 找得到但離線 | | <code>adb_port_closed</code> | <strong>連得到機器但 5555 不通 → 通常是手機重開過</strong> | | <code>adb_not_connected</code> | 5555 開著，只是這台電腦的 adb 沒連上（只有不主動連線的 <code>list</code> 會報；<code>status</code> 或投影會自己連回來） | | <code>adb_unreachable</code> | 上層就不通了，adb 自然連不上（不是重開機） | | <code>unauthorized</code> | 這台電腦還沒被手機授權 | | <code>adb_offline</code> | adb 卡在 offline |</p>
 <p><code>adb_port_closed</code> 只在「連得到機器但埠不通」時才出現。傳輸層整個沒通的時候 不會一起報它 —— 否則讀 code 的人會去叫使用者插 USB，方向完全錯了。</p>
 <ul><li><strong>慢欄位預設略過。</strong> <code>path</code> 要跑一次 <code>tailscale ping</code>，<code>model</code> / <code>battery</code> / <code>mac</code> 各要一次 adb 往返。十支手機全取會跑很久，所以 <code>list --json</code> 預設把它們留成 <code>null</code>，要完整資料才加 <code>--probe</code>。<code>status --json</code> 只有一支，一律完整探測。</li></ul>
 <ul><li><strong><code>--json</code> 時 stdout 只有 JSON。</strong> 所有給人看的訊息都轉到 stderr， 所以 <code>hangar list --json 2&gt;/dev/null | jq .</code> 一定解析得過。</li></ul>
@@ -953,7 +953,7 @@ adb logcat</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 534c6062aa71</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 11407e9dbabe</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
