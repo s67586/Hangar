@@ -1110,6 +1110,11 @@ check  "牆上有 hub 鑰匙那一條路"  "async function whoami" "$page"
 check  "切偵錯之前要問一次"       "window.confirm" "$page"
 check  "鑰匙從 # 進來"            'get("key")' "$page"
 check  "helper 那條失敗時提 hub 鑰匙" "viaHelperHint(via)" "$page"
+# 開偵錯是為了讓 RD 的電腦 build 得進去；hub 只替自己重連，RD 那台要自己 connect
+check  "偵錯開著時給 RD 的 adb connect" "function connectRow(d)" "$page"
+check  "那一排真的有接上去"             '${adbRow(d)}${connectRow(d)}' "$page"
+check  "點得到"                         "b.dataset.copyConnect" "$page"
+check  "開啟成功也講要 connect"         "才連得上" "$page"
 
 echo; echo "================================"; printf 'PASS: %d   FAIL: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

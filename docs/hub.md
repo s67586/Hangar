@@ -280,6 +280,14 @@ hangar wall --revoke alice                   # 收回，正在跑的 hub 馬上�
 在卡片上，響鈴只對「agent 可達且宣告 `can.ring`」的手機啟用；偵錯只對宣告
 `can.toggle_adb` 且回報了 `adb.enabled` 的手機啟用。
 
+**開偵錯之後，要 build 的那台電腦得自己連一次。** 「開啟偵錯」只替 hub 把 adb 連
+回來；切偵錯會讓手機上的 adbd 重啟，其他電腦原本的網路 adb 連線就斷了，而且不會
+自己接回去（電腦睡過、換過網路也一樣），Android Studio 只會看到「沒有裝置」。所以
+偵錯開著的卡會多一顆**「複製 adb connect」**（`adb connect <profile 的 IP>:5555`），
+按開啟成功時的訊息也會附上同一行。那台電腦要先被這支手機授權過（同樣是
+[每台電腦自己的金鑰](wall-actions.md#每台電腦要先做的事)）；hub 掃得到區網位址而
+profile 走 Tailscale 的話，旁邊會註明區網的那個位址。
+
 **投影不在這裡**：視窗得開在看的人面前，所以投影、入伍、更新 agent 仍然走你
 自己那台的 helper（見[從裝置牆上按投影](wall-actions.md)）。**在瀏覽器裡直接看到畫面（網頁投影
 串流）仍然是遠期目標** —— 投影本身維持走 CLI 的 scrcpy，那顆按鈕省的是打字，

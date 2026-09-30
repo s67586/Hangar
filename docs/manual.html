@@ -132,7 +132,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 11407e9dbabe</span><span class="fact">hangar v1.6.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 44208a7b3175</span><span class="fact">hangar v1.6.0</span></div>
 </header>
 
 <div class="cols">
@@ -458,6 +458,7 @@ hangar wall --revoke alice                   <span class="c"># 收回，正在�
 <p>沒有鑰匙（或鑰匙沒有那一格權限）的時候，牆上的按鈕會退回走你自己那台的 helper， 再不行就變成複製 <code>hangar ring</code>／<code>hangar adb</code> 指令。</p>
 <div class="note warn"><p>區網上是明文 HTTP，同網段的人聽得到鑰匙。測試機房多半可以接受；不能接受的話 把 hub 放到 Tailscale 上，或前面加一層 TLS 反向代理（<code>--hub https://…</code> 讓 Origin 對得上，並帶 <code>--no-auto-pair</code>）。</p></div>
 <p>在卡片上，響鈴只對「agent 可達且宣告 <code>can.ring</code>」的手機啟用；偵錯只對宣告 <code>can.toggle_adb</code> 且回報了 <code>adb.enabled</code> 的手機啟用。</p>
+<p><strong>開偵錯之後，要 build 的那台電腦得自己連一次。</strong> 「開啟偵錯」只替 hub 把 adb 連 回來；切偵錯會讓手機上的 adbd 重啟，其他電腦原本的網路 adb 連線就斷了，而且不會 自己接回去（電腦睡過、換過網路也一樣），Android Studio 只會看到「沒有裝置」。所以 偵錯開著的卡會多一顆<strong>「複製 adb connect」</strong>（<code>adb connect &lt;profile 的 IP&gt;:5555</code>）， 按開啟成功時的訊息也會附上同一行。那台電腦要先被這支手機授權過（同樣是 <a href="#每台電腦要先做的事">每台電腦自己的金鑰</a>）；hub 掃得到區網位址而 profile 走 Tailscale 的話，旁邊會註明區網的那個位址。</p>
 <p><strong>投影不在這裡</strong>：視窗得開在看的人面前，所以投影、入伍、更新 agent 仍然走你 自己那台的 helper（見<a href="#從裝置牆上按投影">從裝置牆上按投影</a>）。<strong>在瀏覽器裡直接看到畫面（網頁投影 串流）仍然是遠期目標</strong> —— 投影本身維持走 CLI 的 scrcpy，那顆按鈕省的是打字， 不是換掉投影的方式。</p>
 <h3 id="換一台-hub">換一台 hub</h3>
 <p>hub 本身是<strong>無狀態的</strong> —— 它把看到的東西放在記憶體裡，重開就重新問一次 hangar。 所以「搬 hub」實際上搬的是三樣東西，而且只有一樣會痛。</p>
@@ -953,7 +954,7 @@ adb logcat</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 11407e9dbabe</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 44208a7b3175</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
