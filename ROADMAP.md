@@ -1014,6 +1014,35 @@ adb devices                      # 期望：手機回來了，而且 RD 機什�
 
 測完把每一步的實際結果補回這一節，然後才決定要不要把它寫進 README。
 
+### 實測結果（2026-09-30，mini 當 hub、筆電當 RD 機、Pixel 8a / Android 17）
+
+RD 機是把 `adbkey` 移開模擬的新電腦；hub 的 adb 版本 37.0.1，RD 機 36.0.0。
+
+| 步驟 | 結果 |
+|---|---|
+| 1–2. 只開在 tailnet | ✅ 沒照上面改 adb server 的 `-L`（那樣 hub 自己連 `127.0.0.1:5037` 的 hangar 會壞），改用 `tailscale serve --tcp 5037 tcp://localhost:5037`：狀態顯示 `tailnet only`，mini 的區網位址連不到 |
+| 3. RD 機 `adb devices` | ✅ 三支都是 `device`，手機**沒有**跳出「允許 USB 偵錯」 |
+| 4. 裝 APK | ✅ 2 秒裝好。一個 2022 年的舊 APK 被 Android 17 以 `INSTALL_FAILED_VERIFICATION_FAILURE` 擋掉，是手機的政策，跟這條路無關。附帶發現：`adb install -r` 更新 **agent 本身**時系統會停掉它的服務、不會叫起來，要走 `hangar enroll --reinstall` |
+| 5. 反證 | ✅ RD 機直連得到 `failed to authenticate` / `unauthorized` |
+| 6. Android Studio 2026.1 | ❌ **不理 `ADB_SERVER_SOCKET`**：自己在本機起 adb server 只連那個。更糟的是它在背景呼叫的 `adb` 會繼承這個變數，**把 hub 的 adb server 關掉**（實際發生：hub 的 server 被重啟，所有網路 adb 連線一起掉，只剩 USB）。✅ 改走 SSH 通道（見下）＋ Studio 設成 *Use existing manually managed server*（port 5037）之後，裝置選單看得到手機 |
+| 7. 手機重開機 | ✅ 5555 消失時，手機只要**插在 hub 的 USB 上**，RD 機馬上就看得到 USB 那一筆；hub 用 USB 重跑 `hangar setup` 後，網路那一筆也回來，RD 機什麼都沒做。對照：直連的電腦每一台都要自己重新 `adb connect` |
+| 附加：投影 | ✅ scrcpy 在「adb server 在別台」時要 `--force-adb-forward`，而且 27183 也要轉到 RD 機：`hangar -p <手機> -- --force-adb-forward`。一次只能一人投一支；要同時投，每人各用不同的 `--tunnel-port` 並轉送對應的埠 |
+| 附加：重開後 Tailscale | ⚠️ 手機上的 Tailscale 預設不會開機自動起來，重開後 agent 也碰不到。設成永久連線的 VPN（`settings put secure always_on_vpn_app com.tailscale.ipn`，`always_on_vpn_lockdown 0`）之後，Pixel 8a 重開約 55 秒 agent 就從 tailnet 連得到 |
+
+**結論：這條路成立，但不要把 5037 開在 tailnet 上，改走 SSH 通道。**
+
+```bash
+# RD 機上（先確定本機沒有 adb server：adb kill-server）
+ssh -N -L 5037:localhost:5037 -L 27183:localhost:27183 <hub>
+```
+
+- 5037 沒有任何認證，`tailscale serve` 等於 tailnet 上每台裝置都能完整控制所有手機；hub 的 TOTP 也管不到它（adb 協定沒有地方帶）。SSH 通道要金鑰，而且每把金鑰可以在 hub 的 `authorized_keys` 限制成只能轉送：
+  `restrict,port-forwarding,permitopen="localhost:5037",permitopen="localhost:27183" ssh-ed25519 …`，收回某人就是刪那一行。
+- Studio、CLI、scrcpy 都以為連的是本機的 5037，不用設任何環境變數。
+- **RD 機絕對不能管理 adb server**：`adb kill-server`、`hangar reset`、Studio 的自動管理，透過通道關掉的都是 hub 的 server，所有人一起斷線。這是這條路最大的坑，要寫進上手說明，而且 hub 最好能在 server 被重啟後自己把網路 adb 連回來。
+
+還沒決定：要不要把它寫進 README 當預設做法、RD 機上的通道要不要做成常駐、多人同時投影的埠怎麼分。
+
 ## 待實測 2：讓 hub 代按那個「允許 USB 偵錯」
 
 上一條是把 RD 的電腦擋在手機外面（改連 hub 的 adb server）。這一條反過來：RD 的
