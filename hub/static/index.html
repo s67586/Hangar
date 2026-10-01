@@ -235,7 +235,7 @@
         <ol>
           <li>這一頁就是從這台電腦的 <code>hangar wall</code> 開出來的話，按鈕本來就是活的 —— hub 認得本機，helper 的鑰匙也由 hub 直接交給這一頁（它只回答本機）。</li>
           <li>從別台開這一頁、只要響鈴與切偵錯：請管 hub 的人跑 <code>hangar wall --grant 你的名字</code>，用它印出的連結開一次，這個瀏覽器就記住了。</li>
-          <li>還要從別台投影：那台要自己跑 <code>./hub/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次；第一次投影某支手機前，也要在那台跑一次 <code>hangar setup</code>（adb 授權綁定的是每台電腦自己的金鑰）。</li>
+          <li>還要從別台投影：那台要自己跑 <code>./hub/hangar_helper.py --hub 這一頁的網址</code>，再用瀏覽器開啟它印出的連結一次；第一次投影某支手機前，也要在那台跑一次 <code>hangar setup</code>（adb 授權綁定的是每台電腦自己的金鑰）。那台沒裝 hangar、只有 adb 與 scrcpy 的話，按卡片上的「複製 scrcpy 指令」貼到終端機就能投影。</li>
         </ol>
       </div>
 
@@ -815,7 +815,7 @@ function castRow(d) {
   return `<div class="acts">
     ${actGroup(hubGroupTitle(), hubGroupOff(), `${ringRow(d)}${adbRow(d)}`)}
     ${actGroup(hereGroupTitle(), helper.status !== "ok",
-               `${cast}${enroll}${updateAgentRow(d)}${connectRow(d)}`)}
+               `${cast}${scrcpyRow(d)}${enroll}${updateAgentRow(d)}${connectRow(d)}`)}
     ${said}
   </div>`;
 }
@@ -863,6 +863,22 @@ function connectRow(d) {
     ? `；在同一個區網、沒有 Tailscale 的話改連 ${d.lan_ip}:${port}` : "";
   return `<button class="connect" type="button" data-copy-connect="${esc(d.key)}">複製 adb connect</button>
     <span class="action-note">要 build 的電腦跑這行，adb 與 Android Studio 就看得到這支。偵錯切過之後那台的連線會斷，要再跑一次${esc(lan)}</span>`;
+}
+
+// 沒有 helper 的電腦多半也沒裝 hangar（只有 adb 與 scrcpy）—— 「複製投影指令」
+// 給的 hangar -p 在那裡跑不起來。所以再給一份只靠 adb＋scrcpy 的，參數跟
+// hangar -p 預設的高畫質那組一樣（build_scrcpy_args）。偵錯確定關著時不給：
+// scrcpy 一定連不上，按了只會失敗。兩行而不是 &&：Windows PowerShell 5.1 不認 &&。
+function scrcpyCommand(d) {
+  const t = connectTarget(d);
+  return `adb connect ${t}\nscrcpy -s ${t} --stay-awake --turn-screen-off ` +
+    `--max-size=1280 --max-fps=60 --video-bit-rate=8M --no-audio --window-title=${d.name}`;
+}
+
+function scrcpyRow(d) {
+  if (helper.status === "ok" || !connectTarget(d) || debugNow(d) === false) return "";
+  return `<button class="cast" type="button" data-copy-scrcpy="${esc(d.key)}">複製 scrcpy 指令</button>
+    <span class="action-note">沒裝 hangar 的電腦用這個：只要有 adb 與 scrcpy（2.0 以上）。第一次連要在手機上按「允許 USB 偵錯」</span>`;
 }
 
 function copyText(t) {
@@ -951,6 +967,19 @@ async function copyConnectCmd(key) {
   let st;
   try { await copyText(cmd); st = { msg: `複製了：${cmd}（在要 build 的那台電腦上跑）` }; }
   catch (e) { st = { bad: true, msg: `複製不了，自己打：${cmd}` }; }
+  says.set(key, st);
+  paint();
+  setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
+}
+
+async function copyScrcpyCmd(key) {
+  const d = byKey.get(key);
+  if (!d || !connectTarget(d)) return;
+  const cmd = scrcpyCommand(d);
+  const shown = cmd.replace("\n", " ；然後 ");
+  let st;
+  try { await copyText(cmd); st = { msg: `複製了兩行，貼到終端機：${shown}` }; }
+  catch (e) { st = { bad: true, msg: `複製不了，自己打：${shown}` }; }
   says.set(key, st);
   paint();
   setTimeout(() => { if (says.get(key) === st) { says.delete(key); paint(); } }, 20000);
@@ -1206,6 +1235,7 @@ document.addEventListener("click", (ev) => {
   else if (b.dataset.updateAgent) updateAgent(b.dataset.updateAgent);
   else if (b.dataset.copyAdb) copyAdbCmd(b.dataset.copyAdb);
   else if (b.dataset.copyConnect) copyConnectCmd(b.dataset.copyConnect);
+  else if (b.dataset.copyScrcpy) copyScrcpyCmd(b.dataset.copyScrcpy);
   else if (b.dataset.ring) ring(b.dataset.ring, 30);
   else if (b.dataset.ringStop) ring(b.dataset.ringStop, 0);
   else if (b.dataset.adb) toggleAdb(b.dataset.key, b.dataset.adb === "on");

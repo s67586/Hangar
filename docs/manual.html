@@ -132,7 +132,7 @@
 <div class="shell">
 <header class="top">
   <h1 class="wordmark">Hangar <span>使用手冊</span></h1>
-  <div class="facts"><span class="fact">來源 sha256 db755bbe2e19</span><span class="fact">hangar v1.6.0</span></div>
+  <div class="facts"><span class="fact">來源 sha256 816d5adbae95</span><span class="fact">hangar v1.6.0</span></div>
 </header>
 
 <div class="cols">
@@ -605,6 +605,11 @@ hangar adb -p work --on                      <span class="c"># 重新開啟偵�
 <div class="tw"><table><tr><th>牆上寫的</th><th>多半是</th></tr><tr><td class="wrap">這台電腦得先跑一支 helper</td><td class="wrap">還沒開過那個帶鑰匙的連結</td></tr><tr><td class="wrap">叫不動這台電腦的 helper</td><td class="wrap">helper 沒在跑，<strong>或者 <code>--hub</code> 跟這一頁的網址對不起來</strong>（<code>localhost</code> 與 <code>192.168.x.x</code> 是不同的來源），也可能是瀏覽器不讓網頁連本機</td></tr><tr><td class="wrap">helper 在跑，但這一頁沒有它的鑰匙</td><td class="wrap">換過 token 了，再開一次那個連結</td></tr></table></div>
 <div class="note warn"><p>瀏覽器對「區網上的頁面連 127.0.0.1」還有自己的一關（Chrome 的 Private Network Access／Local Network Access），新版可能會跳一次權限詢問。helper 該給的標頭都給了，但那個詢問是瀏覽器的 UI，程式這邊關不掉也繞不過。 <strong>這一關還沒有在各家瀏覽器的新版上實測過</strong>，第一個試的人請回報。</p></div>
 <p>按不動也不會卡住：helper 不在的時候投影按鈕會變成<strong>複製指令</strong>；如果手機符合 自動入伍條件，註冊按鈕也會變成複製 <code>hangar enroll -p &lt;名稱&gt;</code>，舊版 agent 的 更新按鈕則變成複製 <code>hangar enroll -p &lt;名稱&gt; --reinstall</code>。貼到終端機的 結果完全一樣。</p>
+<h4 id="沒裝-hangar-的電腦">沒裝 hangar 的電腦</h4>
+<p>上面那些複製出來的都是 <code>hangar</code> 指令，沒裝這個專案的電腦跑不了。但投影本來就 只需要 <code>adb</code> 與 <code>scrcpy</code>，所以 helper 不在時，有網路 adb 位址（<code>ip:5555</code>）、 而且偵錯不是關著的卡片，會多一顆<strong>「複製 scrcpy 指令」</strong>：</p>
+<div class="term"><div class="bar">bash</div><pre>adb connect 192.168.1.77:5555
+scrcpy -s 192.168.1.77:5555 --stay-awake --turn-screen-off --max-size=1280 --max-fps=60 --video-bit-rate=8M --no-audio --window-title=work</pre></div>
+<p>參數跟 <code>hangar -p</code> 預設的高畫質那組一樣，要 scrcpy 2.0 以上。刻意複製成兩行而 不是用 <code>&amp;&amp;</code> 串起來：Windows PowerShell 5.1 不認 <code>&amp;&amp;</code>，兩行在哪個終端機都能直接 貼。它省不掉的跟 <code>hangar -p</code> 一樣：這台電腦第一次連要在手機上按「允許 USB 偵錯」 （見<a href="#每台電腦要先做的事">每台電腦要先做的事</a>），手機重開過、5555 關了也一樣連不上。 少掉的是 <code>hangar -p</code> 替你做的那些 —— 斷線自動重連、清掉殘留視窗、走 relay 時降畫質。</p>
 <h3 id="讓-helper-開機就自己跑">讓 helper 開機就自己跑</h3>
 <p>macOS（launchd，存成 <code>~/Library/LaunchAgents/com.hangar.helper.plist</code>）：</p>
 <div class="term"><div class="bar">xml</div><pre>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
@@ -975,7 +980,7 @@ adb logcat</pre></div>
   <p>這一頁是 <strong>README.md</strong> 與 <strong>docs/</strong> 底下那幾份自動產生的
      （<code>tools/make_manual.py</code>）。內容要改請改那些 Markdown；專案方向與待確認清單
      在 <strong>ROADMAP.md</strong>。</p>
-  <p style="margin-top:12px"><span class="fact">來源 sha256 db755bbe2e19</span>
+  <p style="margin-top:12px"><span class="fact">來源 sha256 816d5adbae95</span>
      —— 這是產生它的那幾份來源的指紋。跟 repo 裡的內容對不上，就是這一頁落後了。</p>
 </footer>
 </main>
