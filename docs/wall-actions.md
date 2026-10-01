@@ -197,6 +197,23 @@ hub 那一側**什麼都沒有多**：沒有新端點，也沒有任何會動到
 更新按鈕則變成複製 `hangar enroll -p <名稱> --reinstall`。貼到終端機的
 結果完全一樣。
 
+### 沒裝 hangar 的電腦
+
+上面那些複製出來的都是 `hangar` 指令，沒裝這個專案的電腦跑不了。但投影本來就
+只需要 `adb` 與 `scrcpy`，所以 helper 不在時，有網路 adb 位址（`ip:5555`）、
+而且偵錯不是關著的卡片，會多一顆**「複製 scrcpy 指令」**：
+
+```bash
+adb connect 192.168.1.77:5555
+scrcpy -s 192.168.1.77:5555 --stay-awake --turn-screen-off --max-size=1280 --max-fps=60 --video-bit-rate=8M --no-audio --window-title=work
+```
+
+參數跟 `hangar -p` 預設的高畫質那組一樣，要 scrcpy 2.0 以上。刻意複製成兩行而
+不是用 `&&` 串起來：Windows PowerShell 5.1 不認 `&&`，兩行在哪個終端機都能直接
+貼。它省不掉的跟 `hangar -p` 一樣：這台電腦第一次連要在手機上按「允許 USB 偵錯」
+（見[每台電腦要先做的事](#每台電腦要先做的事)），手機重開過、5555 關了也一樣連不上。
+少掉的是 `hangar -p` 替你做的那些 —— 斷線自動重連、清掉殘留視窗、走 relay 時降畫質。
+
 ## 讓 helper 開機就自己跑
 
 macOS（launchd，存成 `~/Library/LaunchAgents/com.hangar.helper.plist`）：

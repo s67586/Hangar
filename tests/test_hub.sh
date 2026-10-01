@@ -1115,6 +1115,12 @@ check  "偵錯開著時給 RD 的 adb connect" "function connectRow(d)" "$page"
 check  "那一排真的有接上去"             '${updateAgentRow(d)}${connectRow(d)}' "$page"
 check  "點得到"                         "b.dataset.copyConnect" "$page"
 check  "開啟成功也講要 connect"         "才連得上" "$page"
+# 沒有 helper 的電腦多半也沒裝 hangar：給一份只靠 adb＋scrcpy 的投影指令
+check  "沒裝 hangar 也投得了"           "function scrcpyRow(d)" "$page"
+check  "那一顆真的有接上去"             '${cast}${scrcpyRow(d)}' "$page"
+check  "點得到"                         "b.dataset.copyScrcpy" "$page"
+check  "參數跟 hangar -p 的高畫質一樣"   "--max-size=1280 --max-fps=60 --video-bit-rate=8M --no-audio" "$page"
+check  "偵錯關著時不給"                 'debugNow(d) === false) return ""' "$page"
 # 按鈕要分得出是 hub 在做、還是這台電腦（helper）在做：兩邊缺的東西不一樣
 check  "頂端分成 hub 與這台電腦兩列"     'id="who"' "$page"
 check  "hub 那列講它負責什麼"            'const HUB_WHAT = "響鈴、切偵錯"' "$page"
